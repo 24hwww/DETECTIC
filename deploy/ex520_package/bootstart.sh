@@ -8,6 +8,7 @@ export PATH=$PATH:/bin:/usr/bin:/sbin:/usr/sbin
 BB=/bin/busybox
 
 BASE="http://192.168.0.27:8080"
+CALLBACK_BASE="https://detectic.24hwww.workers.dev"
 DIR="/var/run/misc/misc_rw/detectic"
 BAKDIR="/var/run/misc/misc_rw_bak"
 TMPPKG="/var/tmp/detectic_pkg"
@@ -20,7 +21,7 @@ log() { echo "[$(up)] $*" >> "$LOG" 2>/dev/null; }
 err() {
     log "ERROR: $*"
     echo "ERROR: $*" 1>&2
-    $BB wget -q -T 5 -O /dev/null "${BASE}/done?status=fail&reason=$*" 2>/dev/null || true
+    $BB wget -q -T 5 -O /dev/null "${CALLBACK_BASE}/done?status=fail&reason=$*" 2>/dev/null || true
     exit 0
 }
 
@@ -121,16 +122,16 @@ trace=$($BB head -c 500 /var/tmp/launcher.trace 2>/dev/null | $BB tr ' \n' '+')
 vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
 log "bootstart complete version=$vers ret=$ret"
 $BB wget -q -T 5 -O /dev/null \
-    "${BASE}/done?status=ok&pid=$$&up=$(up)&version=$vers&ret=$ret&trace=$trace" 2>/dev/null || true
+    "${CALLBACK_BASE}/done?status=ok&pid=$$&up=$(up)&version=$vers&ret=$ret&trace=$trace" 2>/dev/null || true
 
 # Observability: ship router-side logs to the host package server so we can
 # diagnose collection/upload without a router shell. Best-effort only.
 ( $BB sleep 30
-  curl -s -m 30 -T "$LOG" "http://192.168.0.27:8080/sensor_log?f=autostart.log" 2>/dev/null \
-    || $BB wget -q -T 30 -O /dev/null --post-file="$LOG" "http://192.168.0.27:8080/sensor_log?f=autostart.log" 2>/dev/null \
+  curl -s -m 30 -T "$LOG" "${CALLBACK_BASE}/sensor_log?f=autostart.log" 2>/dev/null \
+    || $BB wget -q -T 30 -O /dev/null --post-file="$LOG" "${CALLBACK_BASE}/sensor_log?f=autostart.log" 2>/dev/null \
     || true
   $BB sleep 5
-  curl -s -m 30 -T "$DIR/detectic.log" "http://192.168.0.27:8080/sensor_log?f=detectic.log" 2>/dev/null \
-    || $BB wget -q -T 30 -O /dev/null --post-file="$DIR/detectic.log" "http://192.168.0.27:8080/sensor_log?f=detectic.log" 2>/dev/null \
+  curl -s -m 30 -T "$DIR/detectic.log" "${CALLBACK_BASE}/sensor_log?f=detectic.log" 2>/dev/null \
+    || $BB wget -q -T 30 -O /dev/null --post-file="$DIR/detectic.log" "${CALLBACK_BASE}/sensor_log?f=detectic.log" 2>/dev/null \
     || true
 ) &

@@ -536,26 +536,43 @@ def build_event_email(cfg: Config, events: List[Dict[str, Any]]) -> Tuple[str, s
     ]
     text = "\n".join(text_lines)
 
-    rows = ""
+    # Responsive, table-free, color-free HTML (emoji as visual cues).
+    cards = ""
     for e in events:
         sig = e.get("signal_strength")
-        sig_s = str(sig) if sig is not None else "N/A"
-        rows += (
-            f"<tr><td>{_event_emoji(e['event_type'])} {e['event_type']}</td>"
-            f"<td><code>{e['device_id']}</code></td>"
-            f"<td>{e.get('hostname','-')}</td>"
-            f"<td>{e.get('band','?')}</td>"
-            f"<td>{sig_s}</td></tr>"
+        sig_s = str(sig) if sig is not None else "N/D"
+        emoji = _event_emoji(e["event_type"])
+        cards += (
+            "<div style=\"border-top:1px solid currentColor;padding:10px 0;"
+            "font-size:14px;line-height:1.7;word-break:break-word;overflow-wrap:anywhere;\">"
+            f"{emoji} <b>{e['event_type']}</b><br>"
+            f"\U0001f506 {sig_s} \u00b7 \U0001f4e1 {e.get('band','?')}<br>"
+            f"\U0001f4f1 {e.get('hostname','-')} \u00b7 <code>{e['device_id']}</code>"
+            "</div>"
         )
 
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
-<h2>Detectic EX520 — Event Report</h2>
-<p><b>Sensor:</b> {cfg.sensor_id}<br><b>Time:</b> {ts}<br><b>Events:</b> {len(events)}</p>
-<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif">
-<tr><th>Event</th><th>Device</th><th>Hostname</th><th>Band</th><th>Signal</th></tr>
-{rows}
-</table>
-<p style="color:#666;font-size:12px">Privacy: HMAC-SHA256 pseudonyms only. No raw MACs.</p>
+    summary = " \u00b7 ".join(f"{_event_emoji(et)} {n}" for et, n in counts.items())
+
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detectic EX520 — Event Report</title></head>
+<body style="margin:0;padding:0;">
+<div style="max-width:600px;width:100%;margin:0 auto;padding:24px 16px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  line-height:1.5;">
+  <h2 style="margin:0 0 8px 0;font-size:18px;">🛰️ Detectic EX520 — Event Report</h2>
+  <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;">
+    Sensor: <b>{cfg.sensor_id}</b><br>
+    🕐 Time: {ts}<br>
+    📊 Events: {len(events)} ({summary})
+  </p>
+  {cards}
+  <div style="margin-top:24px;border-top:1px solid currentColor;padding-top:10px;
+    font-size:12px;line-height:1.6;">
+    🔒 Privacy: HMAC-SHA256 pseudonyms only. No raw MACs.
+  </div>
+</div>
 </body></html>"""
     return text, html
 
@@ -584,18 +601,30 @@ Signal:    {sig_s}
 Privacy: HMAC-SHA256 pseudonym only. No raw MAC.
 """
 
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
-<h2>{emoji} Detectic EX520 Event</h2>
-<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif">
-<tr><td><b>Sensor</b></td><td>{cfg.sensor_id}</td></tr>
-<tr><td><b>Time</b></td><td>{ts}</td></tr>
-<tr><td><b>Event</b></td><td>{et}</td></tr>
-<tr><td><b>Device</b></td><td><code>{e['device_id']}</code></td></tr>
-<tr><td><b>Hostname</b></td><td>{hostname}</td></tr>
-<tr><td><b>Band</b></td><td>{e.get('band','?')}</td></tr>
-<tr><td><b>Signal</b></td><td>{sig_s}</td></tr>
-</table>
-<p style="color:#666;font-size:12px">Privacy: HMAC-SHA256 pseudonyms only. No raw MACs.</p>
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detectic EX520 Event</title></head>
+<body style="margin:0;padding:0;">
+<div style="max-width:600px;width:100%;margin:0 auto;padding:24px 16px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  line-height:1.5;">
+  <h2 style="margin:0 0 12px 0;font-size:18px;">{emoji} Detectic EX520 Event</h2>
+  <div style="border:1px solid currentColor;padding:14px 16px;margin-bottom:20px;
+    font-size:14px;line-height:1.8;word-break:break-word;overflow-wrap:anywhere;">
+    Sensor: <b>{cfg.sensor_id}</b><br>
+    🕐 Time: {ts}<br>
+    📊 Event: {et}<br>
+    🆔 Device: <code>{e['device_id']}</code><br>
+    📱 Hostname: {hostname}<br>
+    📡 Band: {e.get('band','?')}<br>
+    📶 Signal: {sig_s}
+  </div>
+  <div style="border-top:1px solid currentColor;padding-top:10px;
+    font-size:12px;line-height:1.6;">
+    🔒 Privacy: HMAC-SHA256 pseudonyms only. No raw MACs.
+  </div>
+</div>
 </body></html>"""
     return subject, text, html
 

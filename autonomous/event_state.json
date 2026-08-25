@@ -1,72 +1,81 @@
 {
   "devices": {
-    "0d387ad027900b6f": {
-      "state": "connected",
-      "hostname": "moto-g42",
-      "band": "2.4GHz",
-      "signal_strength": 104,
-      "signal_level": 4,
-      "operating_standard": "n",
-      "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787653466,
-      "misses": 0
-    },
     "e48877d361952816": {
       "state": "connected",
       "hostname": "realme-9i",
       "band": "2.4GHz",
-      "signal_strength": 102,
+      "signal_strength": 98,
       "signal_level": 4,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787653466,
+      "last_seen": 1787657111,
+      "misses": 0
+    },
+    "0d387ad027900b6f": {
+      "state": "connected",
+      "hostname": "moto-g42",
+      "band": "2.4GHz",
+      "signal_strength": 96,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1787657111,
+      "misses": 0
+    },
+    "2d90efa6e960e00c": {
+      "state": "connected",
+      "hostname": "amazon-07a4dcc48",
+      "band": "2.4GHz",
+      "signal_strength": 112,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1787657111,
       "misses": 0
     },
     "da25a8ac47e5da3e": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "moto-g54-5G",
       "band": "2.4GHz",
       "signal_strength": 110,
       "signal_level": 4,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787653466,
-      "misses": 0
+      "last_seen": 1787657111,
+      "misses": 2,
+      "last_event": {
+        "disconnected": 1787657111
+      }
     },
     "39c704abe35fac86": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "Unknown",
       "band": "5GHz",
       "signal_strength": 120,
       "signal_level": 5,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787653466,
-      "misses": 0
-    },
-    "2d90efa6e960e00c": {
-      "state": "connected",
-      "hostname": "amazon-07a4dcc48",
-      "band": "5GHz",
-      "signal_strength": 0,
-      "signal_level": 0,
-      "operating_standard": "ac",
-      "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787653466,
-      "misses": 0
+      "last_seen": 1787657111,
+      "misses": 2,
+      "last_event": {
+        "disconnected": 1787657111
+      }
     },
     "0aedc19fc2428f3e": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "moto-g42",
       "band": "5GHz",
       "signal_strength": 60,
       "signal_level": 2,
       "operating_standard": "ac",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787653466,
-      "misses": 0
+      "last_seen": 1787657111,
+      "misses": 2,
+      "last_event": {
+        "disconnected": 1787657111
+      }
     }
   },
   "baseline": false,
-  "last_poll": 1787653466
+  "last_poll": 1787657111
 }

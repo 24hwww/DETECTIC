@@ -1,98 +1,150 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Detectic — EX520 Dashboard</title>
+<title>Detectic — EX520 · Identidad & Huella Wi-Fi</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0a0a0f;color:#e0e0e0;min-height:100vh}
 .header{background:linear-gradient(135deg,#0d1117,#161b22);border-bottom:1px solid #21262d;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
 .header h1{font-size:18px;font-weight:600;color:#58a6ff}
+.header .sub{font-size:12px;color:#8b949e;margin-top:2px}
 .header .status{display:flex;gap:16px;align-items:center;font-size:13px}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
 .dot.on{background:#3fb950;box-shadow:0 0 6px #3fb950}
 .dot.off{background:#f85149;box-shadow:0 0 6px #f85149}
 .dot.warn{background:#d29922;box-shadow:0 0 6px #d29922}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:20px 24px}
-.card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:20px;position:relative;overflow:hidden}
+
+.banner{margin:16px 24px 0;padding:10px 14px;border-radius:8px;background:#11202e;border:1px solid #1f6feb44;color:#9fc7ff;font-size:12px}
+.banner b{color:#58a6ff}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:16px 24px}
+.card{background:#161b22;border:1px solid #21262d;border-radius:12px;padding:18px;position:relative;overflow:hidden}
 .card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,#58a6ff,#3fb950)}
-.card h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;margin-bottom:12px}
-.card .big{font-size:32px;font-weight:700;color:#f0f6fc}
+.card h3{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;margin-bottom:10px}
+.card .big{font-size:30px;font-weight:700;color:#f0f6fc}
 .card .sub{font-size:12px;color:#8b949e;margin-top:4px}
-.chart-card{grid-column:1/-1;background:#161b22;border:1px solid #21262d;border-radius:12px;padding:20px}
+
+.chart-card{grid-column:1/-1;background:#161b22;border:1px solid #21262d;border-radius:12px;padding:18px}
 .chart-card h3{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;margin-bottom:12px}
 .chart-wrap{position:relative;height:260px}
-.devices{grid-column:1/-1}
-.device-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
-.device{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;transition:border-color .2s}
+.charts-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.charts-2 .chart-card{grid-column:auto}
+
+.section{grid-column:1/-1}
+.device-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.device{background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;transition:border-color .2s}
 .device:hover{border-color:#58a6ff}
-.device .icon{width:36px;height:36px;border-radius:8px;background:#21262d;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
-.device .info{flex:1;min-width:0}
-.device .name{font-size:13px;font-weight:600;color:#f0f6fc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.device .meta{font-size:11px;color:#8b949e;margin-top:2px}
-.device .rssi{font-size:12px;font-weight:600;padding:3px 8px;border-radius:4px;flex-shrink:0}
-.rssi-strong{background:#238636;color:#3fb950}
-.rssi-medium{background:#9e6a03;color:#d29922}
-.rssi-weak{background:#6e2b2b;color:#f85149}
-.empty{text-align:center;padding:40px;color:#484f58;font-size:14px}
+.device .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.device .pseudo{font-size:13px;font-weight:700;color:#f0f6fc;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.device .vendor{font-size:12px;color:#8b949e}
+.device .vendor b{color:#c9d1d9}
+.device .meta{font-size:11px;color:#8b949e;line-height:1.5}
+.device .rssi{display:flex;align-items:center;gap:8px}
+.rssi-bar{flex:1;height:6px;border-radius:3px;background:#21262d;overflow:hidden}
+.rssi-fill{height:100%;border-radius:3px}
+.rssi-val{font-size:12px;font-weight:600;min-width:64px;text-align:right}
+
+.chip{display:inline-block;font-size:10px;font-weight:600;padding:2px 8px;border-radius:999px;letter-spacing:.3px}
+.chip-class-Smartphone{background:#58a6ff22;color:#79c0ff;border:1px solid #58a6ff55}
+.chip-class-Laptop{background:#23863622;color:#3fb950;border:1px solid #23863655}
+.chip-class-IoT{background:#9e6a0322;color:#d29922;border:1px solid #9e6a0355}
+.chip-class-NAS{background:#8957e322;color:#bc8cff;border:1px solid #8957e355}
+.chip-class-Unknown{background:#30363d;color:#8b949e;border:1px solid #484f58}
+.chip-rand{background:#6e2b2b;color:#ff7b72;border:1px solid #f8514955}
+.chip-stable{background:#23863622;color:#3fb950;border:1px solid #23863655}
+.chip-unk{background:#30363d;color:#8b949e;border:1px solid #484f58}
+.chip-conf{background:#161b22;color:#8b949e;border:1px solid #30363d}
+
+.net-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+.net{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:12px 14px}
+.net .bssid{font-family:ui-monospace,monospace;font-size:12px;color:#f0f6fc}
+.net .meta{font-size:11px;color:#8b949e;margin-top:4px}
+
+.empty{text-align:center;padding:30px;color:#484f58;font-size:14px}
 .refresh-bar{position:fixed;bottom:0;left:0;right:0;height:3px;background:#21262d;z-index:10}
 .refresh-bar .fill{height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width .3s;width:0}
-@media(max-width:640px){.grid{padding:12px}.card{padding:16px}.card .big{font-size:24px}}
+@media(max-width:640px){.grid{padding:12px}.card .big{font-size:24px}.banner{margin:12px}}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>📡 Detectic — EX520</h1>
+  <div>
+    <h1>📡 Detectic — EX520</h1>
+    <div class="sub">Identidad de dispositivo &amp; huella Wi-Fi (privacy-first)</div>
+  </div>
   <div class="status">
-    <span><span class="dot on" id="statusDot"></span><span id="statusText">connecting…</span></span>
+    <span><span class="dot on" id="statusDot"></span><span id="statusText">conectando…</span></span>
     <span id="lastUpdate" style="color:#484f58">—</span>
   </div>
+</div>
+
+<div class="banner">
+  🔒 <b>Privacidad:</b> todos los identificadores mostrados son <b>pseudónimos HMAC-SHA256</b> (ni MAC reales ni BSSID reales salen del router). La clasificación de dispositivo y la huella Wi-Fi se derivan solo de metadatos observados.
 </div>
 
 <div class="grid">
   <!-- Stats cards -->
   <div class="card">
-    <h3>Devices Seen</h3>
+    <h3>Dispositivos</h3>
     <div class="big" id="statDevices">—</div>
     <div class="sub" id="statDevicesSub"></div>
   </div>
   <div class="card">
-    <h3>Total Snapshots</h3>
-    <div class="big" id="statSnapshots">—</div>
-    <div class="sub" id="statSnapshotsSub"></div>
+    <h3>Detecciones</h3>
+    <div class="big" id="statDetections">—</div>
+    <div class="sub" id="statDetectionsSub"></div>
   </div>
   <div class="card">
-    <h3>Sensor Status</h3>
-    <div class="big" id="statSensor" style="font-size:20px">—</div>
-    <div class="sub" id="statSensorSub"></div>
+    <h3>Sensores</h3>
+    <div class="big" id="statSensors">—</div>
+    <div class="sub" id="statSensorsSub"></div>
   </div>
   <div class="card">
-    <h3>Avg RSSI</h3>
+    <h3>RSSI medio</h3>
     <div class="big" id="statRssi">—</div>
-    <div class="sub">signal strength (dBm)</div>
+    <div class="sub">señal (dBm)</div>
+  </div>
+  <div class="card">
+    <h3>MAC aleatoria</h3>
+    <div class="big" id="statRand">—</div>
+    <div class="sub">dispositivos con privacidad MAC</div>
+  </div>
+  <div class="card">
+    <h3>Vendores</h3>
+    <div class="big" id="statVendors">—</div>
+    <div class="sub" id="statVendorsSub"></div>
   </div>
 
-  <!-- RSSI Timeline chart -->
-  <div class="chart-card">
-    <h3>📶 RSSI Timeline (last 24h)</h3>
-    <div class="chart-wrap"><canvas id="rssiChart"></canvas></div>
-  </div>
-
-  <!-- Device count chart -->
-  <div class="chart-card">
-    <h3>📊 Device Activity (last 24h)</h3>
-    <div class="chart-wrap"><canvas id="activityChart"></canvas></div>
-  </div>
-
-  <!-- Device list -->
-  <div class="chart-card devices">
-    <h3>📱 Active Devices</h3>
-    <div class="device-list" id="deviceList">
-      <div class="empty">Loading…</div>
+  <!-- Charts -->
+  <div class="charts-2">
+    <div class="chart-card">
+      <h3>📶 RSSI por dispositivo (24h)</h3>
+      <div class="chart-wrap"><canvas id="rssiChart"></canvas></div>
     </div>
+    <div class="chart-card">
+      <h3>📊 Actividad (24h)</h3>
+      <div class="chart-wrap"><canvas id="activityChart"></canvas></div>
+    </div>
+  </div>
+  <div class="chart-card">
+    <h3>🏷️ Clasificación de dispositivos</h3>
+    <div class="chart-wrap" style="height:220px"><canvas id="classChart"></canvas></div>
+  </div>
+
+  <!-- Devices / identity -->
+  <div class="chart-card section">
+    <h3>🛰️ Dispositivos identificados</h3>
+    <div class="device-list" id="deviceList"><div class="empty">Cargando…</div></div>
+  </div>
+
+  <!-- Networks -->
+  <div class="chart-card section">
+    <h3>📡 Redes Wi-Fi observadas (APs)</h3>
+    <div class="net-list" id="netList"><div class="empty">Cargando…</div></div>
   </div>
 </div>
 
@@ -100,119 +152,147 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 
 <script>
 const API = location.origin + '/api/v1';
-const POLL = 15000; // 15s refresh
-let rssiChart, activityChart;
-const rssiHistory = {};  // pseudonym → [{t, rssi}]
-const activityBuckets = {};  // hour → count
+const POLL = 20000;
+let rssiChart, activityChart, classChart;
+const COLORS = ['#58a6ff','#3fb950','#d29922','#bc8cff','#ff7b72','#79c0ff','#56d364','#e3b341','#ffa657','#d2a8ff'];
 
-// --- Charts ---
+const CLASS_COLOR = { Smartphone:'#58a6ff', Laptop:'#3fb950', IoT:'#d29922', NAS:'#bc8cff', Unknown:'#8b949e' };
+
 function initCharts() {
-  const opts = (yLabel, yMin, yMax) => ({
-    responsive: true, maintainAspectRatio: false,
-    animation: { duration: 400 },
-    plugins: { legend: { display: true, labels: { color: '#8b949e', font: { size: 11 } } } },
+  const baseScales = (yLabel, yMin, yMax) => ({
+    responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+    plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 } } } },
     scales: {
-      x: { type: 'linear', ticks: { color: '#484f58', callback: v => new Date(v*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}), maxTicksLimit: 12 }, grid: { color: '#21262d' } },
+      x: { ticks: { color: '#484f58', callback: v => new Date(v*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}), maxTicksLimit: 12 }, grid: { color: '#21262d' } },
       y: { title: { display: true, text: yLabel, color: '#8b949e' }, min: yMin, max: yMax, ticks: { color: '#484f58' }, grid: { color: '#21262d' } }
     }
   });
   rssiChart = new Chart(document.getElementById('rssiChart'), {
-    type: 'scatter', data: { datasets: [] },
-    options: opts('RSSI (dBm)', -90, -20)
+    type: 'scatter', data: { datasets: [] }, options: baseScales('RSSI (dBm)', -90, -20)
   });
   activityChart = new Chart(document.getElementById('activityChart'), {
-    type: 'bar', data: { labels: [], datasets: [{ label: 'Devices', data: [], backgroundColor: '#58a6ff44', borderColor: '#58a6ff', borderWidth: 1 }] },
+    type: 'bar',
+    data: { labels: [], datasets: [{ label: 'Observaciones', data: [], backgroundColor: '#58a6ff44', borderColor: '#58a6ff', borderWidth: 1 }] },
     options: { responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
       plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: '#484f58', maxTicksLimit: 12 }, grid: { display: false } },
-        y: { title: { display: true, text: 'Devices', color: '#8b949e' }, ticks: { color: '#484f58', stepSize: 1 }, grid: { color: '#21262d' }, beginAtZero: true }
-      }
-    }
+      scales: { x: { ticks: { color: '#484f58', maxTicksLimit: 12 }, grid: { display: false } },
+        y: { title: { display: true, text: 'Obs', color: '#8b949e' }, ticks: { color: '#484f58', stepSize: 1 }, grid: { color: '#21262d' }, beginAtZero: true } } }
+  });
+  classChart = new Chart(document.getElementById('classChart'), {
+    type: 'doughnut',
+    data: { labels: ['Smartphone','Laptop','IoT','NAS','Unknown'], datasets: [{ data: [0,0,0,0,0], backgroundColor: ['#58a6ff','#3fb950','#d29922','#bc8cff','#8b949e'], borderColor: '#0a0a0f', borderWidth: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '60%',
+      plugins: { legend: { position: 'right', labels: { color: '#8b949e', font: { size: 12 } } } } }
   });
 }
 
-const COLORS = ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#79c0ff','#56d364','#e3b341','#ff7b72','#d2a8ff'];
+function rssiColor(r) {
+  if (r == null) return '#484f58';
+  if (r >= -50) return '#3fb950';
+  if (r >= -70) return '#d29922';
+  return '#f85149';
+}
+function rssiPct(r) { if (r == null) return 0; return Math.max(0, Math.min(100, (r + 90) / 70 * 100)); }
 
-function updateRssiChartFromTimeline(points) {
-  // Group by pseudonym
+function classBadge(c) {
+  const cls = ['Smartphone','Laptop','IoT','NAS','Unknown'].includes(c) ? c : 'Unknown';
+  return `<span class="chip chip-class-${cls}">${cls}</span>`;
+}
+function macChip(t) {
+  if (t === 'randomized') return `<span class="chip chip-rand">MAC aleatoria</span>`;
+  if (t === 'stable') return `<span class="chip chip-stable">MAC estable</span>`;
+  return `<span class="chip chip-unk">MAC ?</span>`;
+}
+function confChip(label) {
+  return `<span class="chip chip-conf">${esc(label || 'conf ?')}</span>`;
+}
+
+function renderDevices(devices) {
+  const el = document.getElementById('deviceList');
+  if (!devices.length) { el.innerHTML = '<div class="empty">Aún no se han detectado dispositivos</div>'; return; }
+  el.innerHTML = devices.map(d => {
+    const vendor = [d.manufacturer, d.brand].filter(Boolean).join(' · ') || 'Desconocido';
+    const fp = d.fingerprint_model ? `Huella: ${esc(d.fingerprint_model)}${d.fingerprint_confidence!=null?` (${Math.round(d.fingerprint_confidence*100)}%)`:''}` : '';
+    const band = d.band ? `Banda ${esc(d.band)}` : '';
+    const std = d.operating_standard ? esc(d.operating_standard) : '';
+    const host = d.hostname ? `Host: ${esc(d.hostname)}` : '';
+    const bssid = d.bssid_manufacturer ? `AP: ${esc(d.bssid_manufacturer)}` : '';
+    const r = d.signal_strength;
+    const rtxt = r != null ? `${r} dBm` : '—';
+    return `<div class="device">
+      <div class="top">
+        <span class="pseudo">${esc((d.pseudonym||'?').slice(0,16))}</span>
+        ${classBadge(d.device_class)}
+      </div>
+      <div class="vendor"><b>${esc(vendor)}</b></div>
+      <div class="meta">${[band, std, host, bssid].filter(Boolean).join(' · ') || '—'}</div>
+      <div class="rssi">
+        <div class="rssi-bar"><div class="rssi-fill" style="width:${rssiPct(r)}%;background:${rssiColor(r)}"></div></div>
+        <span class="rssi-val" style="color:${rssiColor(r)}">${rtxt}</span>
+      </div>
+      <div class="meta">${macChip(d.mac_type)} ${confChip(d.confidence_label)} ${fp?`· ${fp}`:''}</div>
+      <div class="meta">visto ${timeAgo(d.last_seen)} · ${d.observations||0} obs · primer contacto ${timeAgo(d.first_seen)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderNetworks(nets) {
+  const el = document.getElementById('netList');
+  if (!nets.length) { el.innerHTML = '<div class="empty">No hay redes observadas</div>'; return; }
+  el.innerHTML = nets.map(n => {
+    const mfr = n.manufacturer ? `<span class="chip chip-class-IoT">${esc(n.manufacturer)}</span>` : '';
+    const band = n.band ? `Banda ${esc(n.band)}` : '';
+    return `<div class="net">
+      <div class="bssid">${esc((n.bssid_pseudonym||'?').slice(0,16))}</div>
+      <div class="meta">${mfr} ${band} · ${n.observation_count||0} obs</div>
+    </div>`;
+  }).join('');
+}
+
+function updateStats(stats) {
+  setText('statDevices', stats.distinct_devices ?? '—');
+  setText('statDevicesSub', `${stats.identified_devices ?? 0} identificados`);
+  setText('statDetections', stats.total_detections ?? '—');
+  setText('statDetectionsSub', `${stats.total_snapshots ?? 0} snapshots`);
+  setText('statSensors', stats.total_sensors ?? '—');
+  setText('statSensorsSub', `${stats.total_networks ?? 0} redes`);
+  setText('statRssi', (stats.avg_rssi != null ? stats.avg_rssi + ' dBm' : '—'));
+  setText('statRand', stats.randomized_macs ?? '—');
+  setText('statVendors', stats.known_vendors ?? '—');
+  setText('statVendorsSub', `${stats.snapshots_last_hour ?? 0} en última hora`);
+}
+
+function updateRssiChart(points) {
   const byDevice = {};
   points.forEach(p => {
     if (p.rssi == null || !p.pseudonym) return;
-    if (!byDevice[p.pseudonym]) byDevice[p.pseudonym] = [];
-    byDevice[p.pseudonym].push({ t: p.ts, rssi: p.rssi });
+    (byDevice[p.pseudonym] = byDevice[p.pseudonym] || []).push({ t: p.ts, rssi: p.rssi });
   });
   rssiChart.data.datasets = Object.entries(byDevice).slice(0, 10).map(([pseudo, pts], i) => ({
     label: pseudo.slice(0, 12),
     data: pts.map(p => ({ x: p.t, y: p.rssi })),
-    backgroundColor: COLORS[i % COLORS.length],
-    borderColor: COLORS[i % COLORS.length],
+    backgroundColor: COLORS[i % COLORS.length], borderColor: COLORS[i % COLORS.length],
     pointRadius: 2, pointHoverRadius: 4, borderWidth: 1, showLine: true, fill: false, tension: 0.3
   }));
   rssiChart.update('none');
 }
 
-function updateActivityChartFromTimeline(points) {
-  // Group by 10-minute buckets
+function updateActivityChart(points) {
   const buckets = {};
-  points.forEach(p => {
-    if (!p.ts) return;
-    const bucket = Math.floor(p.ts / 600) * 600; // 10 min
-    buckets[bucket] = (buckets[bucket] || 0) + 1;
-  });
-  const sorted = Object.entries(buckets).sort((a,b) => a[0]-b[0]).slice(-24);
+  points.forEach(p => { if (!p.ts) return; const b = Math.floor(p.ts/600)*600; buckets[b] = (buckets[b]||0)+1; });
+  const sorted = Object.entries(buckets).sort((a,b)=>a[0]-b[0]).slice(-24);
   activityChart.data.labels = sorted.map(([ts]) => new Date(ts*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}));
   activityChart.data.datasets[0].data = sorted.map(([,c]) => c);
   activityChart.update('none');
 }
 
-// --- Device list ---
-function rssiClass(rssi) {
-  if (rssi == null) return 'rssi-weak';
-  if (rssi >= -50) return 'rssi-strong';
-  if (rssi >= -70) return 'rssi-medium';
-  return 'rssi-weak';
+function updateClassChart(devices) {
+  const counts = { Smartphone:0, Laptop:0, IoT:0, NAS:0, Unknown:0 };
+  devices.forEach(d => { const c = ['Smartphone','Laptop','IoT','NAS','Unknown'].includes(d.device_class)?d.device_class:'Unknown'; counts[c]++; });
+  classChart.data.datasets[0].data = [counts.Smartphone, counts.Laptop, counts.IoT, counts.NAS, counts.Unknown];
+  classChart.update('none');
 }
 
-function renderDevices(devices) {
-  const el = document.getElementById('deviceList');
-  if (!devices.length) { el.innerHTML = '<div class="empty">No devices detected yet</div>'; return; }
-  el.innerHTML = devices.map((d, i) => {
-    const initial = (d.pseudonym || '?')[0].toUpperCase();
-    const rssi = d.rssi != null ? d.rssi + ' dBm' : '—';
-    const ago = d.last_seen ? timeAgo(d.last_seen) : '—';
-    const std = d.standard || '—';
-    return `<div class="device">
-      <div class="icon" style="color:${COLORS[i%COLORS.length]}">${initial}</div>
-      <div class="info">
-        <div class="name">${esc(d.pseudonym || 'unknown')}</div>
-        <div class="meta">${std} · seen ${ago} · ${d.observations || 1} obs</div>
-      </div>
-      <div class="rssi ${rssiClass(d.rssi)}">${rssi}</div>
-    </div>`;
-  }).join('');
-}
-
-// --- Stats ---
-function updateStats(stats, devices, sensors) {
-  setText('statDevices', stats.distinct_devices ?? '—');
-  setText('statDevicesSub', `${stats.total_detections ?? 0} total detections`);
-  setText('statSnapshots', stats.total_snapshots ?? '—');
-  setText('statSnapshotsSub', `${stats.snapshots_last_hour ?? 0} in last hour`);
-
-  const sensor = sensors[0];
-  if (sensor) {
-    setText('statSensor', sensor.id || '—');
-    setText('statSensorSub', sensor.last_seen ? `last seen ${timeAgo(sensor.last_seen)}` : '');
-  }
-
-  if (devices.length) {
-    const avg = Math.round(devices.reduce((s,d) => s + (d.avg_rssi||0), 0) / devices.length);
-    setText('statRssi', avg + ' dBm');
-  }
-}
-
-// --- Fetch & poll ---
 async function fetchJSON(path) {
   const r = await fetch(API + path);
   if (!r.ok) throw new Error(r.status);
@@ -223,24 +303,30 @@ async function poll() {
   const bar = document.getElementById('refreshBar');
   bar.style.width = '30%';
   try {
-    const [stats, devResp, sensorResp, timeline] = await Promise.all([
+    const [stats, devResp, sensorResp, timeline, netResp] = await Promise.all([
       fetchJSON('/stats'),
-      fetchJSON('/devices?limit=100'),
+      fetchJSON('/devices?limit=200'),
       fetchJSON('/sensors'),
-      fetchJSON('/timeline?hours=24')
+      fetchJSON('/timeline?hours=24'),
+      fetchJSON('/networks')
     ]);
     bar.style.width = '70%';
     const devices = devResp.devices || [];
     const sensors = sensorResp.sensors || [];
     const points = timeline.points || [];
+    const nets = netResp.networks || [];
 
-    updateStats(stats, devices, sensors);
+    updateStats(stats);
     renderDevices(devices);
-    updateRssiChartFromTimeline(points);
-    updateActivityChartFromTimeline(points);
+    renderNetworks(nets);
+    updateRssiChart(points);
+    updateActivityChart(points);
+    updateClassChart(devices);
 
     setStatus('online');
-    document.getElementById('lastUpdate').textContent = 'updated ' + new Date().toLocaleTimeString();
+    const sn = sensors[0];
+    if (sn && sn.last_seen) document.getElementById('statSensorsSub').textContent = `${nets.length} redes · sensor ${esc(sn.id)}`;
+    document.getElementById('lastUpdate').textContent = 'actualizado ' + new Date().toLocaleTimeString();
   } catch (e) {
     setStatus('offline');
     console.error('poll error:', e);
@@ -250,25 +336,22 @@ async function poll() {
 }
 
 function setStatus(s) {
-  const dot = document.getElementById('statusDot');
-  const txt = document.getElementById('statusText');
-  if (s === 'online') { dot.className = 'dot on'; txt.textContent = 'online'; }
-  else if (s === 'offline') { dot.className = 'dot off'; txt.textContent = 'offline'; }
+  const dot = document.getElementById('statusDot'), txt = document.getElementById('statusText');
+  if (s === 'online') { dot.className = 'dot on'; txt.textContent = 'en línea'; }
+  else if (s === 'offline') { dot.className = 'dot off'; txt.textContent = 'sin conexión'; }
   else { dot.className = 'dot warn'; txt.textContent = s; }
 }
-
-// --- Helpers ---
-function setText(id, v) { document.getElementById(id).textContent = v; }
+function setText(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function timeAgo(ts) {
+  if (!ts) return '—';
   const diff = Math.floor(Date.now()/1000) - ts;
-  if (diff < 60) return diff + 's ago';
-  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
-  return Math.floor(diff/86400) + 'd ago';
+  if (diff < 60) return diff + 's';
+  if (diff < 3600) return Math.floor(diff/60) + 'm';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h';
+  return Math.floor(diff/86400) + 'd';
 }
 
-// --- Init ---
 initCharts();
 poll();
 setInterval(poll, POLL);

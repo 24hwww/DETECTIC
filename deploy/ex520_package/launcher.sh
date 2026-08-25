@@ -98,10 +98,11 @@ do_start() {
         log "started PID=$new_pid"
         echo "started PID=$new_pid"
         vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
-        $BB wget -q -T 5 -O /dev/null "http://192.168.0.27:8080/done?t=launcher&status=running&pid=$new_pid&version=$vers" 2>/dev/null || true
+        CALLBACK_BASE="${DETECTIC_CALLBACK_BASE:-https://detectic.24hwww.workers.dev}"
+        $BB wget -q -T 5 -O /dev/null "${CALLBACK_BASE}/done?t=launcher&status=running&pid=$new_pid&version=$vers" 2>/dev/null || true
 
         # best-effort, non-blocking email notifications
-        EMAILD=${DETECTIC_EMAILD:-http://192.168.0.27:8081/email}
+        EMAILD=${DETECTIC_EMAILD:-${DETECTIC_CALLBACK_BASE:-https://detectic.24hwww.workers.dev}/email}
         EMAIL_INTERVAL=${DETECTIC_EMAIL_INTERVAL:-300}
 
         # Export the variables the reporter subshell and get_pid need.

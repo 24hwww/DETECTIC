@@ -200,16 +200,22 @@ class TestReport(unittest.TestCase):
                  "rx_rate_kbps": 500, "status": "active"}]
         text, html, report_id = c.build_report(cfg, cap, devs)
         self.assertIn(report_id, text)
-        self.assertIn("DETECTIC EX520 AUTONOMOUS OBSERVATION", text)
+        self.assertIn("DETECTIC", text)
         self.assertNotIn("AA:BB:CC", text)
         self.assertNotIn("password", text.lower())
-        self.assertIn("Report ID", text)
-        self.assertIn("Capture ID", text)
-        self.assertIn("Scheduled time", text)
-        self.assertIn("Capture started", text)
-        self.assertIn("Capture finished", text)
-        self.assertIn("API latency", text)
-        self.assertIn("Auth latency", text)
+        self.assertIn("ID del informe", text)
+        self.assertIn("Programado", text)
+        self.assertIn("Inicio captura", text)
+        self.assertIn("Fin captura", text)
+        self.assertIn("Latencia", text)
+        self.assertIn("Conectados", text)
+        # Responsive / no-colors / no-tables email requirements
+        self.assertNotIn("<table", html.lower())
+        self.assertNotIn("<tr", html.lower())
+        self.assertNotIn("color:", html.lower())
+        self.assertNotIn("background", html.lower())
+        self.assertIn("viewport", html)
+        self.assertIn("max-width:600px", html)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Start all host-side Detectic services for autonomous EX520 operation:
 #   package server :8080  (serves detectic.aa/.ab/launcher.sh/bootstart.sh to router)
-#   emaild         :8081  (SMTP notifications from router)
 #   backend        :8082  (ingestion API; router uploads here)
 #   watchdog               (detects cold boot -> GTPR trigger -> phoenix -> bootstart)
+#   email is handled by Cloudflare Worker (detectic.24hwww.workers.dev/email)
 #
 # Each service is detached with setsid so it survives the launching shell.
 set -u
@@ -21,7 +21,6 @@ start() {
 }
 
 start package_server run_package_server.sh
-start emaild run_emaild.sh
 start backend run_backend.sh
 start watchdog run_watchdog.sh
 

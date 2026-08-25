@@ -3,7 +3,7 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-for name in package_server emaild backend watchdog; do
+for name in package_server backend watchdog; do
     pidf="${HERE}/.${name}.pid"
     if [ -f "$pidf" ]; then
         pid="$(cat "$pidf" 2>/dev/null)"

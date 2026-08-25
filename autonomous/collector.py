@@ -65,6 +65,14 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from identity import (
+    AssociationState,
+    DeviceIdentityEngine,
+    EntityType,
+    Observation,
+)
+from identity.repository import JsonFileRepositories
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -132,6 +140,7 @@ class Config:
     smtp_tls: str
     email_enabled: bool
     log_path: str
+    identity_path: str = ""
 
 
 def load_config() -> Config:
@@ -162,6 +171,13 @@ def load_config() -> Config:
     email_enabled = env_int("AUTONOMOUS_EMAIL_ENABLED", 1 if smtp_host and smtp_to else 0)
     log_path = env("AUTONOMOUS_LOG", str(here / "logs" / "collector.log"))
 
+    # Identity/fingerprint state file (cross-run temporal correlation).
+    # Co-located with the SQLite DB when present, else under data/.
+    if db and db != ":memory:":
+        identity_path = str(Path(db).parent / "identity_state.json")
+    else:
+        identity_path = str(here / "data" / "identity_state.json")
+
     if not secret_hex:
         secret = b"detectic-autonomous-dev-secret"
     else:
@@ -176,6 +192,7 @@ def load_config() -> Config:
         smtp_host=smtp_host, smtp_port=smtp_port, smtp_user=smtp_user,
         smtp_password=smtp_password, smtp_from=smtp_from, smtp_to=smtp_to,
         smtp_tls=smtp_tls, email_enabled=bool(email_enabled), log_path=log_path,
+        identity_path=identity_path,
     )
 
 
@@ -234,6 +251,7 @@ CREATE TABLE IF NOT EXISTS device_observations (
     tx_rate_kbps      INTEGER,
     rx_rate_kbps      INTEGER,
     status            TEXT,
+    identity_json     TEXT,
     FOREIGN KEY(capture_id) REFERENCES captures(capture_id)
 );
 CREATE INDEX IF NOT EXISTS idx_devobs_capture ON device_observations(capture_id);
@@ -341,28 +359,40 @@ class Store:
 
     def insert_devices(self, capture_id: str, devices: List[Dict[str, Any]]) -> None:
         for d in devices:
+            id_json = json.dumps(d.get("identity")) if d.get("identity") is not None else None
             self.conn.execute(
                 "INSERT OR IGNORE INTO device_observations "
                 "(capture_id, pseudonym, hostname, band, signal_strength, signal_level, "
-                " noise, operating_standard, tx_rate_kbps, rx_rate_kbps, status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " noise, operating_standard, tx_rate_kbps, rx_rate_kbps, status, "
+                " identity_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (capture_id, d.get("pseudonym"), d.get("hostname"), d.get("band"),
                  d.get("signal_strength"), d.get("signal_level"), d.get("noise"),
                  d.get("operating_standard"), d.get("tx_rate_kbps"),
-                 d.get("rx_rate_kbps"), d.get("status")),
+                 d.get("rx_rate_kbps"), d.get("status"), id_json),
             )
         self.conn.commit()
 
     def devices_for(self, capture_id: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT pseudonym, hostname, band, signal_strength, signal_level, noise, "
-            "       operating_standard, tx_rate_kbps, rx_rate_kbps, status "
+            "       operating_standard, tx_rate_kbps, rx_rate_kbps, status, identity_json "
             "FROM device_observations WHERE capture_id=? ORDER BY id",
             (capture_id,),
         ).fetchall()
         cols = ["pseudonym", "hostname", "band", "signal_strength", "signal_level",
-                "noise", "operating_standard", "tx_rate_kbps", "rx_rate_kbps", "status"]
-        return [dict(zip(cols, r)) for r in rows]
+                "noise", "operating_standard", "tx_rate_kbps", "rx_rate_kbps",
+                "status", "identity_json"]
+        out = []
+        for r in rows:
+            d = dict(zip(cols, r))
+            if d.get("identity_json"):
+                try:
+                    d["identity"] = json.loads(d["identity_json"])
+                except (ValueError, TypeError):
+                    d["identity"] = None
+            out.append(d)
+        return out
 
     # ---- deliveries ----
     def next_attempt_number(self, delivery_id: str) -> int:
@@ -607,11 +637,24 @@ KNOWN_RADIO_BANDS = {
 }
 
 
-def derive_band(standard: Optional[str], radio_mac: Optional[str]) -> str:
+def _ssid_band_heuristic(ssid: str) -> str:
+    """Fallback band guess from SSID name. Only use when radio data is unavailable."""
+    s = ssid.lower().rstrip()
+    if s.endswith("_5g") or s.endswith("-5g") or s.endswith(" 5g"):
+        return "5GHz"
+    if s.endswith("_2.4g") or s.endswith("-2.4g"):
+        return "2.4GHz"
+    return ""
+
+
+def derive_band(standard: Optional[str], radio_mac: Optional[str],
+                radio_band_map: Optional[Dict[str, str]] = None) -> str:
     if radio_mac:
         mac_lower = radio_mac.lower()
         if mac_lower in KNOWN_RADIO_BANDS:
             return KNOWN_RADIO_BANDS[mac_lower]
+        if radio_band_map and mac_lower in radio_band_map:
+            return radio_band_map[mac_lower]
     if standard == "ac":
         return "5GHz"
     if standard in ("n", "ax", "b", "g"):
@@ -632,6 +675,8 @@ def normalize_devices(raw_devices: List[Dict], secret: bytes) -> List[Dict[str, 
     """Pseudonymize raw ASSOCDEV entries. Raw MAC is never persisted."""
     out = []
     for d in raw_devices:
+        if d.get("_meta"):
+            continue  # skip metadata entries
         mac = str(d.get("MACAddress") or "").strip()
         radio_mac = str(d.get("X_TP_RadioMac") or "").strip()
         identity = mac or str(d.get("X_TP_IPAddress") or "") or \
@@ -649,13 +694,76 @@ def normalize_devices(raw_devices: List[Dict], secret: bytes) -> List[Dict[str, 
             "tx_rate_kbps": to_int(d.get("lastDataDownlinkRate")),
             "rx_rate_kbps": to_int(d.get("lastDataUplinkRate")),
             "status": "active" if str(d.get("active") or "0") == "1" else "inactive",
+            "source": d.get("source", "associated"),
+            "bssid_pseudonym": pseudonymize(secret, str(d.get("X_TP_BssMac") or "").strip() or "no-bssid"),
         })
     return out
 
 
+def enrich_identity(devices: List[Dict[str, Any]], raw_devices: List[Dict],
+                     secret: bytes, sensor_id: str, identity_path: str) -> List[Dict[str, Any]]:
+    """Attach a privacy-safe identity dict to each device (no raw MAC).
+
+    Uses the DeviceIdentityEngine. Cross-run temporal correlation is persisted
+    to `identity_path`. Failures never break the observation pipeline.
+    """
+    try:
+        repos = JsonFileRepositories(identity_path)
+        engine = DeviceIdentityEngine(sensor_id=sensor_id, repos=repos)
+        now = int(time.time())
+        # Map pseudonym -> raw entry (raw may contain the real MAC).
+        pseudo_to_raw: Dict[str, Dict] = {}
+        for raw in raw_devices:
+            if raw.get("_meta"):
+                continue
+            key = str(raw.get("MACAddress") or "").strip() or \
+                str(raw.get("X_TP_IPAddress") or "") or \
+                str(raw.get("X_TP_HostName") or "") or "unknown"
+            pseudo_to_raw.setdefault(pseudonymize(secret, key), raw)
+        for d in devices:
+            if d.get("_meta"):
+                continue
+            raw = pseudo_to_raw.get(d["pseudonym"])
+            if not raw:
+                continue
+            obs = Observation(
+                mac=str(raw.get("MACAddress") or "").strip(),
+                hostname=str(raw.get("X_TP_HostName") or "").strip() or None,
+                ssid=None,
+                bssid=str(raw.get("X_TP_BssMac") or "").strip() or None,
+                band=d.get("band"),
+                channel=None,
+                rssi=d.get("signal_strength"),
+                protocol=d.get("operating_standard"),
+                associated=(d.get("status") == "active"),
+                timestamp=now,
+            )
+            ident = engine.identify(obs, persist=True)
+            d["identity"] = ident.to_dict()
+            # Attach AP (BSSID) fingerprint when available.
+            if d.get("bssid_pseudonym") and d["bssid_pseudonym"] != pseudonymize(secret, "no-bssid"):
+                network = engine.identify_network(
+                    bssid=str(raw.get("X_TP_BssMac") or "").strip(),
+                    ssid=None, sensor_id="", timestamp=now,
+                )
+                d["ap_identity"] = network.get("bssid_manufacturer")
+    except Exception:
+        # Identity is best-effort; never fail the capture because of it.
+        pass
+    return devices
+
+
 def payload_hash(devices: List[Dict[str, Any]]) -> str:
-    """Deterministic hash over the normalized device list."""
-    compact = json.dumps(devices, sort_keys=True, separators=(",", ":"))
+    """Deterministic hash over the normalized device list.
+
+    Excludes the evolving identity enrichment so that cross-run temporal drift
+    (observation counts, history) never defeats duplicate-content detection.
+    """
+    stable = [
+        {k: v for k, v in d.items() if k not in ("identity", "ap_identity")}
+        for d in devices
+    ]
+    compact = json.dumps(stable, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(compact.encode()).hexdigest()[:16]
 
 
@@ -693,6 +801,36 @@ def live_capture(cfg: Config, started_at: int) -> Tuple[bool, List[Dict], int, i
 REQUEST_TIMEOUT = 15  # seconds; GtprClient has no timeout, so enforce one
 
 
+def _gl_json(client, oid: str) -> Optional[Dict]:
+    """Safe gl() call, returns parsed JSON or None."""
+    try:
+        with redirect_stdout(io.StringIO()):
+            raw = client.gl(oid)
+        parsed = json.loads(raw)
+        if parsed.get("success") is False:
+            return None
+        data = parsed.get("data", [])
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = []
+        return data
+    except Exception:
+        return None
+
+
+def _extract_list(data, *keys) -> List[Dict]:
+    """Extract list from nested GTPR response."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in keys:
+            if k in data and isinstance(data[k], list):
+                return data[k]
+    return []
+
+
 def _live_capture_once(cfg: Config, gtpr_cls, attempt: int) -> Tuple[bool, List[Dict], int, int, str]:
     client = gtpr_cls(cfg.url, cfg.user, cfg.password, cfg.dialect)
     # Enforce a bounded request timeout on every HTTP call to the router.
@@ -711,34 +849,69 @@ def _live_capture_once(cfg: Config, gtpr_cls, attempt: int) -> Tuple[bool, List[
     except Exception as e:
         return False, [], 0, 0, f"auth_failed(attempt {attempt}):{type(e).__name__}:{e}"
 
-    try:
-        t1 = time.monotonic()
-        with redirect_stdout(io.StringIO()):
-            raw = client.gl("DEV2_WIFI_APDEV_ASSOCDEV")
-        api_ms = int((time.monotonic() - t1) * 1000)
-    except Exception as e:
-        return False, [], auth_ms, 0, f"gl_failed(attempt {attempt}):{type(e).__name__}:{e}"
+    # --- Primary: associated devices ---
+    assoc_data = _gl_json(client, "DEV2_WIFI_APDEV_ASSOCDEV")
+    if assoc_data is None:
+        return False, [], auth_ms, 0, "assocdev_failed"
 
-    try:
-        parsed = json.loads(raw)
-    except Exception as e:
-        return False, [], auth_ms, api_ms, f"parse_failed:{type(e).__name__}"
-    if parsed.get("success") is False:
-        return False, [], auth_ms, api_ms, f"errorcode={parsed.get('errorcode')}"
-    data = parsed.get("data", [])
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except Exception:
-            data = []
-    if isinstance(data, dict):
-        for k in ("ASSOCDEV", "devices", "list"):
-            if k in data and isinstance(data[k], list):
-                data = data[k]
-                break
-        else:
-            data = []
-    return True, data, auth_ms, api_ms, str(len(data))
+    assoc_list = _extract_list(assoc_data, "ASSOCDEV", "devices", "list")
+    devices = normalize_devices(assoc_list, cfg.secret)
+    for d in devices:
+        d["source"] = "associated"
+
+    # --- Best-effort: unassociated stations (may return error 9003) ---
+    unassoc_data = _gl_json(client, "DEV2_WIFI_DE_UNASSOCSTA")
+    unassoc_list = _extract_list(unassoc_data, "UNASSOCSTA", "devices", "list") if unassoc_data else []
+    if unassoc_list:
+        unassoc_devs = normalize_devices(unassoc_list, cfg.secret)
+        for d in unassoc_devs:
+            d["source"] = "unassociated"
+            # avoid duplicates with associated
+            if not any(x["pseudonym"] == d["pseudonym"] for x in devices):
+                devices.append(d)
+
+    # --- Best-effort: nearby APs / radio info ---
+    # First fetch radio config to build a radio→band lookup map.
+    radio_data = _gl_json(client, "DEV2_WIFI_RADIO")
+    radio_list = _extract_list(radio_data, "RADIO", "list") if radio_data else []
+    radio_band_map: Dict[str, str] = {}
+    for r in radio_list:
+        r_mac = (r.get("X_TP_RadioMac") or r.get("RadioMac") or "").lower()
+        r_band = r.get("X_TP_Band") or r.get("Band") or ""
+        if r_mac and r_band:
+            radio_band_map[r_mac] = r_band
+
+    nearby_aps = []
+    ap_data = _gl_json(client, "DEV2_WIFI_APDEV")
+    ap_list = _extract_list(ap_data, "APDEV", "list") if ap_data else []
+    for ap in ap_list:
+        ssid = ap.get("X_TP_SSID") or ap.get("SSID") or ""
+        radio_mac = ap.get("X_TP_RadioMac") or ap.get("RadioMac") or ""
+        band = derive_band(ap.get("operatingStandard"), radio_mac, radio_band_map)
+        if ssid:
+            nearby_aps.append({"ssid": ssid, "band": band})
+
+    ssid_data = _gl_json(client, "DEV2_WIFI_SSID")
+    ssid_list = _extract_list(ssid_data, "SSID", "list") if ssid_data else []
+    for s in ssid_list:
+        ssid = s.get("X_TP_SSID") or s.get("SSID") or ""
+        radio_mac = s.get("X_TP_RadioMac") or ""
+        band = derive_band(s.get("operatingStandard"), radio_mac, radio_band_map)
+        if band == "unknown":
+            band = _ssid_band_heuristic(ssid) or band
+        if ssid and not any(x["ssid"] == ssid for x in nearby_aps):
+            nearby_aps.append({"ssid": ssid, "band": band})
+
+    # Store extra data separately (will be returned as metadata)
+    extra = {"nearby_aps": nearby_aps, "radios": radio_list}
+    devices.append({"_extra": extra, "_meta": True})
+
+    # Attach privacy-safe identity / fingerprint to each connected device.
+    raw_all = list(assoc_list) + list(unassoc_list)
+    enrich_identity(devices, raw_all, cfg.secret, cfg.sensor_id, cfg.identity_path)
+
+    api_ms = int((time.monotonic() - t0) * 1000) - auth_ms
+    return True, devices, auth_ms, api_ms, str(len(assoc_list))
 
 
 # ---------------------------------------------------------------------------
@@ -761,8 +934,92 @@ def rate_str(kbps: Optional[int]) -> str:
     return f"{kbps} Kbps"
 
 
-def build_report(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]]) -> Tuple[str, str, str]:
-    """Build (text, html) report. Sanitized: pseudonyms only, no MACs."""
+def _signal_quality(ss: Optional[int], level: Optional[int]) -> str:
+    """Human-readable signal quality in Spanish."""
+    if level is not None:
+        labels = {0: "Sin señal", 1: "Débil", 2: "Regular", 3: "Buena", 4: "Excelente"}
+        return labels.get(level, "Desconocido")
+    if ss is not None and ss > 0:
+        if ss >= 100:
+            return "Excelente"
+        if ss >= 80:
+            return "Buena"
+        if ss >= 60:
+            return "Regular"
+        if ss >= 40:
+            return "Débil"
+        return "Muy débil"
+    return "N/D"
+
+
+def _signal_bar(level: Optional[int]) -> str:
+    """ASCII signal bar."""
+    if level is None:
+        return "[-----]"
+    bars = ["[-----]", "[*----]", "[**---]", "[***--]", "[****-]", "[*****]"]
+    return bars[min(level, 5)]
+
+
+def _signal_emoji(lvl: Optional[int]) -> str:
+    """Emoji signal bar (no CSS colors needed)."""
+    if lvl is None:
+        lvl = 0
+    lvl = max(0, min(lvl, 4))
+    return "\U0001f7e2" * lvl + "\u26aa" * (4 - lvl)
+
+
+def _distance_hint(ss: Optional[int]) -> str:
+    """Rough proximity hint (not exact distance)."""
+    if ss is None or ss <= 0:
+        return ""
+    if ss >= 100:
+        return "muy cerca"
+    if ss >= 80:
+        return "cerca"
+    if ss >= 60:
+        return "a cierta distancia"
+    if ss >= 40:
+        return "lejos"
+    return "muy lejos"
+
+
+def _identity_desc(idn: Dict[str, Any]) -> str:
+    """Compact privacy-safe identity description for reports/email."""
+    if not idn:
+        return ""
+    parts = []
+    if idn.get("manufacturer"):
+        parts.append(str(idn["manufacturer"]))
+    if idn.get("brand") and idn.get("brand") != idn.get("manufacturer"):
+        parts.append(str(idn["brand"]))
+    if idn.get("model_guess"):
+        parts.append(f"{idn['model_guess']}")
+    dev_class = (idn.get("device_class") or "UNKNOWN").replace("_", " ").title()
+    if dev_class and dev_class.upper() not in ("Unknown", "Generic"):
+        parts.append(f"({dev_class})")
+    label = idn.get("confidence_label") or "unknown"
+    word = idn.get("confidence_word") or "Unknown"
+    if parts:
+        return f"{' '.join(parts)} — {word} ({label})"
+    # Fallback: only class + confidence
+    if dev_class and dev_class.upper() not in ("Unknown", "Generic"):
+        return f"{dev_class} — {word} ({label})"
+    return f"Dispositivo desconocido — {word} ({label})"
+
+
+def _identity_html(idn: Dict[str, Any]) -> str:
+    """HTML identity line for the connected-device cards."""
+    if not idn:
+        return ""
+    desc = _identity_desc(idn)
+    if not desc:
+        return ""
+    return f"Identidad: {desc}<br>"
+
+
+def build_report(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]],
+                 extra: Optional[Dict[str, Any]] = None) -> Tuple[str, str, str]:
+    """Build (text, html) report in Spanish. Sanitized: pseudonyms only, no MACs."""
     report_id = (
         f"detectic-ex520-"
         f"{datetime.fromtimestamp(cap['scheduled_at'], TZ).strftime('%Y%m%dT%H%M%S')}"
@@ -773,81 +1030,240 @@ def build_report(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]]
     completed = fmt_ts(cap["completed_at"] or int(time.time()))
     api_ms = cap["api_latency_ms"]
     auth_ms = cap["auth_latency_ms"]
+    active = [d for d in devices if d["status"] == "active"]
+    inactive = [d for d in devices if d["status"] != "active"]
 
+    # Derive observed bands/protocols from actual device data
+    observed_bands = sorted({d["band"] for d in devices if d.get("band") and d["band"] != "unknown"})
+    observed_stds = sorted({d["operating_standard"] for d in devices if d.get("operating_standard")})
+
+    # Extract nearby APs from extra metadata
+    nearby_aps = (extra or {}).get("nearby_aps", [])
+    # Filter out our own APs (same SSID seen on different bands is still us)
+    own_ssid = cfg.sensor_id.split("-")[-1] if "-" in cfg.sensor_id else ""
+
+    # --- Plain text version ---
     lines = [
         "=" * 56,
-        "  DETECTIC EX520 AUTONOMOUS OBSERVATION",
+        "  DETECTIC — Informe de Observación Autónoma",
+        "  TP-Link EX520 | Sensor Wi-Fi",
         "=" * 56,
-        f"Sensor:           {cfg.sensor_id}",
-        f"Source:           TP-Link EX520 (GTPR/GDPR IPv6, read-only)",
-        f"Report ID:        {report_id}",
-        f"Capture ID:       {cap['capture_id']}",
         "",
-        f"Scheduled time:   {scheduled}",
-        f"Capture started:  {started}",
-        f"Capture finished: {completed}",
-        f"Auth latency:     {auth_ms} ms",
-        f"API latency:      {api_ms} ms",
-        f"Capture status:   {cap['status']}",
-        f"Devices observed: {cap['device_count']}",
-        f"Active devices:   {cap['active_device_count']}",
+        f"Sensor:            {cfg.sensor_id}",
+        f"Dispositivo:       TP-Link EX520V (solo lectura)",
+        f"ID del informe:    {report_id}",
         "",
-        "--- Devices (pseudonymized) ---",
+        f"Programado:        {scheduled}",
+        f"Inicio captura:    {started}",
+        f"Fin captura:       {completed}",
+        f"Estado:            {cap['status']}",
+        f"Dispositivos:      {cap['device_count']} total ({cap['active_device_count']} conectados)",
+        f"Latencia auth:     {auth_ms} ms",
+        f"Latencia API:      {api_ms} ms",
+        "",
     ]
-    for d in devices[:MAX_REPORT_DEVICES]:
-        ss = d["signal_strength"] if d["signal_strength"] and d["signal_strength"] > 0 else "N/A"
-        lines.append(
-            f"  {d['pseudonym'][:16]:<18} {str(d['hostname'] or '-'):<18} "
-            f"{str(d['band'] or '?'):<6} signal={str(ss):<5} "
-            f"level={str(d['signal_level'] or '-'):<3} {str(d['operating_standard'] or '?'):<4} "
-            f"TX={rate_str(d['tx_rate_kbps']):<10} RX={rate_str(d['rx_rate_kbps']):<10} {d['status']}"
-        )
+
+    if active:
+        lines.append(f"--- Dispositivos Conectados ({len(active)}) ---")
+        lines.append("  Estos dispositivos están conectados al router:")
+        lines.append("")
+        for d in active[:MAX_REPORT_DEVICES]:
+            ss = d["signal_strength"] if d["signal_strength"] and d["signal_strength"] > 0 else None
+            lvl = d["signal_level"]
+            quality = _signal_quality(ss, lvl)
+            bar = _signal_bar(lvl)
+            prox = _distance_hint(ss)
+            hostname = d["hostname"] or "sin nombre"
+            band = d["band"] or "?"
+            std = d["operating_standard"] or "?"
+            tx = rate_str(d["tx_rate_kbps"])
+            rx = rate_str(d["rx_rate_kbps"])
+            lines.append(f"  {hostname}")
+            lines.append(f"    Señal:    {bar} {quality} (nivel {lvl or '?'}/4)")
+            lines.append(f"    Red:      {band} | {std}")
+            lines.append(f"    Velocidad: ↓{tx}  ↑{rx}")
+            idn = d.get("identity")
+            if idn:
+                idline = _identity_desc(idn)
+                if idline:
+                    lines.append(f"    Identidad: {idline}")
+            if prox:
+                lines.append(f"    Distancia: ~{prox}")
+            lines.append("")
+
+    if inactive:
+        lines.append(f"--- Dispositivos Fuera de Rango ({len(inactive)}) ---")
+        lines.append("  Estos dispositivos fueron vistos antes pero ya no están conectados:")
+        lines.append("")
+        for d in inactive[:MAX_REPORT_DEVICES]:
+            hostname = d["hostname"] or "sin nombre"
+            band = d["band"] or "?"
+            lines.append(f"  {hostname} ({band})")
+        lines.append("")
+
+    if not devices:
+        lines.append("--- Sin dispositivos detectados ---")
+        lines.append("  No se encontraron dispositivos Wi-Fi en esta captura.")
+        lines.append("")
+
+    lines += [
+        "--- Leyenda de Señal ---",
+        "  [*****] Excelente  (nivel 4) — dispositivo muy cerca del sensor",
+        "  [****-] Buena      (nivel 3) — dispositivo cerca",
+        "  [***--] Regular    (nivel 2) — señal aceptable",
+        "  [*----] Débil      (nivel 1) — señal débil, puede perderse",
+        "  [-----] Sin señal  (nivel 0) — sin conexión",
+        "",
+        "  Nota: La 'distancia' es una estimación basada en la señal.",
+        "  La señal varía según paredes, muebles y obstáculos.",
+        "",
+        "--- Redes Observadas ---",
+        f"  Bandas detectadas:  {', '.join(observed_bands) if observed_bands else 'N/D'}",
+        f"  Protocolos:         {', '.join(observed_stds) if observed_stds else 'N/D'}",
+        f"  Sensor:             TP-Link EX520V — solo lectura, sin modificaciones",
+    ]
+
+    if nearby_aps:
+        lines.append("")
+        lines.append(f"--- Redes Wi-Fi Detectadas ({len(nearby_aps)}) ---")
+        lines.append("  Redes visibles desde el sensor:")
+        lines.append("")
+        for ap in nearby_aps[:20]:
+            lines.append(f"  {ap['ssid']:<30} {ap['band']}")
+    else:
+        lines.append("")
+        lines.append("--- Redes Wi-Fi Detectadas ---")
+        lines.append("  No se pudieron obtener redes cercanas (firmware limitado).")
+
     lines += [
         "",
-        "RF fields available from EX520:",
-        "  signalStrength (0-128), signalStrengthLevel (0-4), noise,",
-        "  operatingStandard, lastDataDownlinkRate (TX), lastDataUplinkRate (RX)",
-        "",
-        "Privacy: all device identifiers are HMAC-SHA256 pseudonyms.",
-        "No raw MAC addresses or credentials appear in this report.",
-        "Router modifications: NONE (read-only API).",
+        "--- Privacidad ---",
+        "  Todos los identificadores de dispositivos son pseudónimos HMAC-SHA256.",
+        "  No se envían direcciones MAC ni credenciales.",
+        "  El router no fue modificado (API de solo lectura).",
     ]
     text = "\n".join(lines)
 
-    rows = ""
-    for d in devices[:MAX_REPORT_DEVICES]:
-        ss = d["signal_strength"] if d["signal_strength"] and d["signal_strength"] > 0 else "-"
-        rows += (
-            f"<tr><td><code>{d['pseudonym'][:16]}</code></td>"
-            f"<td>{d['hostname'] or '-'}</td>"
-            f"<td>{d['band'] or '?'}</td>"
-            f"<td>{ss}</td><td>{d['signal_level'] if d['signal_level'] is not None else '-'}</td>"
-            f"<td>{d['operating_standard'] or '?'}</td>"
-            f"<td>{rate_str(d['tx_rate_kbps'])}</td><td>{rate_str(d['rx_rate_kbps'])}</td>"
-            f"<td>{d['status']}</td></tr>"
+    # --- HTML version -------------------------------------------------------
+    # Responsive email design:
+    #   * no tables (block layout adapts to any width)
+    #   * no colors (default text only; emoji provide the visual cues)
+    #   * inline styles only (email clients strip <style> blocks)
+    #   * viewport meta + max-width container for phones through desktops
+
+    def card(title: str, rows: list) -> str:
+        body = "<br>".join(rows)
+        return (
+            "<div style=\"border-top:1px solid currentColor;padding:12px 0;"
+            "word-break:break-word;overflow-wrap:anywhere;\">"
+            "<div style=\"font-size:15px;line-height:1.5;\"><b>" + title + "</b></div>"
+            "<div style=\"font-size:14px;line-height:1.7;\">" + body + "</div>"
+            "</div>"
         )
 
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
-<h2>DETECTIC EX520 Autonomous Observation</h2>
-<table cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif">
-<tr><td><b>Sensor</b></td><td>{cfg.sensor_id}</td></tr>
-<tr><td><b>Source</b></td><td>TP-Link EX520 (GTPR/GDPR IPv6, read-only)</td></tr>
-<tr><td><b>Report ID</b></td><td>{report_id}</td></tr>
-<tr><td><b>Capture ID</b></td><td>{cap['capture_id']}</td></tr>
-<tr><td><b>Scheduled</b></td><td>{scheduled}</td></tr>
-<tr><td><b>Capture started</b></td><td>{started}</td></tr>
-<tr><td><b>Capture finished</b></td><td>{completed}</td></tr>
-<tr><td><b>Auth latency</b></td><td>{auth_ms} ms</td></tr>
-<tr><td><b>API latency</b></td><td>{api_ms} ms</td></tr>
-<tr><td><b>Capture status</b></td><td>{cap['status']}</td></tr>
-<tr><td><b>Devices</b></td><td>{cap['device_count']} ({cap['active_device_count']} active)</td></tr>
-</table>
-<h3>Devices (pseudonymized)</h3>
-<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif">
-<tr><th>Pseudonym</th><th>Hostname</th><th>Band</th><th>Signal</th><th>Level</th><th>Std</th><th>TX</th><th>RX</th><th>Status</th></tr>
-{rows}
-</table>
-<p style="color:#666;font-size:12px">Privacy: HMAC-SHA256 pseudonyms only. No raw MACs. Router read-only.</p>
+    connected_html = ""
+    for d in active[:MAX_REPORT_DEVICES]:
+        ss = d["signal_strength"] if d["signal_strength"] and d["signal_strength"] > 0 else None
+        lvl = d["signal_level"]
+        quality = _signal_quality(ss, lvl)
+        prox = _distance_hint(ss)
+        hostname = d["hostname"] or "sin nombre"
+        rows = [
+            f"\U0001f4f6 {_signal_emoji(lvl)} {quality} (nivel {lvl if lvl is not None else '?'}/4)",
+            f"\U0001f4e1 {d['band'] or '?'} \u00b7 {d['operating_standard'] or '?'}",
+            f"\u2b07\ufe0f {rate_str(d['tx_rate_kbps'])} \u00a0 \u2b06\ufe0f {rate_str(d['rx_rate_kbps'])}",
+        ]
+        id_html = _identity_html(d.get("identity"))
+        if id_html:
+            rows.append("\U0001f511 " + id_html.strip())
+        if prox:
+            rows.append(f"\U0001f4cd ~{prox}")
+        connected_html += card(hostname, rows)
+
+    out_of_range_html = ""
+    for d in inactive[:MAX_REPORT_DEVICES]:
+        hostname = d["hostname"] or "sin nombre"
+        out_of_range_html += card(
+            hostname,
+            [f"\U0001f4e1 {d['band'] or '?'} \u00b7 \U0001f4a4 desconectado"],
+        )
+
+    bands_str = ", ".join(observed_bands) if observed_bands else "N/D"
+    stds_str = ", ".join(observed_stds) if observed_stds else "N/D"
+
+    nearby_html = ""
+    for ap in nearby_aps[:20]:
+        nearby_html += card(ap["ssid"], [f"\U0001f4e1 {ap['band']}"])
+    if not nearby_html:
+        nearby_html = (
+            "<p style=\"margin:0;font-size:14px;\">No se pudieron obtener redes cercanas"
+            " (firmware limitado).</p>"
+        )
+
+    legend_items = [
+        ("\U0001f7e2\U0001f7e2\U0001f7e2\U0001f7e2", "Excelente", "nivel 4 \u2014 dispositivo muy cerca del sensor"),
+        ("\U0001f7e2\U0001f7e2\U0001f7e2\u26aa", "Buena", "nivel 3 \u2014 dispositivo cerca"),
+        ("\U0001f7e2\U0001f7e2\u26aa\u26aa", "Regular", "nivel 2 \u2014 se\u00f1al aceptable"),
+        ("\U0001f7e2\u26aa\u26aa\u26aa", "D\u00e9bil", "nivel 1 \u2014 puede perderse"),
+        ("\u26aa\u26aa\u26aa\u26aa", "Sin se\u00f1al", "nivel 0 \u2014 sin conexi\u00f3n estable"),
+    ]
+    legend_html = "".join(
+        "<div style=\"padding:6px 0;font-size:14px;line-height:1.6;\">"
+        f"{dots} <b>{name}</b> ({desc})</div>"
+        for dots, name, desc in legend_items
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DETECTIC — Informe de Observación Autónoma</title></head>
+<body style="margin:0;padding:0;">
+<div style="max-width:600px;width:100%;margin:0 auto;padding:24px 16px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  line-height:1.5;">
+
+  <h1 style="margin:0 0 4px 0;font-size:19px;">🛰️ DETECTIC — Informe de Observación Autónoma</h1>
+  <p style="margin:0 0 4px 0;font-size:14px;">Sensor: <b>{cfg.sensor_id}</b> · TP-Link EX520V (solo lectura)</p>
+  <p style="margin:0 0 20px 0;font-size:13px;">🕐 Programado: {scheduled}<br>
+     Captura: {started} → {completed}</p>
+
+  <div style="border:1px solid currentColor;padding:14px 16px;margin-bottom:20px;
+    font-size:14px;line-height:1.7;">
+    📊 <b>Resumen:</b> {cap['device_count']} dispositivos detectados,<br>
+    ✅ <b>{cap['active_device_count']} conectados</b> ·
+    😴 {len(inactive)} fuera de rango<br>
+    ⚡ Estado: {cap['status']} · Auth: {auth_ms} ms · API: {api_ms} ms
+  </div>
+
+  <h2 style="margin:0 0 8px 0;font-size:16px;">📱 Dispositivos Conectados</h2>
+  {connected_html if connected_html else '<p style="font-size:14px;">No hay dispositivos conectados.</p>'}
+
+  <h2 style="margin:24px 0 8px 0;font-size:16px;">😴 Dispositivos Fuera de Rango</h2>
+  {out_of_range_html if out_of_range_html else '<p style="font-size:14px;">No hay dispositivos fuera de rango.</p>'}
+
+  <h2 style="margin:24px 0 8px 0;font-size:16px;">📶 Leyenda de Señal</h2>
+  {legend_html}
+  <p style="margin:8px 0 0 0;font-size:13px;line-height:1.6;">
+    <b>Nota:</b> La distancia es una estimación basada en la señal RF.
+    La señal varía según paredes, muebles, personas y obstáculos.</p>
+
+  <h2 style="margin:24px 0 8px 0;font-size:16px;">🌐 Redes Wi-Fi Detectadas</h2>
+  {nearby_html}
+
+  <h2 style="margin:24px 0 8px 0;font-size:16px;">🖥️ Redes Observadas</h2>
+  <div style="font-size:14px;line-height:1.8;">
+    📡 Bandas detectadas: {bands_str}<br>
+    📟 Protocolos: {stds_str}<br>
+    🔌 Sensor: TP-Link EX520V — solo lectura, sin modificaciones
+  </div>
+
+  <div style="margin-top:28px;border-top:1px solid currentColor;padding-top:10px;
+    font-size:12px;line-height:1.6;">
+    🔒 Privacidad: identificadores pseudónimos HMAC-SHA256.
+    Sin direcciones MAC. Router sin modificaciones.<br>
+    ID: {report_id}
+  </div>
+</div>
 </body></html>"""
     return text, html, report_id
 
@@ -906,6 +1322,95 @@ def deliver_report(cfg: Config, store: Store, cap: Dict[str, Any],
     if final_status != DELIVERED:
         store.update_capture(cap["capture_id"], status=DELIVERY_FAILED)
     return final_status, attempt
+
+
+# ---------------------------------------------------------------------------
+# D1 sync (push capture data to Cloudflare Worker)
+# ---------------------------------------------------------------------------
+
+def _get_d1_sync_url() -> str:
+    """Get D1 sync URL from environment (lazy, after .env is loaded)."""
+    return env("DETECTIC_D1_SYNC_URL", "", "DETECTIC_CALLBACK_BASE")
+
+
+def sync_to_d1(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]],
+               run: Optional[Dict[str, Any]] = None) -> bool:
+    """Push capture + devices to Cloudflare D1 via Worker endpoint.
+
+    Returns True on success, False on failure (never raises).
+    """
+    d1_url = _get_d1_sync_url()
+    if not d1_url:
+        return False
+
+    url = f"{d1_url}/api/v1/captures/sync"
+
+    # Build HMAC signature
+    payload: Dict[str, Any] = {
+        "captures": [{
+            "capture_id": cap["capture_id"],
+            "run_id": cap.get("run_id", ""),
+            "sensor_id": cap["sensor_id"],
+            "scheduled_at": cap["scheduled_at"],
+            "started_at": cap["started_at"],
+            "completed_at": cap.get("completed_at"),
+            "status": cap["status"],
+            "api_latency_ms": cap.get("api_latency_ms"),
+            "auth_latency_ms": cap.get("auth_latency_ms"),
+            "device_count": cap.get("device_count"),
+            "active_device_count": cap.get("active_device_count"),
+            "payload_hash": cap.get("payload_hash"),
+            "created_at": cap.get("created_at", int(time.time())),
+        }],
+        "devices": {
+            cap["capture_id"]: [{
+                "pseudonym": d.get("pseudonym", ""),
+                "hostname": d.get("hostname"),
+                "band": d.get("band"),
+                "signal_strength": d.get("signal_strength"),
+                "signal_level": d.get("signal_level"),
+                "noise": d.get("noise"),
+                "operating_standard": d.get("operating_standard"),
+                "tx_rate_kbps": d.get("tx_rate_kbps"),
+                "rx_rate_kbps": d.get("rx_rate_kbps"),
+                "status": d.get("status"),
+                "bssid_pseudonym": d.get("bssid_pseudonym"),
+                "identity": d.get("identity"),
+            } for d in devices if not d.get("_meta")]
+        },
+    }
+
+    if run:
+        payload["runs"] = [{
+            "run_id": run.get("run_id", ""),
+            "scheduled_at": run.get("scheduled_at", 0),
+            "started_at": run.get("started_at", 0),
+            "completed_at": run.get("completed_at"),
+            "status": run.get("status", ""),
+            "duration_ms": run.get("duration_ms"),
+        }]
+
+    body = json.dumps(payload, separators=(",", ":"))
+    sig = hmac.new(cfg.secret, body.encode(), hashlib.sha256).hexdigest()
+
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url,
+            data=body.encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Detectic-Sensor": cfg.sensor_id,
+                "X-Detectic-Signature": sig,
+                "User-Agent": "detectic-collector/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"D1 sync failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1508,14 @@ def run_job(cfg: Config) -> int:
             store.close()
             return 3
 
-        devices = normalize_devices(raw_devices, cfg.secret)
+        # Extract extra metadata (already normalized by _live_capture_once)
+        extra = {}
+        devices = []
+        for item in raw_devices:
+            if item.get("_meta") and "_extra" in item:
+                extra = item["_extra"]
+            elif not item.get("_meta"):
+                devices.append(item)
         dev_count = len(devices)
         active_count = sum(1 for d in devices if d["status"] == "active")
         ph = payload_hash(devices)
@@ -1019,7 +1531,7 @@ def run_job(cfg: Config) -> int:
                   active=active_count, raw_count=raw_count)
 
         cap = store.get_capture(capture_id)
-        text, html, report_id = build_report(cfg, cap, devices)
+        text, html, report_id = build_report(cfg, cap, devices, extra)
         store.update_capture(capture_id, status=REPORT_GENERATED)
         jlog.emit("REPORT_GENERATED", run_id=run_id, capture_id=capture_id,
                   report_id=report_id, devices=dev_count)
@@ -1033,6 +1545,13 @@ def run_job(cfg: Config) -> int:
         else:
             jlog.emit("EMAIL_DISABLED", run_id=run_id, capture_id=capture_id,
                       reason="no smtp config")
+
+        # Sync to D1 (best-effort, non-blocking)
+        d1_ok = sync_to_d1(cfg, cap, devices, {"run_id": run_id, "scheduled_at": scheduled_at,
+                                                 "started_at": started_at, "completed_at": int(time.time()),
+                                                 "status": "COMPLETE" if exit_code == 0 else "PARTIAL",
+                                                 "duration_ms": int((time.time() - started_at) * 1000)})
+        jlog.emit("D1_SYNC", run_id=run_id, capture_id=capture_id, ok=d1_ok)
 
     # Catch-up: retry other non-delivered captures (idempotent, bounded).
     pending = store.pending_deliveries()
@@ -1065,9 +1584,13 @@ def run_job(cfg: Config) -> int:
 
 def cmd_verify(cfg: Config, n: int = 24, json_out: bool = False) -> int:
     if not cfg.db_path:
+        # No local DB — try D1 via Worker
+        d1_url = _get_d1_sync_url()
+        if d1_url:
+            return cmd_verify_d1(cfg, n, json_out)
         msg = {
             "mode": "stateless",
-            "note": "No persistent SQLite storage; verify is in-memory only for this run.",
+            "note": "No persistent SQLite storage and no D1 sync URL configured.",
         }
         if json_out:
             print(json.dumps(msg))
@@ -1108,6 +1631,56 @@ def cmd_verify(cfg: Config, n: int = 24, json_out: bool = False) -> int:
               f"{email_status:<16} {att:>3}  {failed}{flag}")
     print("=" * 100)
     store.close()
+    return 0
+
+
+def cmd_verify_d1(cfg: Config, n: int = 24, json_out: bool = False) -> int:
+    """Verify via D1 through Cloudflare Worker endpoint."""
+    import urllib.request
+    d1_url = _get_d1_sync_url()
+    url = f"{d1_url}/api/v1/captures/verify?n={n}"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "detectic-collector/1.0",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        print(f"D1 verify failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+    health = data.get("health", {})
+    captures = data.get("captures", [])
+
+    if json_out:
+        print(json.dumps(data, indent=2, default=str))
+        return 0
+
+    print("=" * 100)
+    print("DETECTIC AUTONOMOUS EX520 — D1 VERIFICATION VIEW")
+    print("=" * 100)
+    print(f"D1: {d1_url}")
+    print(f"total_captures={health.get('total_captures', 0)} "
+          f"delivered={health.get('delivered_captures', 0)} "
+          f"failed={health.get('failed_captures', 0)}")
+    last_del = health.get('last_delivered_capture_at')
+    last_succ = health.get('last_successful_capture_at')
+    last_fail = health.get('last_failed_capture_at')
+    print(f"last_successful_capture={fmt_ts(last_succ) if last_succ else '-'}")
+    print(f"last_delivered_capture={fmt_ts(last_del) if last_del else '-'}")
+    print(f"last_failed_capture={fmt_ts(last_fail) if last_fail else '-'}")
+    print()
+    print(f"{'SCHEDULED':<19} {'STATUS':<18} {'CAPTURE':<14} {'DEV':>4} {'ACT':>4} "
+          f"{'API_MS':>7} {'AUTH_MS':>7}")
+    print("-" * 80)
+    for r in captures:
+        sch = fmt_slot(r["scheduled_at"])
+        failed = "FAIL" if r["status"] == CAPTURE_FAILED else ""
+        print(f"{sch:<19} {r['status']:<18} {r['capture_id']:<14} "
+              f"{str(r.get('device_count') or '-'):>4} {str(r.get('active_device_count') or '-'):>4} "
+              f"{str(r.get('api_latency_ms') or '-'):>7} {str(r.get('auth_latency_ms') or '-'):>7}  {failed}")
+    print("=" * 100)
     return 0
 
 

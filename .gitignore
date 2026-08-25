@@ -9,6 +9,7 @@ backend/cf-worker/.wrangler/
 # --- Build artifacts ---
 /dist
 /deploy/package/detectic/detectic
+.wrangler/
 
 # --- Heavy research prototypes ---
 /prototypes
@@ -19,12 +20,17 @@ backend/cf-worker/.wrangler/
 !.env.example
 backend/sensors.json
 deploy/ex520_package/detectic.env
+deploy/ex520_package/detectic.env.*
+!deploy/ex520_package/detectic.env.example
 deploy/ex520_package/*.log
 deploy/ex520_package/.emaild.lock
 deploy/ex520_package/.package_server.lock
 deploy/ex520_package/.watchdog.lock
 deploy/ex520_package/.backend.lock
 deploy/ex520_package/sensor_log.txt
+# Split firmware/binary deployment artifacts (large, regenerable)
+deploy/ex520_package/*.aa
+deploy/ex520_package/*.ab
 
 # --- Databases ---
 *.db
@@ -55,3 +61,6 @@ __pycache__/
 # --- Logs ---
 *.log
 logs/
+
+# Runtime PID files (regenerated, never commit)
+deploy/ex520_package/.*.pid
