@@ -14,6 +14,7 @@ pub mod events;
 pub mod fusion;
 pub mod gtpr;
 pub mod http;
+pub mod led;
 pub mod launcher;
 pub mod logging;
 pub mod model;
