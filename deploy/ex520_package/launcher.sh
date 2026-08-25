@@ -76,10 +76,12 @@ do_start() {
     scount 0
     log "Starting Detectic"
 
-    if [ -f "$ENVF" ]; then
-        # shellcheck disable=SC1090
-        # Export all variables in the env file so they are visible to the
-        # Detectic child process (DETECTIC_PASSWORD, DETECTIC_URL, ...).
+    # Source env: prefer /var/tmp copy (may have newer config), then misc_rw
+    if [ -f "/var/tmp/detectic/detectic.env" ]; then
+        set -a
+        . "/var/tmp/detectic/detectic.env" 2>/dev/null
+        set +a
+    elif [ -f "$ENVF" ]; then
         set -a
         . "$ENVF" 2>/dev/null
         set +a

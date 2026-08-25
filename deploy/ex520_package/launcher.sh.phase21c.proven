@@ -79,8 +79,10 @@ do_start() {
     scount 0
     log "Starting Detectic"
 
-    if [ -f "$ENVF" ]; then
-        # shellcheck disable=SC1090
+    # Source env: prefer /var/tmp copy (may have newer config), then misc_rw
+    if [ -f "/var/tmp/detectic/detectic.env" ]; then
+        . "/var/tmp/detectic/detectic.env" 2>/dev/null
+    elif [ -f "$ENVF" ]; then
         . "$ENVF" 2>/dev/null
     fi
 
