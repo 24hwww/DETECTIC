@@ -169,7 +169,7 @@ def load_config() -> Config:
 
     return Config(
         url=url, user=user, password=password, dialect=dialect,
-        sensor_id=env("AUTONOMOUS_SENSOR_ID", env("DETECTIC_SENSOR_ID", "detectic-ex520-live")),
+        sensor_id=env("AUTONOMOUS_SENSOR_ID", env("DETECTIC_SENSOR_ID", "ex520-001")),
         secret=secret,
         smtp_host=smtp_host, smtp_port=smtp_port, smtp_user=smtp_user,
         smtp_password=smtp_password, smtp_from=smtp_from, smtp_to=smtp_to,

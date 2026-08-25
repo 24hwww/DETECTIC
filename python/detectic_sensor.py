@@ -42,7 +42,7 @@ Usage:
     export DETECTIC_URL='http://[fe80::3e6a:d2ff:fe5f:abc1%enp2s0]'
     export DETECTIC_USER=admin
     export DETECTIC_PASSWORD='<password>'
-    export DETECTIC_SENSOR_ID=home-001
+    export DETECTIC_SENSOR_ID=ex520-001
     export DETECTIC_SECRET='<hex secret for pseudonymization>'
     export DETECTIC_BACKEND_URL='http://localhost:8080'
     export DETECTIC_BACKEND_TOKEN='<sensor secret for HMAC auth>'
@@ -1013,8 +1013,8 @@ def main():
         default=env_or("DETECTIC_DIALECT", Dialect.GDPR_JSON),
     )
     ap.add_argument(
-        "--sensor-id", default=env_or("DETECTIC_SENSOR_ID", "home-001"),
-        help="Sensor identifier (default: home-001)",
+        "--sensor-id", default=env_or("DETECTIC_SENSOR_ID", "ex520-001"),
+        help="Sensor identifier (default: ex520-001)",
     )
     ap.add_argument(
         "--secret", default=env_or("DETECTIC_SECRET"),

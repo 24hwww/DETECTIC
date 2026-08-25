@@ -42,7 +42,7 @@ from urllib.parse import urlparse, parse_qs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SENSORS_FILE = os.path.join(HERE, "sensors.json")
-DEV_SENSORS = {"home-001": "dev-secret-change-me"}
+DEV_SENSORS = {"ex520-001": "dev-secret-change-me"}
 
 # ---------------------------------------------------------------------------
 # Memory-efficient threading server

@@ -284,6 +284,23 @@ mod tests {
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
     }
+
+    #[test]
+    fn hmac_canonical_contract_v1_cross_language() {
+        // Canonical HMAC Contract V1 — must match Python tests/hmac_contract.py
+        // and Cloudflare Worker verifyAuth().
+        // signed = "<timestamp>\n<body>", key = UTF-8 secret
+        let secret = b"detectic-test-secret-v1-not-production";
+        let body = r#"{"sensor_id":"test-sensor-001","devices":[{"pseudonym":"abc"}]}"#;
+        let timestamp = 1700000000i64;
+        let signed = format!("{}\n{}", timestamp, body);
+        let sig = hmac_sha256_hex(secret, signed.as_bytes());
+        // Must match the Python-computed EXPECTED_SIG
+        assert_eq!(
+            sig,
+            "2c6e8db2c1d07111ea8525cb603416f037ce36a3bf234647bbf3f058db5b1be2"
+        );
+    }
 }
 
 #[cfg(test)]

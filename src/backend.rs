@@ -347,7 +347,9 @@ impl BackendTransport for SpoolBackend {
     }
 
     fn name(&self) -> &str {
-        self.inner.name()
+        // SpoolBackend is a spool-first backend that wraps an HTTP transport.
+        // Its identity is "local-spool" (it buffers locally and drains via HTTP).
+        "local-spool"
     }
 
     fn is_connected(&self) -> bool {

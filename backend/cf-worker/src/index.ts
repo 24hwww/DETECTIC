@@ -77,13 +77,32 @@ async function verifyAuth(
   env: Env,
   sensorId: string,
   signature: string,
-  body: string
+  body: string,
+  timestamp?: string | null
 ): Promise<boolean> {
   const sensors = JSON.parse(env.DETECTIC_SENSORS || "{}");
   const secret = sensors[sensorId];
   if (!secret || !signature) return false;
-  const expected = await hmacSha256(secret, new TextEncoder().encode(body));
-  return expected === signature;
+
+  // Canonical HMAC contract V1 (with replay protection):
+  //   signed content = "<timestamp>\n<body>"
+  //   key = UTF-8 bytes of secret string
+  // When X-Detectic-Timestamp is present, verify the timestamped signature
+  // and reject replays outside the ±300s window.
+  if (timestamp) {
+    const tsNum = parseInt(timestamp, 10);
+    if (isNaN(tsNum)) return false;
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - tsNum) > 300) return false; // replay window
+    const signed = new TextEncoder().encode(timestamp + "\n" + body);
+    const expected = await hmacSha256(secret, signed);
+    return expected === signature;
+  }
+
+  // Legacy fallback (no timestamp): sign body only.
+  // Kept temporarily for backward compatibility during migration.
+  const expectedLegacy = await hmacSha256(secret, new TextEncoder().encode(body));
+  return expectedLegacy === signature;
 }
 
 function pseudoHmac(masterSecret: string, identifier: string): string {
@@ -268,13 +287,14 @@ async function handleIngest(
 
   const sensorId = request.headers.get("X-Detectic-Sensor") || "";
   const signature = request.headers.get("X-Detectic-Signature") || "";
+  const timestamp = request.headers.get("X-Detectic-Timestamp");
   const bodyText = await request.text();
 
   if (bodyText.length > 4 * 1024 * 1024) {
     return jsonResponse(400, { error: "body too large" }, origin);
   }
 
-  if (!(await verifyAuth(env, sensorId, signature, bodyText))) {
+  if (!(await verifyAuth(env, sensorId, signature, bodyText, timestamp))) {
     return jsonResponse(401, { error: "unauthorized" }, origin);
   }
 
@@ -440,11 +460,18 @@ async function handleDevices(
   const fs = new Map<string, number>();
   for (const r of fsRows.results as any[]) fs.set(r.pseudonym, r.first_seen);
 
-  const devices = (idRows.results as any[]).map((i: any) => {
+  // Build a unified device list: start from device_identity (enriched),
+  // then add any pseudonyms that exist only in collector_devices (not yet
+  // identified by the identity engine).
+  const seenPseudonyms = new Set<string>();
+  const devices: any[] = [];
+
+  for (const i of idRows.results as any[]) {
+    seenPseudonyms.add(i.pseudonym);
     const l = latest.get(i.pseudonym) || {};
     const f = fp.get(i.pseudonym);
     const n = rn.get(i.pseudonym) || 0;
-    return {
+    devices.push({
       pseudonym: i.pseudonym,
       manufacturer: i.manufacturer,
       brand: i.brand,
@@ -466,8 +493,38 @@ async function handleDevices(
       observations: obs.get(i.pseudonym) || 0,
       fingerprint_model: f?.model ?? null,
       fingerprint_confidence: f?.confidence ?? null,
-    };
-  });
+    });
+  }
+
+  // Add devices from collector_devices that have no device_identity row yet
+  for (const [pseudonym, l] of latest) {
+    if (seenPseudonyms.has(pseudonym)) continue;
+    seenPseudonyms.add(pseudonym);
+    const n = rn.get(pseudonym) || 0;
+    devices.push({
+      pseudonym,
+      manufacturer: null,
+      brand: null,
+      model_guess: null,
+      device_class: "Unknown",
+      mac_type: null,
+      confidence: null,
+      confidence_label: null,
+      bssid_manufacturer: null,
+      last_seen: l.started_at ?? null,
+      first_seen: fs.get(pseudonym) ?? l.started_at ?? null,
+      hostname: l.hostname ?? null,
+      band: l.band ?? null,
+      operating_standard: l.operating_standard ?? null,
+      status: l.status ?? null,
+      bssid_pseudonym: l.bssid_pseudonym ?? null,
+      signal_strength: l.signal_strength ?? null,
+      avg_rssi: n ? Math.round(rs.get(pseudonym)! / n) : null,
+      observations: obs.get(pseudonym) || 0,
+      fingerprint_model: null,
+      fingerprint_confidence: null,
+    });
+  }
 
   return jsonResponse(200, { devices }, origin);
 }
@@ -481,16 +538,21 @@ async function handlePresence(
   const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
   const origin = request.headers.get("Origin") || undefined;
 
+  // Query collector_devices directly (not device_identity) so devices
+  // appear even before the identity engine has enriched them.
   const { results } = await env.DB.prepare(
-    `SELECT i.pseudonym, i.device_class, i.manufacturer, i.mac_type,
+    `SELECT d.pseudonym,
             COUNT(DISTINCT d.capture_id) AS observations,
             MAX(c.started_at) AS last_seen,
-            MIN(c.started_at) AS first_seen
-     FROM device_identity i
-     JOIN collector_devices d ON d.pseudonym = i.pseudonym
+            MIN(c.started_at) AS first_seen,
+            AVG(d.signal_strength) AS avg_signal,
+            MAX(d.band) AS band,
+            MAX(d.hostname) AS hostname,
+            MAX(d.status) AS status
+     FROM collector_devices d
      JOIN collector_captures c ON d.capture_id = c.capture_id
      WHERE c.started_at >= ?
-     GROUP BY i.pseudonym ORDER BY last_seen DESC LIMIT 500`
+     GROUP BY d.pseudonym ORDER BY last_seen DESC LIMIT 500`
   )
     .bind(cutoff)
     .all();
@@ -539,7 +601,7 @@ async function handleStats(
   const dayAgo = now - 86400;
   const { results } = await env.DB.prepare(
     `SELECT
-      (SELECT COUNT(*) FROM device_identity) AS distinct_devices,
+      (SELECT COUNT(DISTINCT pseudonym) FROM collector_devices) AS distinct_devices,
       (SELECT COUNT(*) FROM collector_devices) AS total_detections,
       (SELECT COUNT(*) FROM collector_captures) AS total_snapshots,
       (SELECT COUNT(*) FROM collector_captures WHERE started_at >= ?) AS snapshots_last_hour,
@@ -658,12 +720,13 @@ async function handleCollectorSync(
   const origin = request.headers.get("Origin") || undefined;
   const sensorId = request.headers.get("X-Detectic-Sensor") || "";
   const signature = request.headers.get("X-Detectic-Signature") || "";
+  const timestamp = request.headers.get("X-Detectic-Timestamp");
   const bodyText = await request.text();
 
   if (bodyText.length > 4 * 1024 * 1024) {
     return jsonResponse(400, { error: "body too large" }, origin);
   }
-  if (!(await verifyAuth(env, sensorId, signature, bodyText))) {
+  if (!(await verifyAuth(env, sensorId, signature, bodyText, timestamp))) {
     return jsonResponse(401, { error: "unauthorized" }, origin);
   }
 

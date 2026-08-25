@@ -334,7 +334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or(30);
                 let upload = std::env::var("DETECTIC_UPLOAD_URL").ok();
                 let sensor_id =
-                    std::env::var("DETECTIC_SENSOR_ID").unwrap_or_else(|_| "home-001".into());
+                    std::env::var("DETECTIC_SENSOR_ID").unwrap_or_else(|_| "ex520-001".into());
                 let buffer = std::env::var("DETECTIC_BUFFER")
                     .unwrap_or_else(|_| "/var/run/misc/misc_rw/detectic/spool/detectic_buffer.jsonl".into());
                 let buf_max: u64 = std::env::var("DETECTIC_BUFFER_MAX")

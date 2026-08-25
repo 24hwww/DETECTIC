@@ -334,8 +334,17 @@ class GtprClient:
     def network_map(self):
         oid = "DEV2_WIFI_APDEV_ASSOCDEV"
         js = self.gl(oid)
-        data = json.loads(js).get("data", {})
-        devs = data.get("ASSOCDEV", []) if isinstance(data, dict) else []
+        parsed = json.loads(js)
+        data = parsed.get("data", {})
+        # The EX520 returns two possible formats:
+        #   FORMAT A (list):     {"data": [...], "operation": "gl", ...}
+        #   FORMAT B (ASSOCDEV): {"data": {"ASSOCDEV": [...]}, ...}
+        if isinstance(data, list):
+            devs = data
+        elif isinstance(data, dict):
+            devs = data.get("ASSOCDEV", [])
+        else:
+            devs = []
         return {"captured_at": int(time.time()), "devices": devs, "raw": {oid: js}}
 
 

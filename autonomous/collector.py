@@ -149,7 +149,7 @@ def load_config() -> Config:
     load_dotenv(str(repo / ".env"))
 
     db = env("AUTONOMOUS_DB", "")
-    sensor = env("AUTONOMOUS_SENSOR_ID", "detectic-ex520-live")
+    sensor = env("AUTONOMOUS_SENSOR_ID", "ex520-001")
     url = env("AUTONOMOUS_URL", DEFAULT_URL)
     user = env("AUTONOMOUS_USER", "user", "DETECTIC_USER")
     password = env("AUTONOMOUS_PASSWORD", "", "DETECTIC_PASSWORD")
@@ -181,10 +181,12 @@ def load_config() -> Config:
     if not secret_hex:
         secret = b"detectic-autonomous-dev-secret"
     else:
-        try:
-            secret = bytes.fromhex(secret_hex)
-        except ValueError:
-            secret = b"detectic-autonomous-dev-secret"
+        # Canonical HMAC contract: UTF-8 bytes of the secret string.
+        # This matches the Rust sensor (secret.as_bytes()) and the
+        # Cloudflare Worker (TextEncoder().encode(secret)).
+        # NEVER hex-decode — that produces a different key than the other
+        # components and causes HTTP 401.
+        secret = secret_hex.encode("utf-8")
 
     return Config(
         db_path=db, sensor_id=sensor, url=url, user=user, password=password,
@@ -1391,7 +1393,11 @@ def sync_to_d1(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]],
         }]
 
     body = json.dumps(payload, separators=(",", ":"))
-    sig = hmac.new(cfg.secret, body.encode(), hashlib.sha256).hexdigest()
+    ts = str(int(time.time()))
+    # Canonical HMAC: sign timestamp + "\n" + body to bind the timestamp
+    # to the payload (replay protection).
+    signed = ts.encode() + b"\n" + body.encode()
+    sig = hmac.new(cfg.secret, signed, hashlib.sha256).hexdigest()
 
     try:
         import urllib.request
@@ -1402,6 +1408,7 @@ def sync_to_d1(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]],
                 "Content-Type": "application/json",
                 "X-Detectic-Sensor": cfg.sensor_id,
                 "X-Detectic-Signature": sig,
+                "X-Detectic-Timestamp": ts,
                 "User-Agent": "detectic-collector/1.0",
             },
             method="POST",

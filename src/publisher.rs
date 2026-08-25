@@ -125,12 +125,23 @@ pub fn upload_with_retry(
             );
             sleep(backoff_delay(attempt));
         }
-        let sig = crate::hmac_sha256_hex(secret, body);
+        // Canonical HMAC contract: sign "timestamp\nbody" for replay protection.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let ts_str = ts.to_string();
+        let mut signed = Vec::with_capacity(ts_str.len() + 1 + body.len());
+        signed.extend_from_slice(ts_str.as_bytes());
+        signed.push(b'\n');
+        signed.extend_from_slice(body);
+        let sig = crate::hmac_sha256_hex(secret, &signed);
         match agent
             .post(url)
             .set("Content-Type", "application/json")
             .set("X-Detectic-Sensor", sensor_id)
             .set("X-Detectic-Signature", &sig)
+            .set("X-Detectic-Timestamp", &ts_str)
             .send_bytes(body)
         {
             Ok(resp) => {

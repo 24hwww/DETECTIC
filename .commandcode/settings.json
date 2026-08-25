@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(bash -c git status --short && echo '---' && git log --oneline -15 && echo '---' && git diff --stat)",
+      "Shell(cargo:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

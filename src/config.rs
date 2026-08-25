@@ -113,7 +113,7 @@ impl Default for SensorConfig {
             router_user: "user".into(),
             router_password: String::new(),
             router_timeout: DEFAULT_ROUTER_TIMEOUT,
-            sensor_id: "home-001".into(),
+            sensor_id: "ex520-001".into(),
             secret: String::new(),
             interval: Duration::from_secs(DEFAULT_INTERVAL),
             backend_url: None,
