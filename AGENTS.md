@@ -558,7 +558,208 @@ GtprClient
 
 Agents should prefer the existing implementations and protocol handling.
 
-### VERIFIED LIVE API OPERATION
+### VERIFIED CLIENT CONSTRUCTOR (Python)
+
+The canonical client constructor is:
+
+```python
+from detectic_client import GtprClient, Dialect
+
+client = GtprClient(
+    "http://[fe80::3e6a:d2ff:fe5f:abc1%enp2s0]",  # base_url (IPv6 link-local + scope)
+    "user",                                        # user
+    os.environ["DETECTIC_PASSWORD"],               # password — NEVER hardcode
+    Dialect.GDPR_JSON,                             # dialect (default)
+)
+```
+
+Signature (from `python/detectic_client.py`):
+
+```python
+class GtprClient:
+    def __init__(self, base_url, user, password, dialect=Dialect.GDPR_JSON):
+```
+
+Key points:
+
+* `base_url` must preserve the IPv6 zone/interface (`%enp2s0`); the client
+  strips a trailing `/` and appends `cgi/getGDPRParm`, `cgi_gdpr?9`, etc.
+* `user` is `user` (not `admin`) for the verified read/write path.
+* `password` MUST come from the environment (`DETECTIC_PASSWORD`), never from
+  source code or reports.
+* `dialect` defaults to `Dialect.GDPR_JSON` (hex RSA signature); use
+  `Dialect.GDPR_TEXT` only for the alternate login framing.
+* After construction, call `client.connect()` to perform the GTPR handshake
+  (getGDPRParm → login → TokenID), then use `gl`/`go`/`so` operations.
+
+### VERIFIED RUST CLIENT
+
+The Rust crate exposes the same client as `detectic::transport::GtprClient`:
+
+```rust
+use detectic::transport::{GtprClient, Dialect};
+
+let mut client = GtprClient::with_dialect(
+    "http://[fe80::3e6a:d2ff:fe5f:abc1%25enp2s0]",
+    "user",
+    &std::env::var("DETECTIC_PASSWORD")?,
+    Dialect::GdprJson,
+);
+client.connect()?;
+```
+
+The `%` in the URL is percent-encoded (`%25`) because the Rust CLI takes the
+URL from the environment. The CLI equivalent is:
+
+```bash
+DETECTIC_PASSWORD="$DETECTIC_PASSWORD" ./target/release/detectic \
+  --url "http://[fe80::3e6a:d2ff:fe5f:abc1%25enp2s0]" \
+  query DEV2_WIFI_APDEV_ASSOCDEV
+```
+
+---
+
+# 10.B. EX520 DEPLOYMENT PATHS — COMPLETE MAP
+
+This section documents every proven path to get Detectic code running on the
+EX520, from read-only management to full resident autostart. Each path is
+classified by what it proves (DEPLOY / PERSIST / EXECUTE / AUTOSTART) and its
+current evidence status.
+
+## Path 1 — External client (host-based, PROVEN-LIVE)
+
+The host runs `python/detectic_client.py` (or the Rust binary) and talks to
+the EX520 over the IPv6 GTPR path. Nothing is installed on the router.
+
+```
+Host (192.168.0.27)
+  |  GtprClient("http://[fe80::3e6a:d2ff:fe5f:abc1%enp2s0]", "user", $DETECTIC_PASSWORD)
+  v
+EX520 GTPR/GDPR API (HTTP/80, IPv6 link-local)
+```
+
+* DEPLOY: not applicable (no router code)
+* PERSIST: not applicable
+* EXECUTE: no (read-only management)
+* AUTOSTART: no
+* Status: **PROVEN-LIVE** (read-only queries, `DEV2_WIFI_APDEV_ASSOCDEV`)
+
+## Path 2 — Lifemote/Phoenix remote execution (PROVEN-LIVE)
+
+The stock firmware's `DEV2_LIFEMOTE_AGENT` object, when set via `so`, makes
+`cos` spawn `/usr/bin/phoenix.sh <URL>`, which downloads and executes the URL
+as `root`:
+
+```
+GTPR so DEV2_LIFEMOTE_AGENT {enable:1, URL:...}
+  -> cos -> rsl_setDev2LifemoteAgentObj
+  -> /usr/bin/phoenix.sh <URL>
+  -> curl <URL> > /tmp/lifemote_cpe_daemon.sh
+  -> sh /tmp/lifemote_cpe_daemon.sh   (arbitrary commands as root)
+```
+
+* DEPLOY: **PROVEN-LIVE**
+* PERSIST: **PROVEN-LIVE** (`enable:1` + URL survive reboot in misc_rw data model)
+* EXECUTE: **PROVEN-LIVE**
+* AUTOSTART: **MANUAL ONLY** — `rsl_set` is triggered by a GTPR `so`, NOT at boot
+* Status: **PROVEN-LIVE** (PHASE 16–21)
+
+## Path 3 — bootstart.sh resident bootstrap (PROVEN-LIVE)
+
+`phoenix.sh` is pointed at a host-served `bootstart.sh` that downloads the
+split binary (`detectic.aa` + `detectic.ab`), reassembles it in
+`/var/tmp/detectic/detectic`, persists pieces in `misc_rw`/`misc_rw_bak`, and
+starts the sensor via `launcher.sh`.
+
+```
+Host :8080  (package server)
+  |  bootstart.sh, detectic.aa, detectic.ab, launcher.sh, detectic.env, version
+  v
+EX520 phoenix -> bootstart.sh (root)
+  -> cp pieces to misc_rw (+ misc_rw_bak)
+  -> cat aa+ab > /var/tmp/detectic/detectic
+  -> launcher.sh start
+```
+
+* DEPLOY: **PROVEN-LIVE**
+* PERSIST: **PROVEN-LIVE** (survives reboot)
+* EXECUTE: **PROVEN-LIVE** (`done?status=ok&ret=0` observed)
+* AUTOSTART: requires Path 4
+* Status: **PROVEN-LIVE** (PHASE 21)
+
+## Path 4 — Cold-boot watchdog autostart (PROVEN-LIVE)
+
+A host-side watchdog (`deploy/ex520_package/watchdog.py`) monitors the router
+by IPv6 ping + GTPR query. After a sustained DOWN (>= DOWN_THRESHOLD) it sends
+a `so DEV2_LIFEMOTE_AGENT` with the bootstart URL, re-triggering Path 3 after
+a cold boot.
+
+```
+Host watchdog.py (poll 10s)
+  -> ping6 / GTPR query
+  -> router DOWN >= threshold -> armed
+  -> router UP -> GTPR so DEV2_LIFEMOTE_AGENT (phoenix)
+  -> phoenix -> bootstart.sh -> launcher.sh -> detectic sensor
+```
+
+* DEPLOY: **PROVEN-LIVE**
+* PERSIST: **PROVEN-LIVE**
+* EXECUTE: **PROVEN-LIVE**
+* AUTOSTART: **PROVEN-LIVE** (cold boot: DOWN → UP → trigger → sensor running)
+* Status: **PROVEN-LIVE** (PHASE 21 second cold-boot proof)
+
+## Path 5 — Native firmware autostart (NOT AVAILABLE)
+
+All stock-firmware boot hooks were audited and rejected (read-only SquashFS
+rootfs, no user hooks in rcS/inittab/cron/procd, no hotplug.d user scripts,
+signed firmware only). There is no legitimate native autostart.
+
+* Status: **NATIVE_AUTOSTART = NOT_AVAILABLE** (PHASE 19A)
+
+## Deployment summary matrix
+
+| Path | DEPLOY | PERSIST | EXECUTE | AUTOSTART | Evidence |
+|------|--------|---------|---------|-----------|----------|
+| 1. External client | n/a | n/a | no | no | PROVEN-LIVE |
+| 2. Lifemote/Phoenix | P | P | P | manual only | PROVEN-LIVE |
+| 3. bootstart.sh | P | P | P | needs 4 | PROVEN-LIVE |
+| 4. Watchdog autostart | P | P | P | P | PROVEN-LIVE |
+| 5. Native autostart | – | – | – | – | NOT AVAILABLE |
+
+## Deployment chain (current)
+
+The canonical production chain is Path 4 → Path 3 → Path 2:
+
+```
+[host] watchdog.py  --cold boot detected-->  GTPR so DEV2_LIFEMOTE_AGENT
+        |                                             |
+        v                                             v
+[host] package server :8080  <--downloads--  phoenix.sh (root)
+        |                                             |
+        v                                             v
+[router] bootstart.sh -> launcher.sh -> detectic sensor (misc_rw)
+        |
+        v
+[router] GTPR poll (own API, http://192.168.0.1) -> snapshots
+        |
+        v
+[host] backend :8082 -> SQLite (pseudonymized events)
+```
+
+Key files:
+
+```
+deploy/ex520_package/watchdog.py      # Path 4 trigger (cold-boot autostart)
+deploy/ex520_package/package_server.py # serves the deploy package (:8080)
+deploy/ex520_package/bootstart.sh     # Path 3 bootstrap (run as root)
+deploy/ex520_package/launcher.sh      # start/stop/restart sensor on router
+deploy/ex520_package/detectic.env     # router sensor environment (secrets!)
+deploy/ex520_package/emaild.py        # SMTP notifications from router
+python/detectic_client.py             # Path 1 external client (reference)
+src/transport.rs                      # Rust GTPR client (GtprClient)
+```
+
+
 
 The following operation has been successfully executed against the REAL EX520:
 
