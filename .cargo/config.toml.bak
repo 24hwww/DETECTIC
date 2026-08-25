@@ -1,0 +1,12 @@
+# Cargo build config for Detectic Phase 2
+# MT7981 SoC = 4x Cortex-A53 (ARMv8-A, aarch64). The router sensor is built
+# as a fully static musl binary so it runs without host libs.
+# Evidence: _rootfs/lib/libcmm.so is AArch64 (aarch64-linux-musl).
+
+[target.aarch64-unknown-linux-musl]
+# Cortex-A53 tuning: no crypto extensions required, baseline ARMv8-A is enough.
+# The binary remains portable across the EX520 family and other MT798x boards.
+rustflags = ["-C", "target-cpu=cortex-a53"]
+
+[build]
+# Default host target stays x86_64; cross builds use --target explicitly.

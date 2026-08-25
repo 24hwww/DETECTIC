@@ -1,0 +1,22 @@
+# Cargo build config for Detectic Phase 2
+#
+# Target hardware: TP-Link EX520V on MediaTek MT7981 (4x Cortex-A53, ARMv8-A).
+# The router sensor is built as a fully static musl binary so it runs with no
+# host libraries (evidence: _rootfs/lib/libcmm.so is aarch64-linux-musl).
+#
+# Linker: rust-lld (bundled with the Rust toolchain) performs the AArch64
+# link. The host GNU ld cannot mix aarch64 self-contained CRT objects
+# ("Relocations in generic ELF"), so an external musl-gcc cross toolchain is
+# NOT required to reproduce the build.
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+# Cortex-A53 tuning; no crypto extensions required (baseline ARMv8-A keeps the
+# binary portable across MT798x boards).
+rustflags = [
+    "-C", "target-cpu=cortex-a53",
+    "-C", "link-self-contained=yes",
+]
+
+[build]
+# Host builds stay x86_64; cross builds pass --target explicitly.

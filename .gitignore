@@ -1,0 +1,57 @@
+# --- Rust build ---
+/target
+
+# --- Dependencies / node_modules ---
+node_modules/
+backend/cf-worker/node_modules/
+backend/cf-worker/.wrangler/
+
+# --- Build artifacts ---
+/dist
+/deploy/package/detectic/detectic
+
+# --- Heavy research prototypes ---
+/prototypes
+
+# --- Secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+backend/sensors.json
+deploy/ex520_package/detectic.env
+deploy/ex520_package/*.log
+deploy/ex520_package/.emaild.lock
+deploy/ex520_package/.package_server.lock
+deploy/ex520_package/.watchdog.lock
+deploy/ex520_package/.backend.lock
+deploy/ex520_package/sensor_log.txt
+
+# --- Databases ---
+*.db
+*.db-*
+*.sqlite
+detectic.db
+detectic_sensor.db
+backend/backend.db*
+
+# --- Firmware research artifacts (large binaries) ---
+*.bin
+*.rar
+*.gz
+_fw_build/
+_fw_extract/
+_rootfs/
+backupcfg/
+*.bin.work
+
+# --- Local runtime / sensitive data ---
+.devin/mcp_config.local.json
+*.local.json
+/tmp/*.json
+python/__pycache__/
+__pycache__/
+*.pyc
+
+# --- Logs ---
+*.log
+logs/

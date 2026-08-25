@@ -1,0 +1,26 @@
+Detectic EX520 Deployment Package
+=================================
+Date: 2026-08-24 08:22:48 UTC
+Binary: detectic
+Architecture: aarch64 (ARM64)
+Size: 1321216 bytes
+SHA-256: 28f8dd0151dc307b9fb0e84b20142cb9098e862d02e0c133c508232e69b994e2
+Features: --no-default-features (no persist/TLS)
+Target: /var/run/misc/misc_rw/detectic/
+
+Contents:
+  detectic      - main binary (ARM64 static)
+  launcher.sh   - POSIX shell launcher
+  recon.sh      - live reconnaissance script
+  manifest.txt  - this file
+
+Installation:
+  1. Transfer tarball to router
+  2. Extract to /var/run/misc/misc_rw/detectic/
+  3. chmod +x detectic launcher.sh
+  4. Run: ./launcher.sh start
+  5. Run: ./launcher.sh status
+
+Removal:
+  ./launcher.sh stop
+  rm -rf /var/run/misc/misc_rw/detectic/

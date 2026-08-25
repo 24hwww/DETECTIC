@@ -1,0 +1,426 @@
+================================================================================
+libplatform_api.so static analysis — EX520 MediaTek EasyMesh HAL
+================================================================================
+
+Analysed file: /home/soporte24hwww/Documentos/Repositorios/detectic/_rootfs/lib/libplatform_api.so
+ELF: 64-bit LSB shared object, ARM aarch64, stripped
+Sha/time: 94312 bytes, built with OpenWrt GCC 8.4.0 r16649-bcaabe6d05
+Output written by: static reverse-engineering with nm / llvm-objdump / strings
+No firmware files were modified.
+
+--------------------------------------------------------------------------------
+1. METHODOLOGY
+--------------------------------------------------------------------------------
+
+  nm -D                  -> exported symbols
+  llvm-objdump -d        -> full .text disassembly
+  strings -a -t x -n 4   -> all NUL-terminated strings
+  readelf -S             -> section layout
+
+Key global symbols seen in disassembly / .got:
+  l_eventSock   (BSS)  - netlink socket fd
+  g_ioctl_sock  (BSS)  - INET socket fd used for ioctls
+  hal_multiap_ops, mtk_multiap_ops - op tables
+
+--------------------------------------------------------------------------------
+2. FULL EXPORTED DYNAMIC SYMBOLS (nm -D)
+--------------------------------------------------------------------------------
+
+Address     Type  Name
+--------------------------------------------------------------------------------
+0x3180      T     _init
+0x35d8      T     multiap_driver_ioctl_init
+0x3630      T     multiap_driver_ioctl_deinit
+0x3688      T     multiap_get_ip_by_name
+0x36f0      T     multiap_get_lanMac_by_ip
+0x3758      T     multiap_get_radio_cap
+0x37c0      T     multiap_get_radio_metrics
+0x3828      T     multiap_get_op_channel_report
+0x3890      T     multiap_get_associate_sta_list
+0x38f8      T     multiap_get_ethernet_intf_stats
+0x3968      T     multiap_get_ethernet_sta_list
+0x39d0      T     multiap_get_ethernet_sta_info
+0x3a40      T     multiap_get_ap_metrics
+0x3aa8      T     multiap_get_sta_traffic_stat
+0x3b18      T     multiap_get_sta_link_metrics
+0x3b88      T     multiap_get_bssid
+0x3bf0      T     multiap_get_assoc_req_frame
+0x3c60      T     multiap_get_channel_preference
+0x3cc8      T     multiap_get_backhaul_link_metric
+0x3d30      T     multiap_get_link_metric
+0x3da8      T     multiap_get_ap_capability
+0x3e10      T     multiap_get_sta_cap
+0x3e80      T     multiap_get_scan_result
+0x3ee8      T     multiap_get_wps_info
+0x3f50      T     multiap_get_unassoc_sta_link_metrics
+0x3fc0      T     multiap_get_wifi_radioInfo
+0x4028      T     multiap_get_wifi_assocStaInfo
+0x40a0      T     multiap_wifi_get_bestChannel
+0x4108      T     multiap_send_bcn_req
+0x4170      T     multiap_send_btm_req
+0x41d8      T     multiap_send_rrm_nr_resp
+0x4240      T     multiap_set_acl_type
+0x42a8      T     multiap_set_acl_list
+0x4310      T     multiap_set_backhaul_sta
+0x4380      T     multiap_set_cls_assoc_info
+0x43e8      T     multiap_set_unassocLinkMetrics
+0x4448      T     multiap_kick_sta
+0x44b0      T     multiap_get_backhaul_rssi
+0x4518      T     multiap_do_scan
+0x4588      T     multiap_set_scan_skip_list
+0x4608      T     multiap_event_init
+0x4678      T     multiap_event_deinit
+0x46d0      T     multiap_event_process
+0x51d8      T     hal_multiap_mtk_getEthIntfStats_mt798x
+0x52fc      T     hal_multiap_mtk_getEthernetStaInfo_mt798x
+0x543c      T     hal_multiap_mtk_getLinkMetric_mt798x
+0x7da8      T     hal_multiap_mtk_event_init
+0x7e7c      T     hal_multiap_mtk_event_deinit
+0x7ef8      T     hal_multiap_mtk_event_process
+0x7ff0      T     hal_multiap_mtk_getUnassocStaLinkMetrics
+0x9e20      T     rssi_to_rcpi
+0x9e6c      T     radio_noise_check
+0x9f14      T     getEthBrPortIntfByMac
+0xa368      T     calEthStaTraffic
+0xa57c      T     hal_multiap_mtk_getBSSID
+0xa6ac      T     hal_multiap_mtk_getOpChannelReport
+0xa7ec      T     hal_multiap_mtk_getLanMacByIp
+0xaab0      T     hal_multiap_mtk_getRadioCap
+0xae2c      T     hal_multiap_mtk_getRadioMetrics
+0xaffc      T     hal_multiap_mtk_getAssociateStaList
+0xb318      T     hal_multiap_mtk_getApMetrics
+0xb6e0      T     hal_multiap_mtk_getStaTafficStat
+0xb88c      T     hal_multiap_mtk_getStaLinkMetrics
+0xbab8      T     hal_multiap_mtk_getStaCap
+0xbc78      T     hal_multiap_mtk_getAssocReqFrame
+0xbe18      T     hal_multiap_mtk_getChanPreference
+0xc130      T     hal_multiap_mtk_getBackhaulLinkMetric
+0xc330      T     hal_multiap_mtk_getLinkMetric_eth
+0xc584      T     hal_multiap_mtk_getLinkMetric_wireless
+0xc7a8      T     hal_multiap_mtk_getLinkMetric
+0xc9a4      T     hal_multiap_mtk_getApCapability
+0xd9c8      T     hal_multiap_mtk_getEthIntfStats
+0xdb0c      T     hal_multiap_mtk_getEthernetStaList
+0xe0c0      T     hal_multiap_mtk_getEthernetStaInfo
+0xe218      T     hal_multiap_mtk_getRadioInfo
+0xe3f8      T     hal_multiap_mtk_getAssocStaInfo
+0xee3c      T     hal_multiap_mtk_getBestChannel
+0xef8c      T     hal_multiap_mtk_sendBcnReq
+0xf3bc      T     hal_multiap_mtk_sendBtmReq
+0xf904      T     hal_multiap_mtk_sendNrResponse
+0xfdec      T     hal_multiap_mtk_setAclType
+0xfe40      T     hal_multiap_mtk_setAclList
+0x10078     T     hal_multiap_mtk_setUnassocLinkMetrics
+0x1010c     T     hal_multiap_mtk_setBackhaulSta
+0x103a0     T     hal_multiap_mtk_clearAssocInfo
+0x104fc     T     hal_multiap_mtk_kickSta
+0x106f0     T     hal_multiap_mtk_getRssi
+0x108e8     T     hal_multiap_mtk_doScan
+0x10948     T     hal_multiap_mtk_setScanSkipList
+0x10e64     T     hal_multiap_mtk_getScanResult
+0x11244     T     hal_multiap_mtk_getWpsInfo
+0x116e0     T     hal_multiap_mtk_driver_ioctl_init
+0x11770     T     hal_multiap_mtk_driver_ioctl_deinit
+0x117dc     T     _fini
+0x267d0     D     mtk_multiap_ops
+0x26920     D     hal_multiap_ops
+0x26960     B     l_multiap_cmm
+0x29f44     B     l_eventSock
+0x29f48     B     g_ioctl_sock
+
+--------------------------------------------------------------------------------
+3. HOW THE HAL TALKS TO THE MEDIATEK DRIVER
+--------------------------------------------------------------------------------
+
+Primary path: an INET DGRAM socket is opened once and stored in g_ioctl_sock
+(or a local int).  The HAL then calls:
+
+    ioctl(fd, 0x8be1, &struct iwreq)
+
+0x8be1 is in the Linux wireless private-ioctl range (SIOCIWFIRSTPRIV+1).
+The iwreq is laid out as:
+
+    .ifr_name      = interface name (ra0, rai0, rax0, ...)
+    .u.data.pointer -> caller-allocated data buffer
+    .u.data.length  = buffer length
+    .u.data.flags   = 16-bit OID/sub-command
+
+Known OID/sub-commands placed in iwreq.u.data.flags:
+  0x0a01 (2561)  - associated station list
+  0x0a03 (2563)  - used by unassoc link metrics / timestamp path
+  0x0a05 (2565)  - used by getRadioMetrics
+  0x0b04 (2820)  - scan results (getScanResult)
+  0x0b05 (2821)  - RSSI (getRssi second ioctl)
+  0x0b07 (2823)  - radio info (getRadioInfo, not in target set)
+  0x0b11 (2833)  - WPS status
+
+Other ioctl() request values seen:
+  0x8913 (35091) - SIOCGIFMEM / get interface memory/status flags
+  0x8927 (35111) - SIOCGIFHWADDR
+  0x89f0 (35312) - SIOCDEVPRIVATE (used by Ethernet/switch functions)
+
+For action/configuration the HAL shells out:
+
+    system("iwpriv <ifname> set <cmd>=<val>")
+
+For driver events it uses:
+
+    socket(AF_NETLINK, SOCK_RAW, 0)
+    bind() with sockaddr_nl { family=AF_NETLINK, nl_pid=getpid(),
+                             nl_groups=1 }
+    recvmsg() / netlink RTM_NEWLINK parsing
+
+File reads (read-only):
+  /sys/class/net/%s/speed
+  /sys/class/net/%s/duplex
+  /sys/class/net/%s/carrier
+  /sys/class/net/%s/statistics/{tx,rx}_{packets,errors}
+  /sys/class/net/%s/brport/bridge/ifindex
+  /proc/net/arp
+  /var/tmp/gateway_port
+  /tmp/wps_en_%s
+  /tmp/wps_st_%s
+
+--------------------------------------------------------------------------------
+4. IW / DRIVER COMMAND STRINGS
+--------------------------------------------------------------------------------
+
+iwpriv set commands:
+  iwpriv %s set AccessPolicy=%d
+  iwpriv %s set ACLAddEntry=%02x:%02x:%02x:%02x:%02x:%02x;
+  iwpriv %s set ACLDelEntry=%02x:%02x:%02x:%02x:%02x:%02x;
+  iwpriv %s set ACLClearAll=1;
+  iwpriv %s set ProbeRequestBackhaul=1;
+  iwpriv %s set ApCliBssid=%02x:%02x:%02x:%02x:%02x:%02x
+  iwpriv %s set channel=%d
+  iwpriv %s set DisConnectSta=%02x:%02x:%02x:%02x:%02x:%02x
+  iwpriv %s set SiteSurvey=
+  iwpriv %s set ScanSkipList=0
+  iwpriv %s set ScanSkipList=
+
+Other shell/pipe strings:
+  switch search mac %s vid %d | grep %s
+  switch reg r %x | grep 'Read'
+  %03x:  %c%c%c%c%c%c%c%c  %2d  %4d %4d  %08x%04x    %c    %c
+
+--------------------------------------------------------------------------------
+5. NETLINK / DRIVER EVENT STRINGS
+--------------------------------------------------------------------------------
+
+Event names present in .rodata (used by callbacks or logs):
+  driver_wdev_handle_radar
+  driver_sta_disassoc_stats_handle
+  driver_sta_assoc_info_clear_handle
+  driver_sta_assoc_stats_handle
+  wdev_bcn_report_handle
+  driver_backhaulsta_assoc_stat_change_handle
+  driver_channel_change_handle
+  driver_apcli_assoc_ts_handle
+  driver_sta_fail_cnnct_handle
+  driver_probe_lookup
+  driver_probe_handle
+  driver_wapp_event_handle
+  driver_event_btm_query
+  driver_event_btm_rsp
+  driver_event_rrm_neighbor_request
+  driver_rrm_event_handle
+  driver_wnm_notify_event_handle
+  driver_anqp_req_event_handle
+  driver_btm_event_handle
+  driver_wext_event_wireless
+  driver_wext_event_ifname
+  driver_wext_event_rtm_newlink
+  mtk_wifi_event_callback
+  mtk_wifi_event_process
+  mtk_driver_event_init
+  driver_wext_set_oid
+  driver_wext_getDataByOid
+  driver_wext_getIfr
+
+hal_multiap_mtk_event_init / process / deinit use the RTM_NEWLINK netlink path;
+the event strings above describe the full set of callback names expected by the
+higher-level daemon.
+
+--------------------------------------------------------------------------------
+6. /tmp AND /var/tmp FILE USAGE
+--------------------------------------------------------------------------------
+
+Writable access in this .so:
+  None of the analysed functions creates or writes /tmp or /var/tmp files.
+
+Readable access:
+  getUnassocStaLinkMetrics uses util_file_lockAndReadFile on /var/tmp/gateway_port
+  getWpsInfo builds and reads:
+      /tmp/wps_en_%s
+      /tmp/wps_st_%s
+  via util_getSingleValueFromFile (read-only).
+
+These /tmp files are produced by external firmware processes (WPS daemon); if
+they exist and are world-readable, the HAL can read them.  No evidence that
+getScanResult / doScan / getRssi / getBSSID / getRadioMetrics write to /tmp.
+
+--------------------------------------------------------------------------------
+7. PER-FUNCTION SUMMARY TABLE
+--------------------------------------------------------------------------------
+
+--- hal_multiap_mtk_getUnassocStaLinkMetrics ---
+Address range        0x7ff0 - 0x9e20
+Parameters           (uint8_t band, uint8_t* staMac, void* out)
+Returns              0 on success, -1 on error
+Driver access        - Private ioctl 0x8be1 with multiple OID flags
+                     - popen/fgets for "switch reg" pipe
+                     - util_file_lockAndReadFile on /var/tmp/gateway_port
+                     - clock_gettime(CLOCK_REALTIME) and sysinfo() for timestamps
+Read-only?           Yes
+Requires 1905 peer?  No — local HAL call
+Data returned        24-byte output struct. Contains the target staMac, parsed
+                     channel/RSSI, and a timestamp (wall clock + uptime).
+                     Full offset-level layout is interleaved and would require
+                     dynamic tracing to confirm.
+
+--- hal_multiap_mtk_getScanResult ---
+Address range        0x10e64 - 0x11244
+Parameters           (void* out, const char* ifname)
+Returns              0 on success, -1 on error
+Driver access        socket(AF_INET, SOCK_DGRAM, 0) + ioctl(0x8be1, OID 0x0b04)
+                     with a 0x1e05-byte buffer
+Read-only?           Yes
+Requires 1905 peer?  No
+Data returned        Array of 52-byte BSS entries, max 128 (count is first 4
+                     bytes of output).  Each entry:
+                       offset 0x00 : 33-byte SSID
+                       offset 0x21 : 6-byte BSSID
+                       offset 0x28 : 32-bit value (likely RSSI or channel)
+                     No timestamp.
+
+--- hal_multiap_mtk_doScan ---
+Address range        0x108e8 - 0x10948
+Parameters           (const char* ifname, int32_t, uint8_t) — w1/w2 stored but
+                     not used in the disassembly path for the analysed version.
+Returns              0
+Driver access        - hal_multiap_mtk_setUnassocLinkMetrics ->
+                       iwpriv <ifname> set ProbeRequestBackhaul=1
+                     - snprintf + system("iwpriv <ifname> set SiteSurvey=")
+Read-only?           No — it triggers a driver site survey
+Requires 1905 peer?  No
+Data returned        None (configures the driver to scan)
+
+--- hal_multiap_mtk_getRssi ---
+Address range        0x106f0 - 0x108e8
+Parameters           (const char* ifname, int32_t* rssi)
+Returns              0 on success, 1 or -1 on failure
+Driver access        - socket() + ioctl(fd, 0x8913, &ifreq)  [SIOCGIFMEM]
+                     - if status bits 0x1 and 0x40 are set, then
+                       ioctl(fd, 0x8be1, &iwreq with OID 0x0b05)
+                     - compares returned string at data+0xa4 with "Up"
+                       (0x12fd0 in .rodata)
+Read-only?           Yes
+Requires 1905 peer?  No
+Data returned        int32_t RSSI written to *rssi
+
+--- hal_multiap_mtk_getAssociateStaList ---
+Address range        0xaffc - 0xb318
+Parameters           (const char* ifname, void* out)
+Returns              0 on success, -1 on error
+Driver access        - Internal ioctl helper (getUnassoc+0x344) with OID 0x0a01
+                     - For each station calls:
+                         hal_multiap_mtk_getStaTafficStat
+                         hal_multiap_mtk_getStaLinkMetrics
+                         hal_multiap_mtk_getAssocReqFrame
+Read-only?           Yes
+Requires 1905 peer?  No
+Data returned        Up to 128 stations. Output struct is 640 bytes per station.
+                     Per station:
+                       offset 0x08 : 6-byte MAC
+                       offset 0x10 : 32-bit value (likely AID / RCPI)
+                       offset 0x14 : traffic statistics
+                       offset 0x38 : link metrics (includes RSSI)
+                       offset 0x70 : association request frame
+                     Channel / timestamp not present in this call.
+
+--- hal_multiap_mtk_getBSSID ---
+Address range        0xa57c - 0xa6ac
+Parameters           (const char* ifname, uint8_t* bssid_out)
+Returns              0 on success, -1 on error
+Driver access        socket() + ioctl(fd, 0x8927, &ifreq)  [SIOCGIFHWADDR]
+                     then memcpy 6 bytes from ifr_hwaddr to bssid_out.
+Read-only?           Yes
+Requires 1905 peer?  No
+Data returned        6-byte BSSID (MAC) only
+
+--- hal_multiap_mtk_getRadioMetrics ---
+Address range        0xae2c - 0xaffc
+Parameters           (const char* ifname, void* out)  (out is 10 bytes)
+Returns              0 on success, -1 on error
+Driver access        - hal_multiap_mtk_getBSSID
+                     - internal ioctl helper with OID 0x0a05 (8-byte data)
+                     - radio_noise_check() on returned byte
+Read-only?           Yes
+Requires 1905 peer?  No
+Data returned        10-byte struct:
+                       offset 0x00 : 6-byte BSSID
+                       offset 0x06 : 1-byte noise (radio_noise_check result)
+                       offset 0x07-0x09 : 3 bytes from OID 0x0a05
+                     No timestamp.
+
+--- hal_multiap_mtk_event_init ---
+Address range        0x7da8 - 0x7e7c
+Parameters           (int32_t evFdHint, void* eventOps, int32_t arg)
+Returns              0
+Driver access        - socket(AF_NETLINK, SOCK_RAW, 0)
+                     - bind() with sockaddr_nl pid=getpid(), groups=1
+                     - fd stored in l_eventSock and in eventOps
+                     - fills eventOps fields: fd, pid, group, callback pointer
+Read-only?           No (opens a socket)
+Requires 1905 peer?  No
+Data returned        Netlink fd / populated eventOps
+
+--- hal_multiap_mtk_event_process ---
+Address range        0x7ef8 - 0x7ff0
+Parameters           (void* buf, int32_t len, void* eventOps, int32_t fd)
+Returns              0 on success, -1 on error
+Driver access        - Verifies fd == l_eventSock
+                     - Walks netlink message buffer (nlmsghdr) and handles
+                       RTM_NEWLINK (nlmsg_type == 0x10)
+                     - Calls internal callback at 0x7aac / 0x74ec
+Read-only?           Yes (processes supplied buffer)
+Requires 1905 peer?  No
+Data returned        Parsed interface link-change events
+
+--- hal_multiap_mtk_event_deinit ---
+Address range        0x7e7c - 0x7ef8
+Parameters           (none)
+Returns              0
+Driver access        - close(l_eventSock)
+                     - l_eventSock = -1
+Read-only?           No (closes the socket)
+Requires 1905 peer?  No
+Data returned        None
+
+--------------------------------------------------------------------------------
+8. PEER / EASYMESH REQUIREMENT CONCLUSION
+--------------------------------------------------------------------------------
+
+All functions in the analysed set are local MediaTek HAL helpers. They open
+sockets, issue ioctls/iwpriv commands, or read files. There is no socket
+communication with a remote 1905 controller/agent, no 1905 packet encoding, and
+no dependency on an EasyMesh peer. They can be called locally by any process
+that links libcutil.so and has privileges to open the wireless interface.
+
+--------------------------------------------------------------------------------
+9. SECURITY / PRIVACY NOTES FOR DETECTIC
+--------------------------------------------------------------------------------
+
+- The HAL operates on raw MAC addresses.  getScanResult, getBSSID,
+  getAssociateStaList, getUnassocStaLinkMetrics all expose 6-byte BSSIDs/MACs.
+- No /tmp files are written by these get functions, but getWpsInfo reads
+  /tmp/wps_en_<ifname> and /tmp/wps_st_<ifname> if they exist.
+- doScan and setUnassocLinkMetrics execute system("iwpriv ...") and therefore
+  require command-injection awareness if any argument is user-controlled.
+- The 0x8be1 private ioctls need a socket with appropriate privileges; on a
+  stock OpenWrt/EX520 system these are normally usable by root or the wireless
+  daemon.
+
+================================================================================
+END OF REPORT
+================================================================================

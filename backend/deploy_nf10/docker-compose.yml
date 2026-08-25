@@ -1,0 +1,67 @@
+# ============================================================================
+# Detectic Backend — Docker Compose for nf-compute-10
+# Target: 0.1 vCPU / 256 MB RAM / 1024 MB storage
+# ============================================================================
+#
+# Usage:
+#   1. Copy this file + .env to your server
+#   2. Edit .env with real secrets
+#   3. docker compose up -d
+#
+# Resource limits are set to stay well within 256 MB total RAM.
+# ============================================================================
+
+services:
+  backend:
+    image: python:3.12-slim
+    container_name: detectic-backend
+    restart: unless-stopped
+    working_dir: /app
+    command:
+      - python3
+      - -u
+      - server.py
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --db
+      - /data/backend.db
+      - --max-threads
+      - "8"
+      - --rate-burst
+      - "30"
+    volumes:
+      - ./server.py:/app/server.py:ro
+      - detectic-data:/data
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          memory: 96M
+          cpus: "0.5"
+        reservations:
+          memory: 32M
+          cpus: "0.05"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/v1/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+    sysctls:
+      - net.core.somaxconn=32
+
+volumes:
+  detectic-data:
+    driver: local

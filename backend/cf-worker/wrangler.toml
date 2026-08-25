@@ -1,0 +1,23 @@
+# ============================================================================
+# Detectic Backend — Cloudflare Worker Configuration
+# ============================================================================
+# Deploy: npx wrangler deploy
+# ============================================================================
+
+name = "detectic-backend"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "detectic-db"
+database_id = "REPLACE_WITH_YOUR_DATABASE_ID"  # Get from: npx wrangler d1 create detectic-db
+
+# Environment variables (set via: npx wrangler secret put DETECTIC_SENSORS)
+# DETECTIC_SENSORS = '{"ex520-001": "your-sensor-secret"}'
+# DETECTIC_MASTER_SECRET = 'your-master-secret'
+
+# Free tier: 100K req/day, 10 ms CPU/req
+# Paid ($5/mo): 10M req/day, 30 ms CPU/req

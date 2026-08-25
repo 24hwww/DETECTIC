@@ -1,0 +1,86 @@
+#!/bin/sh
+# Detectic bootstrap for EX520V (split binary, no gzip, atomic update)
+# Runs as root from /usr/bin/phoenix.sh
+
+export PATH=$PATH:/bin:/usr/bin:/sbin:/usr/sbin
+BB=/bin/busybox
+
+BASE="http://192.168.0.27:8080"
+DIR="/var/run/misc/misc_rw/detectic"
+BAKDIR="/var/run/misc/misc_rw_bak"
+TMPPKG="/var/tmp/detectic_pkg"
+LOG="$DIR/autostart.log"
+
+up() { read u _ < /proc/uptime; echo "$u"; }
+
+log() { echo "[$(up)] $*" >> "$LOG" 2>/dev/null; }
+
+err() {
+    log "ERROR: $*"
+    echo "ERROR: $*" 1>&2
+    curl -m 5 -s -o /dev/null "${BASE}/done?status=fail&reason=$*"
+    exit 0
+}
+
+# keep autostart log bounded
+if [ -f "$LOG" ]; then
+    $BB tail -c 51200 "$LOG" > "$LOG.tmp" 2>/dev/null
+    $BB mv "$LOG.tmp" "$LOG" 2>/dev/null
+fi
+
+$BB mkdir -p "$DIR" "$TMPPKG" "$BAKDIR" /var/tmp/detectic 2>/dev/null
+
+# Download package pieces to /var/tmp first
+$BB rm -f "$TMPPKG"/*
+
+if ! $BB wget -q -T 120 -O "$TMPPKG/detectic.aa" "${BASE}/detectic.aa"; then
+    err "download_aa"
+fi
+if ! $BB wget -q -T 120 -O "$TMPPKG/detectic.ab" "${BASE}/detectic.ab"; then
+    err "download_ab"
+fi
+if ! $BB wget -q -T 30 -O "$TMPPKG/launcher.sh" "${BASE}/launcher.sh"; then
+    err "download_launcher"
+fi
+# env is optional: not required if the existing env is still valid
+$BB wget -q -T 15 -O "$TMPPKG/detectic.env" "${BASE}/detectic.env" 2>/dev/null || log "download_env_optional"
+if ! $BB wget -q -T 10 -O "$TMPPKG/version" "${BASE}/version"; then
+    err "download_version"
+fi
+
+# Validate pieces exist and are non-empty
+if [ ! -s "$TMPPKG/detectic.aa" ] || [ ! -s "$TMPPKG/detectic.ab" ]; then
+    err "empty_binary_part"
+fi
+
+$BB chmod +x "$TMPPKG/launcher.sh"
+
+# Replace persistent pieces (rm then cp; no double-in-place due to misc_rw size)
+$BB rm -f "$DIR/detectic.aa"
+$BB cp "$TMPPKG/detectic.aa" "$DIR/detectic.aa" 2>/dev/null || err "copy_aa"
+
+$BB rm -f "$BAKDIR/detectic.ab"
+$BB cp "$TMPPKG/detectic.ab" "$BAKDIR/detectic.ab" 2>/dev/null || err "copy_ab"
+
+$BB cp "$TMPPKG/launcher.sh" "$DIR/launcher.sh" 2>/dev/null || err "copy_launcher"
+$BB rm -f "$TMPPKG/launcher.sh"
+if [ -f "$TMPPKG/detectic.env" ]; then
+    $BB cp "$TMPPKG/detectic.env" "$DIR/detectic.env" 2>/dev/null || log "copy_env_optional"
+    $BB rm -f "$TMPPKG/detectic.env"
+fi
+$BB cp "$TMPPKG/version" "$DIR/version" 2>/dev/null || err "copy_version"
+$BB rm -f "$TMPPKG/version"
+
+# Reassemble runtime binary
+$BB cat "$DIR/detectic.aa" "$BAKDIR/detectic.ab" > /var/tmp/detectic/detectic 2>/dev/null || err "cat"
+$BB chmod +x /var/tmp/detectic/detectic
+
+# Start (idempotent)
+$BB sh "$DIR/launcher.sh" start 2>/var/tmp/launcher.trace
+ret=$?
+
+trace=$($BB head -c 500 /var/tmp/launcher.trace 2>/dev/null | $BB tr ' \n' '+')
+vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
+log "bootstart complete version=$vers ret=$ret"
+curl -m 5 -s -o /dev/null \
+    "${BASE}/done?status=ok&pid=$$&up=$(up)&version=$vers&ret=$ret&trace=$trace"

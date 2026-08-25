@@ -1,0 +1,50 @@
+# Detectic router configuration example
+#
+# Copy this file to a runtime location and set real values.
+# Never commit a file with real credentials.
+
+# --- SMTP notification channel ---
+# Set to 1 to enable email alerts.  Default: 0 (disabled).
+SMTP_ENABLED=0
+
+# Outgoing SMTP relay.  STARTTLS on 587 or SMTPS on 465 are recommended.
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+
+# ── Email (Brevo SMTP) ────────────────────────────────────────────────────
+DETECTIC_SMTP_HOST=smtp-relay.brevo.com
+DETECTIC_SMTP_PORT=587
+DETECTIC_SMTP_USER=24hwww@gmail.com
+DETECTIC_SMTP_PASSWORD=CHANGE_ME_SMTP
+DETECTIC_SMTP_FROM=Womni-bot <bot@e-mail.womni.com.br>
+DETECTIC_SMTP_TO=24hwww+detectic@gmail.com,natasthefany+detectic@gmail.com
+
+# Authentication.  For Gmail use an App Password, not the account password.
+SMTP_USERNAME=alerts@example.com
+SMTP_PASSWORD=CHANGE_ME
+
+# Envelope addresses.
+SMTP_FROM=alerts@example.com
+SMTP_TO=security@example.com
+
+# STARTTLS on port 587 (1) or SMTPS on port 465 (0).
+# Set both to 0 only for local / non-routable relays.
+SMTP_STARTTLS=1
+SMTP_SMTPS=0
+
+# Timeouts in seconds.
+SMTP_CONNECT_TIMEOUT=10
+SMTP_SEND_TIMEOUT=30
+
+# Maximum delivery attempts before an email is discarded.
+SMTP_RETRY_MAX=8
+
+# Per-event rate limits in seconds.  0 means the event is ignored.
+# DEVICE_UPDATED=0 keeps notification storms low.
+SMTP_RATE_JOINED=600
+SMTP_RATE_LEFT=600
+SMTP_RATE_UPDATED=0
+SMTP_RATE_NEARBY=120
+
+# Display name for this sensor.
+ROUTER_NAME=EX520

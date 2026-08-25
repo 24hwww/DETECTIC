@@ -1,0 +1,6 @@
+# Detectic Python tooling
+# Core (used by detectic_client.py and crack_login.py when available):
+requests>=2.28
+cryptography>=41.0
+# Optional: only needed for pcap-based login key/IV recovery in crack_login.py
+scapy>=2.5

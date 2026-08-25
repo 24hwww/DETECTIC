@@ -1,0 +1,78 @@
+[package]
+name = "detectic"
+version = "0.1.0"
+edition = "2021"
+description = "Detectic sensor: retrieve and persist TP-Link EX520 network maps via the GTPR/GDPR API"
+license = "MIT"
+
+[[bin]]
+name = "detectic"
+path = "src/main.rs"
+
+[lib]
+name = "detectic"
+path = "src/lib.rs"
+
+[dependencies]
+# Synchronous, pure-Rust HTTP client. TLS (rustls) is optional so the tiny
+# router build stays C-free; enable it with the `tls` feature for HTTPS
+# uploads to a remote backend.
+ureq = { version = "2", default-features = false, features = ["json"] }
+
+# Crypto: AES-128-CBC, RSA, MD5
+aes = "0.8"
+cbc = "0.1"
+block-padding = "0.3"
+num-bigint = "0.4"
+rsa = "0.9"
+md-5 = "0.10"
+rand = "0.8"
+
+# Encoding
+base64 = "0.22"
+hex = "0.4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Persistence (host/backend only). Gated behind `persist`: the on-router sensor
+# must stay a tiny static binary with NO C dependencies (no bundled libsqlite3).
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Privacy: HMAC-SHA256 pseudonymization of device identifiers
+hmac = "0.12"
+sha2 = "0.10"
+
+# SMTP notification TLS (only needed for the M5 notifier, which is persist-gated).
+# Kept optional so the on-router sensor build (--no-default-features) has ZERO C
+# dependencies and cross-compiles to aarch64-unknown-linux-musl without a C
+# toolchain.
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+webpki-roots = { version = "1.0.9", optional = true }
+
+[features]
+default = ["persist"]
+persist = ["dep:rusqlite", "dep:rustls", "dep:webpki-roots"]
+# Pure-Rust TLS for the on-router sensor (no C toolchain needed).
+# Enables HTTPS uploads to a remote backend while keeping rusqlite out of
+# the aarch64-musl build.
+tls = ["dep:rustls", "dep:webpki-roots", "ureq/tls"]
+
+[profile.release]
+# Optimized for MediaTek MT7981 (Cortex-A53, ARMv8-A) — see .cargo/config.toml
+# for target-cpu. Size-optimized: the on-router sensor must stay <3 MB
+# and run from the writable misc_rw partition.
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+strip = false
+debug = true

@@ -1,0 +1,11 @@
+{
+  "name": "detectic",
+  "version": "0.1.0",
+  "arch": "aarch64",
+  "libc": "musl",
+  "size": 1139744,
+  "sha256": "REPLACE_WITH_ACTUAL_SHA256",
+  "min_firmware": "EX520V stock",
+  "created_at": "2026-08-23T12:00:00Z",
+  "release_url": "https://github.com/<org>/<repo>/releases/download/v0.1.0/detectic-aarch64-musl"
+}

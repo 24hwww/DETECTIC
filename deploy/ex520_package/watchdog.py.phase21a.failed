@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""EX520 Detectic autostart watchdog.
+
+Detects a router cold boot by monitoring IPv6 link-local reachability.
+Sends a single GTPR `so DEV2_LIFEMOTE_AGENT` to start phoenix -> bootstart.sh
+after the router has been down for at least DOWN_THRESHOLD seconds and then
+comes back up.
+"""
+import os
+import subprocess
+import sys
+import time
+
+DETECTIC = os.environ.get("DETECTIC_BIN", "detectic")
+ROUTER_URL = os.environ.get(
+    "EX520_URL",
+    "http://[fe80::3e6a:d2ff:fe5f:abc1%25enp2s0]",
+)
+USER = os.environ.get("EX520_USER", "user")
+PASSWORD = os.environ["DETECTIC_PASSWORD"]
+PING6_TARGET = os.environ.get(
+    "EX520_PING6",
+    "fe80::3e6a:d2ff:fe5f:abc1%enp2s0",
+)
+PING6_IFACE = os.environ.get("EX520_PING6_IFACE", "enp2s0")
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "10"))
+BOOTSTART_URL = os.environ.get(
+    "BOOTSTART_URL",
+    "http://192.168.0.27:8080/bootstart.sh",
+)
+DOWN_THRESHOLD = int(os.environ.get("DOWN_THRESHOLD", "30"))
+
+
+def log(msg):
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    print(f"{ts} {msg}", flush=True)
+
+
+def ping_reachable():
+    try:
+        ret = subprocess.run(
+            ["ping6", "-c", "1", "-W", "2", PING6_TARGET],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return ret.returncode == 0
+    except Exception:
+        return False
+
+
+def gtpr_query():
+    env = {**os.environ, "DETECTIC_PASSWORD": PASSWORD}
+    try:
+        ret = subprocess.run(
+            [
+                DETECTIC,
+                "--url",
+                ROUTER_URL,
+                "--user",
+                USER,
+                "query",
+                "DEV2_LIFEMOTE_AGENT",
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        return ret.returncode == 0
+    except Exception:
+        return False
+
+
+def trigger_bootstart():
+    payload = (
+        '{"enable":"1","URL":"%s","stack":"0,0,0,0,0,0","pstack":"0,0,0,0,0,0"}'
+        % BOOTSTART_URL
+    )
+    env = {**os.environ, "DETECTIC_PASSWORD": PASSWORD}
+    try:
+        ret = subprocess.run(
+            [
+                DETECTIC,
+                "--url",
+                ROUTER_URL,
+                "--user",
+                USER,
+                "set",
+                "DEV2_LIFEMOTE_AGENT",
+                payload,
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        return ret.returncode == 0
+    except Exception:
+        return False
+
+
+def main():
+    log("watchdog starting")
+    log(f"router={ROUTER_URL} bootstart={BOOTSTART_URL} poll={POLL_INTERVAL}s")
+
+    router_up = ping_reachable() or gtpr_query()
+    down_since = None
+    triggered_for_boot = router_up  # already up; only trigger after a real down/up
+    if router_up:
+        log("router UP at startup; waiting for a cold boot to trigger")
+
+    while True:
+        reachable = ping_reachable() or gtpr_query()
+
+        if reachable:
+            if not router_up:
+                # was it a sustained down?
+                if down_since is not None and (time.time() - down_since) >= DOWN_THRESHOLD:
+                    router_up = True
+                    log("router UP after cold boot")
+                    if not triggered_for_boot:
+                        if trigger_bootstart():
+                            triggered_for_boot = True
+                            log("GTPR trigger SENT")
+                        else:
+                            log("GTPR trigger FAILED, will retry")
+                elif down_since is not None:
+                    # brief blip, ignore and remain in up state (if it was up)
+                    log("router reachable after brief blip, no trigger")
+                else:
+                    router_up = True
+            down_since = None
+        else:
+            if router_up:
+                router_up = False
+                down_since = time.time()
+                log("router went DOWN")
+            elif down_since is not None:
+                down_for = int(time.time() - down_since)
+                if down_for >= DOWN_THRESHOLD and not triggered_for_boot:
+                    # reset so we trigger when it comes back
+                    triggered_for_boot = False
+                    log(f"router down for {down_for}s, armed for re-trigger")
+
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

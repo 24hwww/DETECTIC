@@ -1,0 +1,289 @@
+//! Monitor provider abstraction (M10-A).
+//!
+//! Provides a trait for discovering nearby (potentially non-associated) Wi-Fi
+//! devices using legitimate firmware interfaces only. The default
+//! `MediaTekMonitorProvider` uses `iwpriv get_site_survey` (documented in
+//! M4.4) when available, and gracefully falls back to "no nearby data" if
+//! the tool is unavailable or returns no useful rows.
+//!
+//! The provider NEVER:
+//! - enables monitor mode on the AP
+//! - changes BSS/channel configuration
+//! - injects packets
+//! - performs deauthentication
+//! - relies on kernel exploits
+//!
+//! It only reads existing scan/survey output that the firmware already
+//! produces for legitimate diagnostic purposes.
+
+use crate::logging;
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Source of a nearby observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NearbySource {
+    /// Active probe response (not currently produced on stock firmware).
+    Probe,
+    /// Beacon from a nearby AP.
+    Beacon,
+    /// Site survey row (iwpriv get_site_survey).
+    Survey,
+}
+
+impl Default for NearbySource {
+    fn default() -> Self {
+        NearbySource::Survey
+    }
+}
+
+/// A single nearby (potentially non-associated) observation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NearbyObservation {
+    pub mac: String,
+    pub bssid: String,
+    pub ssid: String,
+    pub channel: u32,
+    pub band: String,
+    pub rssi: Option<i64>,
+    pub timestamp: i64,
+    pub source: NearbySource,
+    /// Confidence in the observation [0.0, 1.0].
+    pub confidence: f64,
+}
+
+/// Trait abstracting the nearby-device observation source.
+pub trait MonitorProvider {
+    /// Human-readable name for status/logging.
+    fn name(&self) -> &str;
+
+    /// Whether the provider is available on this hardware.
+    fn available(&mut self) -> bool;
+
+    /// Collect nearby observations for the given interface (or all).
+    fn scan(&mut self) -> Vec<NearbyObservation>;
+}
+
+/// MediaTek-based monitor provider using `iwpriv get_site_survey`.
+///
+/// On the EX520V (MT7981B), `iwpriv rai0 get_site_survey` and
+/// `iwpriv rax0 get_site_survey` return a table of nearby APs. The output is
+/// parsed conservatively; malformed rows are skipped.
+pub struct MediaTekMonitorProvider {
+    /// Interfaces to scan (e.g. ["rai0", "rax0"]).
+    interfaces: Vec<String>,
+    /// Cached availability flag.
+    cached_available: Option<bool>,
+}
+
+impl MediaTekMonitorProvider {
+    pub fn new() -> Self {
+        // EX520V uses rai0 (2.4GHz) and rax0 (5GHz) per M4.4.
+        Self {
+            interfaces: vec!["rai0".into(), "rax0".into()],
+            cached_available: None,
+        }
+    }
+
+    pub fn with_interfaces(interfaces: Vec<String>) -> Self {
+        Self {
+            interfaces,
+            cached_available: None,
+        }
+    }
+
+    fn now() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    /// Parse a single `iwpriv <ifname> get_site_survey` output block.
+    /// Returns nearby AP beacons (NOT associated stations).
+    fn parse_survey(&self, ifname: &str, output: &str) -> Vec<NearbyObservation> {
+        let ts = Self::now();
+        let band = if ifname.starts_with("rai") {
+            "2.4GHz"
+        } else if ifname.starts_with("rax") {
+            "5GHz"
+        } else {
+            "unknown"
+        };
+
+        let mut out = Vec::new();
+        // The site survey output is a fixed-width table. Columns include
+        // Channel, SSID, BSSID, Security, Signal(%), W-Mode, ExtCH.
+        // We parse by splitting on whitespace and looking for rows that
+        // start with a numeric channel.
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("Ch") || trimmed.starts_with("Channel") {
+                continue;
+            }
+            // Try to parse the first field as a channel number.
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let ch = match parts[0].parse::<u32>() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            // Heuristic: BSSID looks like XX:XX:XX:XX:XX:XX
+            let bssid = parts.iter().find(|p| p.matches(':').count() == 5).copied();
+            let bssid = match bssid {
+                Some(b) => b.to_string(),
+                None => continue,
+            };
+            // Signal is usually a percentage like "13" near the end.
+            let signal_pct: Option<i64> = parts.iter().rev().find_map(|p| p.parse::<i64>().ok());
+            // Convert percentage to approximate dBm: % / 2 - 100
+            let rssi = signal_pct.map(|p| (p / 2) - 100);
+            // SSID is the second column typically; collect the rest as best effort.
+            let ssid = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+
+            out.push(NearbyObservation {
+                mac: bssid.clone(),
+                bssid,
+                ssid,
+                channel: ch,
+                band: band.to_string(),
+                rssi,
+                timestamp: ts,
+                source: NearbySource::Survey,
+                confidence: 0.6,
+            });
+        }
+        out
+    }
+}
+
+impl Default for MediaTekMonitorProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MonitorProvider for MediaTekMonitorProvider {
+    fn name(&self) -> &str {
+        "mediatek_iwpriv_site_survey"
+    }
+
+    fn available(&mut self) -> bool {
+        if let Some(v) = self.cached_available {
+            return v;
+        }
+        // Check that at least one configured interface exists and iwpriv is present.
+        let iwpriv_ok = Command::new("which")
+            .arg("iwpriv")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let v = iwpriv_ok
+            && self.interfaces.iter().any(|ifname| {
+                Command::new("iwpriv")
+                    .arg(ifname)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            });
+        self.cached_available = Some(v);
+        v
+    }
+
+    fn scan(&mut self) -> Vec<NearbyObservation> {
+        if !self.available() {
+            logging::debug("monitor_provider_unavailable");
+            return Vec::new();
+        }
+        let mut all = Vec::new();
+        for ifname in &self.interfaces {
+            let output = Command::new("iwpriv")
+                .arg(ifname)
+                .arg("get_site_survey")
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let rows = self.parse_survey(ifname, &stdout);
+                    logging::debug(&format!(
+                        "monitor_scan ifname={} rows={}",
+                        ifname,
+                        rows.len()
+                    ));
+                    all.extend(rows);
+                }
+                Ok(o) => {
+                    let err = String::from_utf8_lossy(&o.stderr);
+                    logging::debug(&format!(
+                        "monitor_scan_failed ifname={} err={}",
+                        ifname,
+                        err.chars().take(80).collect::<String>()
+                    ));
+                }
+                Err(e) => {
+                    logging::debug(&format!("monitor_spawn_failed ifname={} err={}", ifname, e));
+                }
+            }
+        }
+        all
+    }
+}
+
+/// Null provider for environments without any monitor capability.
+pub struct NullMonitorProvider;
+
+impl MonitorProvider for NullMonitorProvider {
+    fn name(&self) -> &str {
+        "null"
+    }
+    fn available(&mut self) -> bool {
+        false
+    }
+    fn scan(&mut self) -> Vec<NearbyObservation> {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_SURVEY: &str =
+        "Ch   SSID             BSSID               Security        Signal(%)  W-Mode    ExtCH
+ 1   Juliana          64:61:40:41:e0:e0   WPA2PSK/AES     13         11b/g/n/ax NONE
+ 6   REYES            3c:6a:d2:5f:ab:c1   WPA2PSK/AES     87         11b/g/n/ax NONE
+ 40  REYES_5G         3c:6a:d2:5f:ab:c3   WPA2PSK/AES     92         11a/n/ac/ax NONE
+";
+
+    #[test]
+    fn parses_site_survey_rows() {
+        let p = MediaTekMonitorProvider::with_interfaces(vec!["rai0".into()]);
+        let rows = p.parse_survey("rai0", SAMPLE_SURVEY);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].channel, 1);
+        assert_eq!(rows[0].ssid, "Juliana");
+        assert_eq!(rows[0].bssid, "64:61:40:41:e0:e0");
+        assert_eq!(rows[0].band, "2.4GHz");
+        assert_eq!(rows[0].source, NearbySource::Survey);
+        // 13% -> (13/2)-100 = -94
+        assert_eq!(rows[0].rssi, Some(-94));
+    }
+
+    #[test]
+    fn skips_header_and_empty_lines() {
+        let p = MediaTekMonitorProvider::with_interfaces(vec!["rai0".into()]);
+        let rows = p.parse_survey("rai0", "Ch SSID BSSID\n\n");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn null_provider_returns_empty() {
+        let mut p = NullMonitorProvider;
+        assert!(!p.available());
+        assert!(p.scan().is_empty());
+    }
+}
