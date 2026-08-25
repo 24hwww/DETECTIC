@@ -5,7 +5,7 @@
 //! to remain alive under transient failures and never crash because one
 //! data source is unavailable.
 
-use crate::backend::{BackendTransport, LocalSpoolBackend, NullBackend};
+use crate::backend::{BackendTransport, NullBackend};
 use crate::collector;
 use crate::config::SensorConfig;
 use crate::events::{diff_to_events, EventKind};
@@ -109,11 +109,16 @@ impl SensorRuntime {
     pub fn build_backend(&self) -> Box<dyn BackendTransport> {
         if let Some(url) = &self.config.backend_url {
             if !url.is_empty() {
-                // Use HttpBackend via the publisher's upload path
-                // For now, use LocalSpoolBackend which writes pseudonymized
-                // payloads to the spool file. The HttpBackend is a skeleton
-                // that will be fully wired in M6.
-                return Box::new(LocalSpoolBackend::new(&self.config));
+                // SpoolBackend wraps HttpBackend with bounded local buffer.
+                // On upload failure, payloads are buffered locally and
+                // retried on the next poll cycle.
+                let http = Box::new(crate::backend::HttpBackend::new(&self.config));
+                return Box::new(crate::backend::SpoolBackend::new(
+                    http,
+                    self.config.spool_path.to_str().unwrap_or("/var/run/misc/misc_rw/detectic/spool/detectic_buffer.jsonl"),
+                    self.config.spool_max_bytes,
+                    self.config.secret.as_bytes(),
+                ));
             }
         }
         // No backend configured — use null backend (data discarded)
