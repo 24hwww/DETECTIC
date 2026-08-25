@@ -128,6 +128,29 @@ async function pseudonymize(masterSecret: string, identifier: string): Promise<s
 
 let schemaReady = false;
 
+async function patchColumns(db: D1Database): Promise<void> {
+  // Plain ADD COLUMN (SQLite has no ADD COLUMN IF NOT EXISTS); a duplicate
+  // column error is expected and ignored so this is idempotent/safe.
+  const alters = [
+    `ALTER TABLE collector_devices ADD COLUMN hostname TEXT`,
+    `ALTER TABLE collector_devices ADD COLUMN band TEXT`,
+    `ALTER TABLE collector_devices ADD COLUMN signal_level INTEGER`,
+    `ALTER TABLE collector_devices ADD COLUMN noise INTEGER`,
+    `ALTER TABLE collector_devices ADD COLUMN operating_standard TEXT`,
+    `ALTER TABLE collector_devices ADD COLUMN tx_rate_kbps INTEGER`,
+    `ALTER TABLE collector_devices ADD COLUMN rx_rate_kbps INTEGER`,
+    `ALTER TABLE collector_devices ADD COLUMN status TEXT`,
+    `ALTER TABLE collector_devices ADD COLUMN bssid_pseudonym TEXT`,
+    `ALTER TABLE collector_devices ADD COLUMN identity_json TEXT`,
+    `ALTER TABLE collector_captures ADD COLUMN payload_hash TEXT`,
+    `ALTER TABLE device_identity ADD COLUMN bssid_manufacturer TEXT`,
+    `ALTER TABLE device_identity ADD COLUMN identity_json TEXT`,
+  ];
+  for (const sql of alters) {
+    try { await db.exec(sql); } catch { /* column already exists */ }
+  }
+}
+
 async function ensureSchema(db: D1Database): Promise<void> {
   if (schemaReady) return;
   try {
@@ -171,6 +194,9 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
     ]);
     schemaReady = true;
+    // Self-heal: older live tables may predate columns added later.
+    // ADD COLUMN is a no-op if the column already exists; failures are ignored.
+    await patchColumns(db);
   } catch (e: any) {
     // If batch fails (e.g., tables already exist), try individual execs
     const sqls = [
@@ -815,46 +841,57 @@ export default {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    const origin = request.headers.get("Origin") || undefined;
 
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
-        headers: corsHeaders(request.headers.get("Origin") || undefined),
+        headers: corsHeaders(origin),
       });
     }
 
-    // POST endpoints
-    if (request.method === "POST") {
-      if (path === "/api/v1/events") {
-        return handleIngest(request, env, ctx);
+    let response: Response | undefined;
+    try {
+      // POST endpoints
+      if (request.method === "POST") {
+        if (path === "/api/v1/events") {
+          response = await handleIngest(request, env, ctx);
+        } else if (path === "/api/v1/events/batch") {
+          response = await handleIngest(request, env, ctx);
+        } else if (path === "/api/v1/captures/sync") {
+          response = await handleCollectorSync(request, env);
+        }
       }
-      if (path === "/api/v1/events/batch") {
-        return handleIngest(request, env, ctx);
+
+      // GET endpoints
+      else if (request.method === "GET") {
+        // Dashboard UI
+        if (path === "/" || path === "/dashboard" || path === "/index.html") {
+          response = new Response(dashboardHtml, {
+            headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=60" },
+          });
+        } else if (path === "/api/v1/healthz") response = await handleHealthz(request, env);
+        else if (path === "/api/v1/readyz") response = await handleReadyz(request, env);
+        else if (path === "/api/v1/devices") response = await handleDevices(request, env);
+        else if (path === "/api/v1/presence") response = await handlePresence(request, env);
+        else if (path === "/api/v1/sensors") response = await handleSensors(request, env);
+        else if (path === "/api/v1/stats") response = await handleStats(request, env);
+        else if (path === "/api/v1/timeline") response = await handleTimeline(request, env);
+        else if (path === "/api/v1/networks") response = await handleNetworks(request, env);
       }
-      if (path === "/api/v1/captures/sync") {
-        return handleCollectorSync(request, env);
-      }
+
+      if (!response) response = jsonResponse(404, { error: "not found" });
+    } catch (e: any) {
+      // Surface the real error so misconfigured queries / schema drift are diagnosable.
+      console.error("REQUEST_ERROR", path, e?.message, e?.stack);
+      response = jsonResponse(500, {
+        error: e?.message ?? String(e),
+        path,
+        stack: String(e?.stack ?? "").split("\n").slice(0, 5),
+      }, origin);
     }
 
-    // GET endpoints
-    if (request.method === "GET") {
-      // Dashboard UI
-      if (path === "/" || path === "/dashboard" || path === "/index.html") {
-        return new Response(dashboardHtml, {
-          headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=60" },
-        });
-      }
-      if (path === "/api/v1/healthz") return handleHealthz(request, env);
-      if (path === "/api/v1/readyz") return handleReadyz(request, env);
-      if (path === "/api/v1/devices") return handleDevices(request, env);
-      if (path === "/api/v1/presence") return handlePresence(request, env);
-      if (path === "/api/v1/sensors") return handleSensors(request, env);
-      if (path === "/api/v1/stats") return handleStats(request, env);
-      if (path === "/api/v1/timeline") return handleTimeline(request, env);
-      if (path === "/api/v1/networks") return handleNetworks(request, env);
-    }
-
-    return jsonResponse(404, { error: "not found" });
+    return response;
   },
 };
