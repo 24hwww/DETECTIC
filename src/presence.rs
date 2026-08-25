@@ -30,6 +30,12 @@ pub enum PresenceState {
     Present,
     Away,
     Unknown,
+    /// Signal weakening over recent observations — may be departing.
+    Weakening,
+    /// Signal strengthening over recent observations — may be approaching.
+    Approaching,
+    /// Was present, now absent (transition state).
+    Departing,
 }
 
 impl Default for PresenceState {
