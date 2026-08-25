@@ -1,0 +1,35 @@
+[Unit]
+Description=Detectic HTTP→HTTPS Forwarder (EX520 → Cloudflare Worker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/detectic
+ExecStart=/usr/bin/python3 /opt/detectic/forwarder.py --port 8082
+Restart=always
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=5
+
+# Environment
+Environment=DETECTIC_BACKEND_URL=https://detectic.24hwww.workers.dev/api/v1/events
+
+# Memory limit (forwarder is tiny)
+MemoryMax=64M
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/detectic
+ProtectHome=yes
+PrivateTmp=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=detectic-forwarder
+
+[Install]
+WantedBy=multi-user.target
