@@ -287,6 +287,28 @@ class GtprClient:
                f'"operation":"gl","oid":"{oid}"}}\r\n')
         return self._operation(raw)
 
+    def go(self, oid: str) -> str:
+        raw = (f'{{"data":{{"stack":"0,0,0,0,0,0","pstack":"0,0,0,0,0,0"}},'
+               f'"operation":"go","oid":"{oid}"}}\r\n')
+        return self._operation(raw)
+
+    def so(self, oid: str, data: dict) -> str:
+        import json as _json
+        raw = (f'{{"data":{_json.dumps(data)},'
+               f'"operation":"so","oid":"{oid}"}}\r\n')
+        return self._operation(raw)
+
+    def cgi(self, oid: str, data: dict) -> str:
+        import json as _json
+        raw = (f'{{"data":{_json.dumps(data)},'
+               f'"operation":"cgi","oid":"{oid}"}}\r\n')
+        return self._operation(raw)
+
+    def op(self, oid: str) -> str:
+        raw = (f'{{"data":{{"stack":"0,0,0,0,0,0","pstack":"0,0,0,0,0,0"}},'
+               f'"operation":"op","oid":"{oid}"}}\r\n')
+        return self._operation(raw)
+
     def _operation(self, raw: str) -> str:
         ct = aes_cbc(self.key, self.iv, raw.encode())
         data_b64 = base64.b64encode(ct).decode()

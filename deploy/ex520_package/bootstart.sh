@@ -68,11 +68,12 @@ fi
 $BB chmod +x "$TMPPKG/launcher.sh"
 
 # Replace persistent pieces (rm then cp; no double-in-place due to misc_rw size)
+# If copy fails (partition full), continue anyway — binary runs from /var/tmp
 $BB rm -f "$DIR/detectic.aa"
-$BB cp "$TMPPKG/detectic.aa" "$DIR/detectic.aa" 2>/dev/null || err "copy_aa"
+$BB cp "$TMPPKG/detectic.aa" "$DIR/detectic.aa" 2>/dev/null || log "copy_aa_failed_using_vartmp"
 
 $BB rm -f "$BAKDIR/detectic.ab"
-$BB cp "$TMPPKG/detectic.ab" "$BAKDIR/detectic.ab" 2>/dev/null || err "copy_ab"
+$BB cp "$TMPPKG/detectic.ab" "$BAKDIR/detectic.ab" 2>/dev/null || log "copy_ab_failed_using_vartmp"
 
 # launcher copy is soft-fail: if misc_rw is full we still want to run
 # from the existing launcher (or /var/tmp) rather than aborting mid-boot.
@@ -89,12 +90,22 @@ $BB rm -f "$TMPPKG/version"
 $BB sh "$DIR/launcher.sh" stop 2>/var/tmp/launcher.trace || true
 $BB rm -f /var/tmp/detectic/detectic
 
-# Free /var/tmp before reassembling the binary (aa+ab ≈ 1.3 MB)
-$BB rm -rf "$TMPPKG"
+# Keep TMPPKG until reassembly is complete (may be used as fallback)
+# Cleanup happens after reassembly below
 
-# Reassemble runtime binary
-$BB cat "$DIR/detectic.aa" "$BAKDIR/detectic.ab" > /var/tmp/detectic/detectic 2>/dev/null || err "cat"
+# Reassemble runtime binary (try misc_rw first, fallback to /var/tmp)
+if [ -s "$DIR/detectic.aa" ] && [ -s "$BAKDIR/detectic.ab" ]; then
+    $BB cat "$DIR/detectic.aa" "$BAKDIR/detectic.ab" > /var/tmp/detectic/detectic 2>/dev/null || err "cat"
+elif [ -s "$TMPPKG/detectic.aa" ] && [ -s "$TMPPKG/detectic.ab" ]; then
+    # Fallback: reassemble from download cache (misc_rw full)
+    $BB cat "$TMPPKG/detectic.aa" "$TMPPKG/detectic.ab" > /var/tmp/detectic/detectic 2>/dev/null || err "cat_vartmp"
+else
+    err "no_binary_parts"
+fi
 $BB chmod +x /var/tmp/detectic/detectic
+
+# Cleanup download cache after successful reassembly
+$BB rm -rf "$TMPPKG"
 
 # Start launcher in the background (survives bootstart exit)
 ( $BB sh "$DIR/launcher.sh" start 2>/var/tmp/launcher.trace >> "$LOG" 2>&1 ) &
