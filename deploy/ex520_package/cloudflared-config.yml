@@ -1,0 +1,37 @@
+# ============================================================================
+# Detectic — Cloudflare Tunnel Configuration
+# ============================================================================
+# This tunnel routes EX520 sensor traffic to the Cloudflare Worker.
+#
+# The EX520 sends HTTP to the host (192.168.0.27:8082).
+# cloudflared forwards it through an encrypted tunnel to Cloudflare Edge.
+# The Cloudflare Worker processes and stores the data in D1.
+#
+# Setup:
+#   1. Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
+#   2. Authenticate: cloudflared tunnel login
+#   3. Create tunnel: cloudflared tunnel create detectic
+#   4. Copy this config to ~/.cloudflared/config.yml
+#   5. Run: cloudflared tunnel run detectic
+# ============================================================================
+
+# Tunnel ID (replace with your tunnel ID from `cloudflared tunnel list`)
+tunnel: YOUR_TUNNEL_ID_HERE
+credentials-file: /root/.cloudflared/YOUR_TUNNEL_ID_HERE.json
+
+# Ingress rules: route traffic to the local Python relay
+ingress:
+  # Sensor data → local relay → Cloudflare Worker
+  - hostname: detectic.24hwww.com
+    service: http://localhost:8082
+    originRequest:
+      # Keepalive for persistent connections
+      keepAliveConnections: 10
+      keepAliveTimeout: 90s
+      # No TLS to local relay (it's HTTP)
+      noTLSVerify: false
+      # Connect timeout
+      connectTimeout: 10s
+
+  # Catch-all: reject unmatched routes
+  - service: http_status:404
