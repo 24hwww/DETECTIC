@@ -23,7 +23,6 @@ start() {
 start package_server run_package_server.sh
 start emaild run_emaild.sh
 start backend run_backend.sh
-start forwarder run_forwarder.sh
 start watchdog run_watchdog.sh
 
 echo "all services launched; logs in ${HERE}/*.log and ${HERE}/.*.log"
