@@ -64,6 +64,12 @@ pub trait MonitorProvider {
 
     /// Collect nearby observations for the given interface (or all).
     fn scan(&mut self) -> Vec<NearbyObservation>;
+
+    /// Collect per-radio statistics via `iwpriv <ifname> stat`.
+    /// Returns empty vec if not supported.
+    fn radio_stats(&mut self) -> Vec<crate::snapshot::RadioStats> {
+        Vec::new()
+    }
 }
 
 /// MediaTek-based monitor provider using `iwpriv get_site_survey`.
@@ -230,6 +236,118 @@ impl MonitorProvider for MediaTekMonitorProvider {
             }
         }
         all
+    }
+    fn radio_stats(&mut self) -> Vec<crate::snapshot::RadioStats> {
+        if !self.available() {
+            logging::debug("radio_stats_provider_unavailable");
+            return Vec::new();
+        }
+        let mut all = Vec::new();
+        for ifname in &self.interfaces {
+            let output = Command::new("iwpriv")
+                .arg(ifname)
+                .arg("stat")
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let stats = self.parse_radio_stats(ifname, &stdout);
+                    logging::debug(&format!(
+                        "radio_stats ifname={} fields={}",
+                        ifname,
+                        stats.is_empty()
+                    ));
+                    all.extend(stats);
+                }
+                Ok(o) => {
+                    let err = String::from_utf8_lossy(&o.stderr);
+                    logging::debug(&format!(
+                        "radio_stats_failed ifname={} err={}",
+                        ifname,
+                        err.chars().take(80).collect::<String>()
+                    ));
+                }
+                Err(e) => {
+                    logging::debug(&format!(
+                        "radio_stats_spawn_failed ifname={} err={}",
+                        ifname, e
+                    ));
+                }
+            }
+        }
+        all
+    }
+}
+
+impl MediaTekMonitorProvider {
+    /// Parse `iwpriv <ifname> stat` output into RadioStats.
+    /// The output format varies by MediaTek driver version; we extract
+    /// common fields conservatively and skip unknown lines.
+    fn parse_radio_stats(&self, ifname: &str, output: &str) -> Vec<crate::snapshot::RadioStats> {
+        let mut stats = crate::snapshot::RadioStats::default();
+        stats.interface = ifname.to_string();
+        stats.band = if ifname.contains("rax") {
+            Some("5GHz".into())
+        } else if ifname.contains("rai") {
+            Some("2.4GHz".into())
+        } else {
+            None
+        };
+
+        for line in output.lines() {
+            let line = line.trim();
+            // Common MediaTek stat formats:
+            //   "Temperature: 45"
+            //   "Tx success: 12345"
+            //   "Tx fail: 67"
+            //   "Rx success: 67890"
+            //   "Rx CRC: 12"
+            //   "Noise Floor: -95"
+            if let Some(v) = Self::extract_int(line, "Temperature") {
+                stats.temperature = Some(v);
+            } else if let Some(v) = Self::extract_u64(line, "Tx success") {
+                stats.tx_success = Some(v);
+            } else if let Some(v) = Self::extract_u64(line, "Tx fail") {
+                stats.tx_fail = Some(v);
+            } else if let Some(v) = Self::extract_u64(line, "Rx success") {
+                stats.rx_success = Some(v);
+            } else if let Some(v) = Self::extract_u64(line, "Rx CRC") {
+                stats.rx_crc = Some(v);
+            } else if let Some(v) = Self::extract_int(line, "Noise Floor") {
+                stats.noise_floor_dbm = Some(v);
+            }
+        }
+
+        // Only return if we found at least one field
+        if stats.temperature.is_some()
+            || stats.tx_success.is_some()
+            || stats.rx_success.is_some()
+            || stats.noise_floor_dbm.is_some()
+        {
+            vec![stats]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn extract_int(line: &str, key: &str) -> Option<i64> {
+        if line.to_lowercase().contains(&key.to_lowercase()) {
+            line.split(':')
+                .nth(1)
+                .and_then(|s| s.trim().parse::<i64>().ok())
+        } else {
+            None
+        }
+    }
+
+    fn extract_u64(line: &str, key: &str) -> Option<u64> {
+        if line.to_lowercase().contains(&key.to_lowercase()) {
+            line.split(':')
+                .nth(1)
+                .and_then(|s| s.trim().parse::<u64>().ok())
+        } else {
+            None
+        }
     }
 }
 

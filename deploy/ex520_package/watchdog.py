@@ -7,8 +7,11 @@ after the router has been down for at least DOWN_THRESHOLD seconds and then
 comes back up.
 
 State machine:
-    UP (initial) -> DOWN -> DOWN >= threshold -> ARMED -> UP -> TRIGGER ONCE -> UP/WAIT
+    UP (initial) -> DOWN -> DOWN >= threshold -> ARMED -> UP -> TRIGGER ONCE -> COOLDOWN -> UP/WAIT
     Only another DOWN >= threshold may arm it again.
+
+Single-instance enforcement: uses a PID lock file to prevent duplicate
+watchdog processes from sending duplicate GTPR triggers.
 """
 import os
 import subprocess
@@ -140,6 +143,10 @@ def _watchdog_loop(is_reachable, do_trigger, poll_interval, down_threshold,
                             if do_trigger():
                                 triggered_for_boot = True
                                 logger("GTPR trigger SENT")
+                                # Cooldown: wait extra time after trigger so
+                                # the sensor has time to start before we poll
+                                # again. Prevents rapid re-trigger.
+                                sleep(poll_interval * 3)
                             else:
                                 logger("GTPR trigger FAILED, will retry")
                     else:
@@ -169,15 +176,40 @@ def _watchdog_loop(is_reachable, do_trigger, poll_interval, down_threshold,
 
 
 def main():
-    log("watchdog starting")
-    log(f"router={ROUTER_URL} bootstart={BOOTSTART_URL} poll={POLL_INTERVAL}s")
-    _watchdog_loop(
-        is_reachable=lambda: ping_reachable() or gtpr_query(),
-        do_trigger=trigger_bootstart,
-        poll_interval=POLL_INTERVAL,
-        down_threshold=DOWN_THRESHOLD,
-        phoenix_grace=PHOENIX_GRACE,
-    )
+    # Single-instance enforcement: prevent duplicate watchdog processes
+    # from sending duplicate GTPR triggers.
+    lock_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.pid")
+    try:
+        with open(lock_file, "r") as f:
+            old_pid = int(f.read().strip())
+        # Check if the old PID is still alive and is a watchdog process
+        try:
+            os.kill(old_pid, 0)
+            log(f"watchdog already running (PID {old_pid}), exiting")
+            sys.exit(0)
+        except (OSError, ProcessLookupError):
+            pass  # stale PID file, proceed
+    except (FileNotFoundError, ValueError):
+        pass
+
+    with open(lock_file, "w") as f:
+        f.write(str(os.getpid()))
+
+    try:
+        log("watchdog starting")
+        log(f"router={ROUTER_URL} bootstart={BOOTSTART_URL} poll={POLL_INTERVAL}s")
+        _watchdog_loop(
+            is_reachable=lambda: ping_reachable() or gtpr_query(),
+            do_trigger=trigger_bootstart,
+            poll_interval=POLL_INTERVAL,
+            down_threshold=DOWN_THRESHOLD,
+            phoenix_grace=PHOENIX_GRACE,
+        )
+    finally:
+        try:
+            os.remove(lock_file)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
