@@ -4,7 +4,7 @@
 # Deploy: npx wrangler deploy
 # ============================================================================
 
-name = "detectic-backend"
+name = "detectic"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
@@ -13,7 +13,10 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "detectic-db"
-database_id = "REPLACE_WITH_YOUR_DATABASE_ID"  # Get from: npx wrangler d1 create detectic-db
+# database_id is set via `npx wrangler d1 create detectic-db`
+# and then pasted here after the command outputs it.
+# Example: database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+database_id = "YOUR_D1_DATABASE_ID_HERE"
 
 # Environment variables (set via: npx wrangler secret put DETECTIC_SENSORS)
 # DETECTIC_SENSORS = '{"ex520-001": "your-sensor-secret"}'
