@@ -21,6 +21,7 @@ import { ActivityTimelineChart } from "@/components/activity-timeline-chart";
 import { DeviceClassChart } from "@/components/device-class-chart";
 import { SignalProximityChart } from "@/components/signal-proximity-chart";
 import { useRealtime } from "@/lib/realtime";
+import { mergeLive } from "@/lib/merge";
 import { sourceColor } from "@/lib/location";
 import {
   fetchSensors,
@@ -102,52 +103,11 @@ function useDashboardData() {
   return { stats, devices, networks, allDevices, timeline, sensors };
 }
 
-function mergeLive<T extends { device_id?: string; ap_id?: string }>(
-  fetched: T[],
-  live: Map<string, T>
-): T[] {
-  const map = new Map<string, T>();
-  for (const d of fetched) {
-    const key = d.device_id || d.ap_id || "";
-    if (key) map.set(key, d);
-  }
-  for (const [key, d] of live) {
-    map.set(key, { ...map.get(key), ...d } as T);
-  }
-  return Array.from(map.values()).sort((a, b) => {
-    const ta = (a as any).last_seen ?? 0;
-    const tb = (b as any).last_seen ?? 0;
-    return tb - ta;
-  });
-}
-
 export function DashboardView() {
   const queryClient = useQueryClient();
   const live = useRealtime();
   const { stats, devices, networks, allDevices, timeline, sensors } =
     useDashboardData();
-
-  if (
-    stats.isLoading ||
-    devices.isLoading ||
-    networks.isLoading ||
-    allDevices.isLoading ||
-    timeline.isLoading ||
-    sensors.isLoading
-  ) {
-    return <Loading />;
-  }
-
-  const error =
-    stats.error ||
-    devices.error ||
-    networks.error ||
-    allDevices.error ||
-    timeline.error ||
-    sensors.error;
-  if (error) {
-    return <ErrorMessage error={error as Error} />;
-  }
 
   const s = stats.data || {};
   const fetchedDevs = devices.data || [];
@@ -173,6 +133,28 @@ export function DashboardView() {
         .slice(-500),
     [fetchedPoints, live.points]
   );
+
+  if (
+    stats.isLoading ||
+    devices.isLoading ||
+    networks.isLoading ||
+    allDevices.isLoading ||
+    timeline.isLoading ||
+    sensors.isLoading
+  ) {
+    return <Loading />;
+  }
+
+  const error =
+    stats.error ||
+    devices.error ||
+    networks.error ||
+    allDevices.error ||
+    timeline.error ||
+    sensors.error;
+  if (error) {
+    return <ErrorMessage error={error as Error} />;
+  }
 
   const connected = liveDevs.filter((d) => d.connected).length;
   const eventsHour = s.snapshots_last_hour ?? 0;

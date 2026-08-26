@@ -3,13 +3,24 @@ import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
+  getFilteredRowModel,
   getSortedRowModel,
   useReactTable,
   type SortingState,
 } from "@tanstack/react-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Search } from "lucide-react";
 import type { Device } from "@/lib/api";
+
+function timeAgo(ms?: number) {
+  if (ms == null) return "—";
+  const diff = Math.floor(Date.now() - ms) / 1000;
+  if (diff < 60) return `${Math.floor(diff)}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
 
 const columnHelper = createColumnHelper<Device>();
 
@@ -17,8 +28,12 @@ const columns = [
   columnHelper.accessor("device_id", {
     header: "Dispositivo",
     cell: (info) => (
-      <code className="text-xs font-mono">{info.getValue()}</code>
+      <code className="text-xs font-mono">{info.getValue().slice(0, 20)}</code>
     ),
+  }),
+  columnHelper.accessor("hostname", {
+    header: "Hostname",
+    cell: (info) => info.getValue() || "—",
   }),
   columnHelper.accessor("connected", {
     header: "Estado",
@@ -28,7 +43,7 @@ const columns = [
           variant="default"
           className="bg-green-500/10 text-green-500 hover:bg-green-500/10"
         >
-          online
+          connected
         </Badge>
       ) : (
         <Badge
@@ -46,22 +61,37 @@ const columns = [
       return v != null ? `${v} dBm` : "—";
     },
   }),
+  columnHelper.accessor("band", {
+    header: "Banda",
+    cell: (info) => info.getValue() || "—",
+  }),
   columnHelper.accessor("sensor_id", {
     header: "Sensor",
     cell: (info) => info.getValue() || "—",
+  }),
+  columnHelper.accessor("last_seen", {
+    header: "Última vez",
+    cell: (info) => timeAgo(info.getValue()),
+  }),
+  columnHelper.accessor("event_count", {
+    header: "Eventos",
+    cell: (info) => info.getValue() ?? "—",
   }),
 ];
 
 export function DeviceTable({ devices }: { devices: Device[] }) {
   const [sorting, setSorting] = useState<SortingState>([]);
+  const [globalFilter, setGlobalFilter] = useState("");
 
   const table = useReactTable({
     data: devices,
     columns,
-    state: { sorting },
+    state: { sorting, globalFilter },
     onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
   });
 
   return (
@@ -72,6 +102,18 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
+        <div className="border-b border-border p-3">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={globalFilter}
+              onChange={(e) => setGlobalFilter(e.target.value)}
+              placeholder="Buscar dispositivo, hostname, sensor..."
+              className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-xs text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
+            />
+          </div>
+        </div>
         <div className="max-h-[420px] overflow-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted text-muted-foreground">
