@@ -16,6 +16,8 @@ use crate::calibrate::Band;
 use crate::config::SensorConfig;
 use crate::crypto;
 use crate::event_transport::{HttpEventTransport, ReliableQueue, SpoolEventTransport};
+#[cfg(feature = "wss")]
+use crate::wss_transport::WssEventTransport;
 use crate::logging;
 use crate::monitor::{MediaTekMonitorProvider, MonitorProvider, NullMonitorProvider};
 use crate::presence::{PresenceEngine, PresenceObservation};
@@ -492,7 +494,14 @@ impl DetecticService {
         // SpoolEventTransport persists undelivered events to disk and drains
         // any previous spool before attempting the current batch.
         if let Some(url) = self.config.backend_url.as_deref() {
-            let http = HttpEventTransport::new(url, &self.config.sensor_id, secret, Duration::from_secs(30));
+            let inner: Box<dyn crate::event_transport::EventTransport> = if url.starts_with("wss://") || url.starts_with("ws://") {
+                #[cfg(feature = "wss")]
+                { Box::new(WssEventTransport::new(url, &self.config.sensor_id)) }
+                #[cfg(not(feature = "wss"))]
+                { Box::new(HttpEventTransport::new(url, &self.config.sensor_id, secret, Duration::from_secs(30))) }
+            } else {
+                Box::new(HttpEventTransport::new(url, &self.config.sensor_id, secret, Duration::from_secs(30)))
+            };
             // Use a separate events spool so the legacy snapshot spool is not
             // corrupted by the new canonical event format.
             let events_spool = self
@@ -500,7 +509,7 @@ impl DetecticService {
                 .spool_path
                 .with_file_name("detectic_events.jsonl");
             let mut transport =
-                SpoolEventTransport::new(Box::new(http), events_spool, 65536);
+                SpoolEventTransport::new(inner, events_spool, 65536);
             let drained = transport.drain();
             if drained > 0 {
                 logging::info(&format!("events_spool_drained count={}", drained));

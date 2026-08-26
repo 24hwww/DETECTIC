@@ -34,6 +34,8 @@ pub mod snapshot;
 pub mod store;
 pub mod temporal;
 pub mod transport;
+#[cfg(feature = "wss")]
+pub mod wss_transport;
 
 pub use crypto::*;
 pub use gtpr::{Dialect, GtprClient};

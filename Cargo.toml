@@ -18,6 +18,8 @@ path = "src/lib.rs"
 # router build stays C-free; enable it with the `tls` feature for HTTPS
 # uploads to a remote backend.
 ureq = { version = "2", default-features = false, features = ["json"] }
+tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "handshake"], optional = true }
+url = { version = "2.5", optional = true }
 
 # Crypto: AES-128-CBC, RSA, MD5
 aes = "0.8"
@@ -56,12 +58,13 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 webpki-roots = { version = "1.0.9", optional = true }
 
 [features]
-default = ["persist"]
+default = ["persist", "wss"]
 persist = ["dep:rusqlite", "dep:rustls", "dep:webpki-roots"]
 # Pure-Rust TLS for the on-router sensor (no C toolchain needed).
 # Enables HTTPS uploads to a remote backend while keeping rusqlite out of
 # the aarch64-musl build.
 tls = ["dep:rustls", "dep:webpki-roots", "ureq/tls"]
+wss = ["dep:tungstenite", "dep:url", "dep:rustls", "dep:webpki-roots"]
 
 [profile.release]
 # Optimized for MediaTek MT7981 (Cortex-A53, ARMv8-A) — see .cargo/config.toml
