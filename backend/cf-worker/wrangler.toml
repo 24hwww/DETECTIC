@@ -28,10 +28,10 @@ tag = "v2"
 new_sqlite_classes = ["RealtimeHub"]
 
 # Static assets built from the shadcn/React frontend (frontend/detectic-ui).
-# `run_worker_first = true` lets index.ts serve API/WSCustom routes and fall back
+# `run_worker_first = true` lets index.ts serve API/WSS routes and fall back
 # to the asset binding for everything else (e.g. /, /assets/*, /favicon.svg).
 [assets]
-directory = "./src/frontend-dist"
+directory = "./public"
 binding = "ASSETS"
 run_worker_first = true
 

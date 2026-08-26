@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../../backend/cf-worker/src/frontend-dist',
+    outDir: '../../backend/cf-worker/public',
     emptyOutDir: true,
     rollupOptions: {
       output: {
