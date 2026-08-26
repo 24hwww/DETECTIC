@@ -1573,9 +1573,21 @@ function distanceLabel(rssi?: number | null): string {
 }
 
 function deviceNameFrom(row: any, fallback: string): string {
-  const parts = [row?.manufacturer, row?.brand, row?.model_guess, row?.device_class].filter(Boolean);
+  if (row?.hostname) return row.hostname;
+  const parts = [row?.manufacturer, row?.brand, row?.model_guess, row?.device_class, row?.operating_standard].filter(Boolean);
   if (parts.length) return parts.join(' ');
   return fallback;
+}
+
+function deviceDetails(row: any): string {
+  const parts: string[] = [];
+  if (row?.hostname) parts.push(`host: ${row.hostname}`);
+  if (row?.manufacturer) parts.push(row.manufacturer);
+  if (row?.brand) parts.push(row.brand);
+  if (row?.model_guess) parts.push(row.model_guess);
+  if (row?.device_class) parts.push(row.device_class);
+  if (row?.operating_standard) parts.push(row.operating_standard);
+  return parts.join(' · ') || 'sin datos adicionales';
 }
 
 async function handleEmailReport(request: Request, env: Env): Promise<Response> {
@@ -1590,8 +1602,12 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   const captureStart = new Date(data.generated_at || now.getTime());
   const captureEnd = now;
 
-  const [idRows, apRows] = await Promise.all([
+  const [idRows, devRows, apRows] = await Promise.all([
     env.DB.prepare('SELECT pseudonym, manufacturer, brand, model_guess, device_class, last_seen FROM device_identity').all(),
+    env.DB.prepare(`SELECT d.pseudonym, d.hostname, d.operating_standard, d.identity_json, c.started_at
+                     FROM collector_devices d
+                     JOIN collector_captures c ON d.capture_id = c.capture_id
+                     ORDER BY c.started_at DESC`).all(),
     env.DB.prepare(`SELECT ssid, band, current_signal, status, sensor_id, last_seen
                     FROM ap_state
                     WHERE last_seen >= ?
@@ -1603,6 +1619,21 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   const apiMs = Date.now() - startMs;
   const identityMap = new Map<string, any>();
   for (const r of idRows.results as any[]) identityMap.set(r.pseudonym, r);
+  for (const r of devRows.results as any[]) {
+    let identity: any = {};
+    if (r.identity_json) {
+      try { identity = JSON.parse(r.identity_json); } catch { /* ignore */ }
+    }
+    if (!identityMap.has(r.pseudonym)) identityMap.set(r.pseudonym, { ...r, ...identity });
+    else {
+      const existing = identityMap.get(r.pseudonym);
+      if (r.hostname) existing.hostname = r.hostname;
+      if (r.operating_standard && !existing.operating_standard) existing.operating_standard = r.operating_standard;
+      for (const k of ['manufacturer', 'brand', 'model_guess', 'device_class']) {
+        if (identity[k] && !existing[k]) existing[k] = identity[k];
+      }
+    }
+  }
 
   const connected = (data.devices || []).filter((d: any) => d.connected);
   const outOfRange = (data.devices || []).filter((d: any) => !d.connected);
@@ -1612,14 +1643,16 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
 
   const sensorId = (apRows.results[0]?.sensor_id as string) ||
     (data.devices?.[0]?.sensor_id as string) ||
-    'ex520-001';
+    'desconocido';
 
   const connectedRows = connected.map((d: any) => {
-    const id = identityMap.get(d.device_id) || {};
+    const id = { ...(identityMap.get(d.device_id) || {}), ...d };
     const name = deviceNameFrom(id, d.device_id.slice(0, 16));
+    const details = deviceDetails(id);
     const level = signalLevel(d.last_signal);
     return `<div style="margin-bottom:14px;padding:10px;border:1px solid #d0d7de;border-radius:8px;background:#fff">
       <b>${escHtml(name)}</b>
+      <div style="font-size:11px;color:#57606a">${escHtml(details)}</div>
       <div style="font-size:12px;margin:4px 0">📶 ${signalBars(level)} ${signalLabel(level)} (nivel ${level}/4)</div>
       <div style="font-size:12px;color:#57606a">📡 ${d.band || '—'}</div>
       <div style="font-size:12px;color:#57606a">📍 ${distanceLabel(d.last_signal)} · última ${fmtDateTime(d.last_seen)} · total ${msToDuration(d.last_seen - d.first_seen)}</div>
@@ -1627,10 +1660,12 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   }).join('') || '<p style="color:#57606a">Ningún dispositivo conectado en el período.</p>';
 
   const outRows = outOfRange.map((d: any) => {
-    const id = identityMap.get(d.device_id) || {};
+    const id = { ...(identityMap.get(d.device_id) || {}), ...d };
     const name = deviceNameFrom(id, d.device_id.slice(0, 16));
+    const details = deviceDetails(id);
     return `<div style="margin-bottom:10px;padding:8px;border:1px solid #d0d7de;border-radius:6px;background:#fff">
       <b>${escHtml(name)}</b>
+      <div style="font-size:11px;color:#57606a">${escHtml(details)}</div>
       <span style="font-size:12px;color:#57606a"> 📡 ${d.band || '—'} · 💤 desconectado · última ${fmtDateTime(d.last_seen)}</span>
     </div>`;
   }).join('') || '<p style="color:#57606a">Ningún dispositivo fuera de rango.</p>';

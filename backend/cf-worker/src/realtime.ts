@@ -14,6 +14,7 @@ interface DeviceSummary {
   connected: boolean;
   last_signal?: number;
   band?: string;
+  hostname?: string;
 }
 
 export class RealtimeHub extends DurableObject {
@@ -58,6 +59,7 @@ export class RealtimeHub extends DurableObject {
           connected: d.connected,
           last_signal: d.last_signal,
           band: d.band,
+          hostname: d.hostname,
         });
       }
       devices.sort((a, b) => b.last_seen - a.last_seen);
@@ -122,6 +124,11 @@ export class RealtimeHub extends DurableObject {
       last_type: eventType,
       connected: !eventType.includes('disconnected'),
     };
+
+    const incomingHostname = dev.hostname || p.hostname;
+    if (incomingHostname && !summary.hostname) {
+      summary.hostname = String(incomingHostname);
+    }
 
     summary.last_seen = Math.max(summary.last_seen, observedAt);
     summary.first_seen = Math.min(summary.first_seen, observedAt);

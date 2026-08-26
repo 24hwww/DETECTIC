@@ -443,6 +443,7 @@ impl DetecticService {
                 noise,
                 band,
                 interface: d.interface.clone().or(d.radio_mac.clone()),
+                hostname: d.hostname.clone(),
             });
         }
         let canonical = self

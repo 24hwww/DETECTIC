@@ -127,6 +127,7 @@ pub struct DeviceObs {
     pub noise: Option<i64>,
     pub band: Option<String>,
     pub interface: Option<String>,
+    pub hostname: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -278,6 +279,7 @@ struct TrackedDevice {
     last_rssi: Option<i64>,
     last_band: Option<String>,
     last_interface: Option<String>,
+    hostname: Option<String>,
     current_session: Option<ConnectionSession>,
     summary: DeviceSummary,
 }
@@ -291,6 +293,7 @@ impl Default for TrackedDevice {
             last_rssi: None,
             last_band: None,
             last_interface: None,
+            hostname: None,
             current_session: None,
             summary: DeviceSummary::default(),
         }
@@ -408,6 +411,7 @@ impl TemporalEngine {
                 is_new_device = entry.summary.first_seen.is_none();
 
                 entry.pseudonym = obs.pseudonym.clone();
+                entry.hostname = obs.hostname.clone().or_else(|| entry.hostname.clone());
                 entry.summary.last_seen = Some(ts);
                 if entry.summary.first_seen.is_none() {
                     entry.summary.first_seen = Some(ts);
@@ -464,6 +468,7 @@ impl TemporalEngine {
                             "rssi": obs.rssi,
                             "noise": obs.noise,
                             "band": obs.band,
+                            "hostname": obs.hostname,
                             "proximity": prox.label(),
                             "proximity_confidence": prox_conf.as_str(),
                         }),
@@ -512,6 +517,7 @@ impl TemporalEngine {
                             "old_signal": old,
                             "new_signal": new,
                             "band": obs.band,
+                            "hostname": obs.hostname,
                             "proximity": prox.label(),
                             "proximity_confidence": prox_conf.as_str(),
                         }),
@@ -564,6 +570,7 @@ impl TemporalEngine {
                                     "last_signal": session.last_signal,
                                     "last_noise": session.last_noise,
                                     "band": session.band,
+                                    "hostname": entry.hostname,
                                     "missing_polls": entry.missing_polls,
                                 }),
                             ));
@@ -612,6 +619,7 @@ impl TemporalEngine {
                 continue;
             }
             entry.pseudonym = obs.pseudonym.clone();
+            entry.hostname = obs.hostname.clone().or_else(|| entry.hostname.clone());
             entry.state = TemporalState::RfPresent;
             entry.missing_polls = 0;
             entry.summary.last_seen = Some(ts);
@@ -680,6 +688,7 @@ impl TemporalEngine {
                 noise: None,
                 band: p.band.clone(),
                 interface: None,
+                hostname: None,
             })
             .collect();
         self.process_rf_evidence(ts, &obs)
@@ -963,6 +972,7 @@ mod tests {
             noise: None,
             band: Some("2.4GHz".into()),
             interface: Some("rai0".into()),
+            hostname: None,
         }
     }
 
