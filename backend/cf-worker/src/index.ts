@@ -11,6 +11,8 @@
  *   GET  /api/v1/presence     — presence analytics
  *   GET  /api/v1/sensors      — sensor list
  *   GET  /api/v1/stats        — global stats
+ *   GET  /api/v1/networks     — AP state by sensor or all sensors
+ *   GET  /api/v1/fusion       — cross-sensor AP correlation
  *   GET  /api/v1/healthz      — health check
  *   GET  /                  — real-time dashboard UI
  */
@@ -914,30 +916,39 @@ async function handleSensors(
   _request: Request,
   env: Env
 ): Promise<Response> {
-  const cap = await env.DB.prepare(
-    `SELECT sensor_id AS id, MAX(started_at) AS last_seen,
-            COUNT(*) AS total_captures,
-            SUM(device_count) AS total_detections
-     FROM collector_captures GROUP BY sensor_id ORDER BY last_seen DESC`
+  const ap = await env.DB.prepare(
+    `SELECT sensor_id AS id,
+            MAX(updated_at) AS last_seen,
+            COUNT(*) AS ap_count
+     FROM ap_state GROUP BY sensor_id`
   ).all();
 
   const dev = await env.DB.prepare(
-    `SELECT d.pseudonym, c.sensor_id
-     FROM collector_devices d JOIN collector_captures c ON d.capture_id = c.capture_id`
+    `SELECT sensor_id, COUNT(DISTINCT device_id) AS distinct_devices,
+            COUNT(*) AS total_devices,
+            MAX(updated_at) AS last_seen
+     FROM device_state GROUP BY sensor_id`
   ).all();
-  const perSensor = new Map<string, Set<string>>();
-  for (const r of dev.results as any[]) {
-    if (!perSensor.has(r.sensor_id)) perSensor.set(r.sensor_id, new Set());
-    perSensor.get(r.sensor_id)!.add(r.pseudonym);
+
+  const bySensor = new Map<string, any>();
+  for (const r of (ap.results as any[])) bySensor.set(r.id, r);
+  for (const r of (dev.results as any[])) {
+    const existing = bySensor.get(r.sensor_id) || { last_seen: 0, ap_count: 0 };
+    bySensor.set(r.sensor_id, {
+      ...existing,
+      distinct_devices: r.distinct_devices,
+      total_devices: r.total_devices,
+      last_seen: Math.max(existing.last_seen || 0, r.last_seen || 0),
+    });
   }
 
-  const sensors = (cap.results as any[]).map((s: any) => ({
-    id: s.id,
+  const sensors = Array.from(bySensor.entries()).map(([id, s]) => ({
+    id,
     last_seen: s.last_seen,
-    total_captures: s.total_captures,
-    total_detections: s.total_detections,
-    distinct_devices: perSensor.get(s.id)?.size || 0,
-  }));
+    ap_count: s.ap_count || 0,
+    distinct_devices: s.distinct_devices || 0,
+    total_devices: s.total_devices || 0,
+  })).sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0));
 
   return jsonResponse(200, { sensors });
 }
@@ -1005,12 +1016,12 @@ async function handleNetworks(
 
   const apConds: string[] = ["last_seen >= ?"];
   const apBinds: (string | number)[] = [cutoff];
-  if (sensorId) {
+  if (sensorId && sensorId !== "all") {
     apConds.push("sensor_id = ?");
     apBinds.push(sensorId);
   }
   const { results } = await env.DB.prepare(
-    `SELECT ap_id, status, ssid, band, channel, current_signal, average_signal,
+    `SELECT sensor_id, ap_id, status, ssid, band, channel, current_signal, average_signal,
             min_signal, max_signal, rssi_variance, observation_count, session_count,
             first_seen, last_seen, online_since, security, w_mode, extch
      FROM ap_state WHERE ${apConds.join(" AND ")}
@@ -1021,7 +1032,7 @@ async function handleNetworks(
 
   const snapConds: string[] = ["event_timestamp >= ?"];
   const snapBinds: (string | number)[] = [cutoff];
-  if (sensorId) {
+  if (sensorId && sensorId !== "all") {
     snapConds.push("sensor_id = ?");
     snapBinds.push(sensorId);
   }
@@ -1036,6 +1047,66 @@ async function handleNetworks(
     .all();
 
   return jsonResponse(200, { hours, sensor_id: sensorId, aps: results, rf_snapshots: snapResults }, origin);
+}
+
+async function handleFusion(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const ssid = url.searchParams.get("ssid");
+  const band = url.searchParams.get("band");
+  const channel = url.searchParams.get("channel");
+  const apId = url.searchParams.get("ap_id");
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24"), 168);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+  const origin = request.headers.get("Origin") || undefined;
+
+  if (!ssid && !apId) {
+    return jsonResponse(400, { error: "missing ssid or ap_id" }, origin);
+  }
+
+  const conds: string[] = ["last_seen >= ?"];
+  const binds: (string | number)[] = [cutoff];
+  if (ssid) {
+    conds.push("ssid = ?");
+    binds.push(ssid);
+  }
+  if (band) {
+    conds.push("band = ?");
+    binds.push(band);
+  }
+  if (channel) {
+    conds.push("channel = ?");
+    binds.push(channel);
+  }
+  if (apId) {
+    conds.push("ap_id = ?");
+    binds.push(apId);
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT sensor_id, ap_id, status, ssid, band, channel, current_signal, average_signal,
+            min_signal, max_signal, security, w_mode, extch, first_seen, last_seen
+     FROM ap_state WHERE ${conds.join(" AND ")}
+     ORDER BY current_signal DESC, last_seen DESC`
+  )
+    .bind(...binds)
+    .all();
+
+  const sensorMap = new Map<string, any[]>();
+  for (const r of results as any[]) {
+    if (!sensorMap.has(r.sensor_id)) sensorMap.set(r.sensor_id, []);
+    sensorMap.get(r.sensor_id)!.push(r);
+  }
+  const sensors = Array.from(sensorMap.entries()).map(([id, rows]) => ({
+    id,
+    best_signal: rows[0].current_signal,
+    ap_count: rows.length,
+    aps: rows,
+  })).sort((a, b) => (b.best_signal || 0) - (a.best_signal || 0));
+
+  return jsonResponse(200, { hours, ssid, band, channel, ap_id: apId, sensors }, origin);
 }
 
 async function handleDeviceState(
@@ -1378,6 +1449,7 @@ export default {
         else if (path === "/api/v1/stats") response = await handleStats(request, env);
         else if (path === "/api/v1/timeline") response = await handleTimeline(request, env);
         else if (path === "/api/v1/networks") response = await handleNetworks(request, env);
+        else if (path === "/api/v1/fusion") response = await handleFusion(request, env);
         else if (path === "/api/v1/state") response = await handleDeviceState(request, env);
         else if (path === "/api/v1/sessions") response = await handleSessions(request, env);
       }
