@@ -40,14 +40,23 @@ impl Default for NearbySource {
 }
 
 /// A single nearby (potentially non-associated) observation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NearbyObservation {
     pub mac: String,
     pub bssid: String,
     pub ssid: String,
     pub channel: u32,
     pub band: String,
+    /// RSSI in dBm, converted from the raw signal percentage.
     pub rssi: Option<i64>,
+    /// Raw signal percentage reported by the site survey.
+    pub signal_pct: Option<u8>,
+    /// Security mode (e.g. "WPA2PSK/AES").
+    pub security: Option<String>,
+    /// Wireless mode / PHY support (e.g. "11b/g/n/ax").
+    pub w_mode: Option<String>,
+    /// Extension channel (e.g. "NONE", "ABOVE", "BELOW").
+    pub extch: Option<String>,
     pub timestamp: i64,
     pub source: NearbySource,
     /// Confidence in the observation [0.0, 1.0].
@@ -109,6 +118,11 @@ impl MediaTekMonitorProvider {
 
     /// Parse a single `iwpriv <ifname> get_site_survey` output block.
     /// Returns nearby AP beacons (NOT associated stations).
+    ///
+    /// Two table layouts are supported:
+    /// - `Ch  SSID  BSSID  Security  Signal(%)  W-Mode  ExtCH` (sample)
+    /// - `No  Ch  SSID  BSSID  Security  Siganl(%)  W-Mode  ExtCH  ...`
+    ///   (live EX520V output)
     fn parse_survey(&self, ifname: &str, output: &str) -> Vec<NearbyObservation> {
         let ts = Self::now();
         let band = if ifname.starts_with("rai") {
@@ -120,44 +134,110 @@ impl MediaTekMonitorProvider {
         };
 
         let mut out = Vec::new();
-        // The site survey output is a fixed-width table. Columns include
-        // Channel, SSID, BSSID, Security, Signal(%), W-Mode, ExtCH.
-        // We parse by splitting on whitespace and looking for rows that
-        // start with a numeric channel.
+        let mut channel_col: Option<usize> = None;
+
         for line in output.lines() {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with("Ch") || trimmed.starts_with("Channel") {
+            if trimmed.is_empty() {
                 continue;
             }
-            // Try to parse the first field as a channel number.
+
+            // Identify junk/separator lines. "====", "Total=..." and the table
+            // of interface names in `iwconfig` output should not be processed.
+            if trimmed.starts_with("====") || trimmed.starts_with("Total=") {
+                continue;
+            }
+
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
             if parts.len() < 4 {
                 continue;
             }
-            let ch = match parts[0].parse::<u32>() {
+
+            // Detect header and the column offset of the channel number.
+            if channel_col.is_none() {
+                if parts[0] == "No" || parts[0] == "NO" || parts[0] == "no" {
+                    channel_col = Some(1);
+                    continue;
+                }
+                if parts[0].starts_with("Ch") || parts[0] == "Channel" {
+                    channel_col = Some(0);
+                    continue;
+                }
+            }
+            let ch_idx = channel_col.unwrap_or(0);
+            if ch_idx >= parts.len() {
+                continue;
+            }
+
+            let ch = match parts[ch_idx].parse::<u32>() {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            // Heuristic: BSSID looks like XX:XX:XX:XX:XX:XX
-            let bssid = parts.iter().find(|p| p.matches(':').count() == 5).copied();
-            let bssid = match bssid {
-                Some(b) => b.to_string(),
-                None => continue,
+
+            // Locate BSSID (token with exactly 5 colons).
+            let bssid_idx = parts
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.matches(':').count() == 5)
+                .map(|(i, _)| i);
+            let bssid_idx = match bssid_idx {
+                Some(i) if i > ch_idx => i,
+                _ => continue,
             };
-            // Signal is usually a percentage like "13" near the end.
-            let signal_pct: Option<i64> = parts.iter().rev().find_map(|p| p.parse::<i64>().ok());
-            // Convert percentage to approximate dBm: % / 2 - 100
-            let rssi = signal_pct.map(|p| (p / 2) - 100);
-            // SSID is the second column typically; collect the rest as best effort.
-            let ssid = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+
+            // Locate W-Mode (token like "11b/g/n" or "11a/n/ac/ax").
+            // It starts with "11" and contains at least one '/'.
+            let wmode_idx = parts
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.starts_with("11") && p.contains('/'))
+                .map(|(i, _)| i);
+            let wmode_idx = match wmode_idx {
+                Some(i) if i > bssid_idx + 1 => i,
+                _ => continue,
+            };
+
+            // SSID is everything between the channel and the BSSID.
+            let ssid = if ch_idx + 1 < bssid_idx {
+                parts[ch_idx + 1..bssid_idx].join(" ")
+            } else {
+                String::new()
+            };
+
+            // Security is everything between BSSID and the signal token, which
+            // sits immediately before W-Mode. Multiple tokens are joined with
+            // "/" to match both "WPA2PSK/AES" and "WPA2PSK AES" variants.
+            let security = if bssid_idx + 1 < wmode_idx - 1 {
+                Some(parts[bssid_idx + 1..wmode_idx - 1].join("/"))
+            } else {
+                None
+            };
+
+            // Signal percentage is the token directly before W-Mode.
+            let signal_pct_i64: Option<i64> = parts[wmode_idx - 1].parse::<i64>().ok();
+            let signal_pct = signal_pct_i64.and_then(|p| {
+                if p >= 0 && p <= 100 {
+                    Some(p as u8)
+                } else {
+                    None
+                }
+            });
+            let rssi = signal_pct_i64.map(|p| (p / 2) - 100);
+
+            let w_mode = Some(parts[wmode_idx].to_string());
+            let extch = parts.get(wmode_idx + 1).map(|s| s.to_string());
 
             out.push(NearbyObservation {
-                mac: bssid.clone(),
-                bssid,
+                mac: parts[bssid_idx].to_string(),
+                bssid: parts[bssid_idx].to_string(),
                 ssid,
                 channel: ch,
                 band: band.to_string(),
                 rssi,
+                signal_pct,
+                security,
+                w_mode,
+                extch,
                 timestamp: ts,
                 source: NearbySource::Survey,
                 confidence: 0.6,
@@ -389,6 +469,17 @@ mod tests {
         assert_eq!(rows[0].source, NearbySource::Survey);
         // 13% -> (13/2)-100 = -94
         assert_eq!(rows[0].rssi, Some(-94));
+        assert_eq!(rows[0].signal_pct, Some(13));
+        assert_eq!(rows[0].security.as_deref(), Some("WPA2PSK/AES"));
+        assert_eq!(rows[0].w_mode.as_deref(), Some("11b/g/n/ax"));
+        assert_eq!(rows[0].extch.as_deref(), Some("NONE"));
+
+        let five = rows.iter().find(|r| r.ssid == "REYES_5G").unwrap();
+        // In the single-interface test we use rai0, so the parser tags the row
+        // with that band even though channel 40 is normally 5 GHz.
+        assert_eq!(five.channel, 40);
+        assert_eq!(five.signal_pct, Some(92));
+        assert_eq!(five.w_mode.as_deref(), Some("11a/n/ac/ax"));
     }
 
     #[test]
@@ -396,6 +487,33 @@ mod tests {
         let p = MediaTekMonitorProvider::with_interfaces(vec!["rai0".into()]);
         let rows = p.parse_survey("rai0", "Ch SSID BSSID\n\n");
         assert!(rows.is_empty());
+    }
+
+    const LIVE_SURVEY: &str = "No  Ch  SSID                             BSSID               Security        Siganl(%)  W-Mode      ExtCH  NT WPS WPS2 WSC\n\
+0   1   REYES                            3c:6a:d2:5f:ab:c1   WPA2PSK/AES     15         11b/g/n     NONE   In 0   YES   NO   NO\n\
+1   6   Guest                            11:22:33:44:55:66   WPA2/AES        87         11b/g/n/ax  ABOVE  In 9   YES   NO   NO\n";
+
+    #[test]
+    fn parses_live_ex520_site_survey_layout() {
+        let p = MediaTekMonitorProvider::with_interfaces(vec!["rax0".into()]);
+        let rows = p.parse_survey("rax0", LIVE_SURVEY);
+        assert_eq!(rows.len(), 2);
+
+        assert_eq!(rows[0].channel, 1);
+        assert_eq!(rows[0].ssid, "REYES");
+        assert_eq!(rows[0].bssid, "3c:6a:d2:5f:ab:c1");
+        assert_eq!(rows[0].band, "5GHz"); // from interface name
+        assert_eq!(rows[0].signal_pct, Some(15));
+        assert_eq!(rows[0].rssi, Some(-93)); // 15/2 - 100 = -93
+        assert_eq!(rows[0].security.as_deref(), Some("WPA2PSK/AES"));
+        assert_eq!(rows[0].w_mode.as_deref(), Some("11b/g/n"));
+        assert_eq!(rows[0].extch.as_deref(), Some("NONE"));
+
+        assert_eq!(rows[1].channel, 6);
+        assert_eq!(rows[1].ssid, "Guest");
+        assert_eq!(rows[1].signal_pct, Some(87));
+        assert_eq!(rows[1].w_mode.as_deref(), Some("11b/g/n/ax"));
+        assert_eq!(rows[1].extch.as_deref(), Some("ABOVE"));
     }
 
     #[test]

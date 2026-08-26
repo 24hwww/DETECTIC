@@ -223,6 +223,7 @@ mod tests {
             timestamp: 1000,
             source: NearbySource::Survey,
             confidence: 0.6,
+            ..Default::default()
         }
     }
 

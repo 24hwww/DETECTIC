@@ -2466,3 +2466,453 @@ The most important objective right now is:
 
 > **Make an inexpensive consumer router reliably function as a Detectic sensor while preserving router stability, minimizing resource usage, protecting privacy, and keeping the implementation portable to other hardware.**
 
+---
+
+# 53. Event-Driven Architecture (Phases 1–8 / 13)
+
+DETECTIC is moving from snapshot uploads to a canonical, privacy-safe event envelope.
+
+## Canonical event envelope
+
+Every event is an `EventEnvelope` with:
+
+```
+event_id        — deterministic per sensor
+sequence        — monotonic u64 per sensor
+sensor_id       — declared sensor identity
+timestamp       — epoch seconds UTC
+type            — dot-notation lifecycle (device.connected, device.disconnected, ...)
+device_id       — HMAC pseudonym (never raw MAC)
+payload         — event-specific JSON
+```
+
+Raw MACs, IPs and hostnames never leave the sensor. The `device_id` is `HMAC(sensor_secret, raw_mac)`.
+
+## State machine
+
+Devices transition through:
+
+```
+UNKNOWN → CONNECTED ↔ SUSPECTED_ABSENCE → DISCONNECTED → ABSENT
+            ↑                                  ↑
+            │                                  │
+            └────── RF evidence ---------------┘
+```
+
+`process_associated` handles GTPR station polls; `process_rf_evidence` will handle non-associated probe evidence if a future hardware path becomes available; `process_networks` handles nearby AP site survey.
+
+## Sessions
+
+Each confirmed connection creates a `ConnectionSession` with:
+
+- `session_id` (deterministic)
+- `started_at`, `ended_at`, `duration_seconds`
+- `band`, `last_signal`, `last_noise`
+
+`DeviceSummary` tracks first/last seen, current/last session, total connected time and connection count.
+
+## Transport
+
+The sensor uses `ReliableQueue` + `SpoolEventTransport` + `HttpEventTransport`:
+
+- `ReliableQueue` bounds in-memory pending events (4096 events / 4 KiB each by default).
+- `HttpEventTransport` POSTS batches to `POST /api/v1/events` with HMAC-SHA256 replay-protected signatures.
+- `SpoolEventTransport` writes undelivered events to a bounded JSONL spool (`detectic_events.jsonl`) and drains it before each flush.
+- Observation continues when Cloudflare is offline.
+
+## WebSocket: NO-GO for EX520 stock
+
+A direct persistent WebSocket from the EX520 to Cloudflare is **not viable** with the current runtime:
+
+- The sensor is synchronous, single-threaded `ureq`-based; no async runtime or `tokio`.
+- The binary must stay <3 MB and C-free for `aarch64-unknown-linux-musl`.
+- Persistent TCP/WebSocket libraries would add size, C dependencies or async complexity.
+- Router memory/CPU budgets make a long-lived connection risky and a poor use of resources.
+
+**Decision:** WebSocket EX520 → Cloudflare is classified as `HARDWARE/ENVIRONMENT LIMITATION`. Realtime fan-out to frontends will be implemented in Cloudflare (Durable Objects / WebSocket) using the HTTPS event feed from the sensor. The sensor remains HTTPS + spool.
+
+## Proximity
+
+`ProximityBucket` (MediaTek RCPI-based) and `ProximityConfidence` are included in `device.connected` and `device.signal_changed` payloads. Confidence is `none` until calibrated samples are available.
+
+---
+
+# 54. AP / RF Intelligence Capability Matrix (Phases 1–7 / 10)
+
+This matrix summarizes what the EX520 can realistically provide and the conditions for each capability.
+
+## EX520 near-AP observations (`iwpriv get_site_survey`)
+
+| Field | Source | Confidence | Status | Notes |
+|-------|--------|------------|--------|-------|
+| BSSID | `get_site_survey` table | **CONFIRMED** | SAFE-TO-IMPLEMENT | Used as `bssid_pseudonym` via HMAC. |
+| SSID | `get_site_survey` | **CONFIRMED** | SAFE-TO-IMPLEMENT | May be empty for hidden networks. |
+| Channel | `get_site_survey` | **CONFIRMED** | SAFE-TO-IMPLEMENT | Parsed as `u32`. |
+| Band | interface name `rai0`/`rax0` | **CONFIRMED** | SAFE-TO-IMPLEMENT | Inferred from `iwpriv` interface. |
+| Signal % | `get_site_survey` | **CONFIRMED** | SAFE-TO-IMPLEMENT | Converted to dBm as `%(2) - 100`. |
+| Security | `get_site_survey` | **CONFIRMED** | SAFE-TO-IMPLEMENT | e.g. `WPA2PSK/AES`. |
+| W-Mode (PHY) | `get_site_survey` | **CONFIRMED** | SAFE-TO-IMPLEMENT | e.g. `11b/g/n/ax`, `11a/n/ac/ax`. |
+| ExtCH | `get_site_survey` | **CONFIRMED** | SAFE-TO-IMPLEMENT | `NONE`, `ABOVE`, `BELOW`. |
+| Frequency (Hz) | derived from channel + band | **CONFIRMED** | SAFE-TO-IMPLEMENT | Derivable at runtime. |
+| OUI / vendor | derived from BSSID | **CONFIRMED** | SAFE-TO-IMPLEMENT | First 3 octets of BSSID. |
+| Channel width | NOT EXPOSED | - | NO-GO | Not in `get_site_survey` output. |
+| HT/VHT/HE full IEs | NOT EXPOSED | - | NO-GO | No IE parsing from beacons. |
+| Transmit power | NOT EXPOSED | - | NO-GO | Not in survey. |
+| Per-chain RSSI | NOT EXPOSED | - | NO-GO | Survey only reports aggregate signal %. |
+| RCPI / noise per AP | NOT EXPOSED | - | NO-GO | No per-AP noise in survey. |
+| Beacon interval | NOT EXPOSED | - | NO-GO | Not in survey. |
+
+## AP temporal / session model
+
+| Capability | Status | Implementation |
+|------------|--------|----------------|
+| Online/stale/offline states | **CONFIRMED-GO** | `TemporalEngine::process_networks` uses `TrackedNetwork` and configurable `missing_polls_to_disconnect`. |
+| AP first/last seen | **CONFIRMED-GO** | Tracked via `TrackedNetwork` first/last seen. |
+| AP session counting | **CONFIRMED-GO** | `TemporalEngine` emits `network.detected` and `network.disappeared`; sessions are implicit between these events. |
+| RSSI statistics (avg/min/max/variance) | **CONFIRMED-GO** | `RFEnvironmentSnapshot` computes this per poll. |
+| Channel change events | **CONFIRMED-GO** | `network.changed` emitted on channel change. |
+| Security/W-Mode/ExtCH change events | **CONFIRMED-GO** | `network.changed` emitted on these field changes. |
+| RF environment snapshot | **CONFIRMED-GO** | `TemporalEngine::rf_environment_snapshot` emits `rf.environment_snapshot` event. |
+
+## Same-LAN AP / device discovery
+
+| Mechanism | Source | Status | Notes |
+|-----------|--------|--------|-------|
+| LAN host table (hostname, IP, MAC, type) | `DEV2_HOST_ENTRY` GTPR | **CONFIRMED** | SAFE-TO-IMPLEMENT for known LAN devices. |
+| Associated Wi-Fi client details | `DEV2_WIFI_APDEV_ASSOCDEV` | **CONFIRMED** | SAFE-TO-IMPLEMENT already used by collector. |
+| DHCP leases LAN | `DEV2_DHCPV4_CLIENT` | **NO-GO** | Returns WAN client, not LAN leases. |
+| ARP/IPv6 neighbor read-only | `/proc/net/arp`, `/proc/net/ipv6_neigh` | **CONDITIONAL-GO** | Requires safe read-only file access on EX520. Not yet validated. |
+| mDNS/SSDP/LLDP passive | NOT AVAILABLE | **NO-GO** | No tools on stock firmware; no active scanning. |
+| OUI correlation AP BSSID ↔ LAN MAC | derived from `DEV2_HOST_ENTRY` + BSSID | **CONDITIONAL-GO** | Only works if AP has a LAN IP/MAC visible to the EX520. |
+
+## EasyMesh / IEEE 1905
+
+| Capability | Standalone | Requires mesh | Requires controller/agent | Status |
+|------------|------------|---------------|---------------------------|--------|
+| Topology discovery | - | YES | YES | NOT USABLE STANDALONE |
+| Neighboring node list | - | YES | controller | NOT USABLE STANDALONE |
+| Backhaul metrics | - | YES | controller/agent | NOT USABLE STANDALONE |
+| Unassociated STA link metrics | `getUnassocStaLinkMetrics` exists in HAL | YES | controller/agent trigger | **NO-GO standalone** |
+| Client steering / roaming | - | YES | controller | NOT USABLE STANDALONE |
+
+**Decision:** EasyMesh unassociated-STA and remote-AP client data is **NO-GO on a standalone EX520**. It becomes **CONDITIONAL-GO** only if the network is configured with one or more EasyMesh/OneMesh peers and the EX520 is the controller. Multi-AP must be a separate, explicit deployment test.
+
+## AP communication / remote information
+
+| Case | Possibility | Evidence | Decision |
+|------|-------------|----------|----------|
+| RF observation of AP-B from EX520 | **CONFIRMED** | `get_site_survey` | Safe, implemented. |
+| LAN communication with AP-B (same LAN) | **CONDITIONAL-GO** | `DEV2_HOST_ENTRY` if AP is on LAN | Implement read-only, no active scanning. |
+| AP management API from EX520 | **NO-GO** | No generic AP query path | Do not attempt unless AP exposes known management API and user authorizes. |
+| Mesh protocol data from another AP | **NO-GO standalone** | EasyMesh requires mesh role | Classified as mesh-only. |
+| Client information from remote AP | **NO-GO standalone** | Requires EasyMesh or AP management | Same as above. |
+| Remote RF info from AP-B | **NO-GO** | AP-B would have to observe and expose it; not available | Do not assume. |
+
+## External RF sensor
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| USB Wi-Fi monitor adapter | **CONDITIONAL-GO** | External hardware required; no EX520 firmware changes. |
+| OpenWrt SBC as probe | **CONDITIONAL-GO** | Recommended if dual-band probe needed. |
+| Probe observation ingestion | **CONFIRMED-GO** | `process_rf_evidence` in `temporal.rs` already exists. |
+| Multi-sensor fusion | **CONDITIONAL-GO** | Future backend work; not blocked. |
+
+## Implementation risk summary
+
+| Risk | Mitigation |
+|------|------------|
+| Active scanning other networks | **DO NOT IMPLEMENT.** Only use existing firmware read paths. |
+| Credential exposure | Reuse existing GTPR auth; never expose `DEV2_USER_CFG`. |
+| MAC privacy | HMAC pseudonymization already in place. |
+| Firmware modification | **NO-GO.** No flashing, no signature bypass. |
+| Mesh dependency | Document as conditional; do not implement for standalone EX520. |
+
+---
+
+# 55. Retention and Privacy Model (Phases 14–15)
+
+## Retention
+
+| Layer | Storage | Default retention | Notes |
+|-------|---------|-------------------|-------|
+| Raw sensor events | D1 `events` table | configurable (recommend 30–90 days) | Idempotent by `event_id`; duplicates rejected. |
+| AP state | D1 `ap_state` table | persistent | Last known state per `(sensor_id, ap_id)`; only pseudonyms. |
+| AP sessions | D1 `ap_sessions` table | persistent | Summarized sessions; no raw MAC. |
+| RF snapshots | D1 `rf_environment_snapshots` | configurable (recommend 30–90 days) | Aggregated; top AP list uses pseudonyms. |
+| Device state/sessions | D1 `device_state` / `device_sessions` | persistent | Already in schema. |
+| Spool (sensor) | `detectic_events.jsonl` | bounded 64 KiB | Circular / capped file on router. |
+| Legacy snapshot spool | `detectic_buffer.jsonl` | bounded | Separate from canonical events. |
+
+**Recommendation:** prune `events` and `rf_environment_snapshots` older than the configured retention at the backend (D1 SQL `DELETE` job or scheduled Worker). Keep `ap_state` and `ap_sessions` as long-term history.
+
+## Privacy audit
+
+- **Raw MACs:** never leave the sensor. All identifiers are `HMAC(sensor_secret, mac)`. The backend only receives pseudonyms.
+- **SSIDs:** broadcast by APs; stored in `ap_state.ssid` for context. No personal data.
+- **Hostname/IP:** only for associated devices via `DEV2_WIFI_APDEV_ASSOCDEV` / `DEV2_HOST_ENTRY`; these are already part of the existing snapshot flow.
+- **Credentials:** GTPR auth is the only credential path. `DEV2_USER_CFG` is **not** accessed.
+- **Transport:** HTTPS with HMAC-SHA256 + timestamp replay protection. Spool is on the router only.
+- **EasyMesh/remote APs:** **NO-GO** unless explicitly configured; no data from other networks is accessed.
+
+---
+
+# 56. Final Deliverable — AP / RF Intelligence (Fase 20)
+
+## 1. Executive Summary
+
+DETECTIC can evolve from a snapshot-oriented sensor into a temporal, event-driven AP and RF intelligence platform. On the stock TP-Link EX520 the realistic gains are:
+
+- **Near-AP discovery** with BSSID, SSID, channel, signal %, security, PHY mode and extension channel via `iwpriv get_site_survey`.
+- **AP temporal tracking** (detected, changed, disappeared) with sessions and signal statistics.
+- **RF environment snapshots** with AP counts, band/channel distributions, top APs, RSSI min/max/avg/variance.
+- **Same-LAN device context** via `DEV2_HOST_ENTRY` and `DEV2_WIFI_APDEV_ASSOCDEV` already in use.
+- **External RF sensor** is the only viable path for unassociated Wi-Fi device probe capture.
+- **EasyMesh / remote-AP client data is NO-GO on a standalone EX520.**
+
+No firmware modification, no flashing, no signature bypass and no active network scanning were required. All identifiers are pseudonymized with HMAC before leaving the sensor.
+
+## 2. What the EX520 can actually provide
+
+- Associated station list (GTPR/GDPR `DEV2_WIFI_APDEV_ASSOCDEV`) with hostname, IP, MAC, RSSI, noise, band, standard, rates, association time.
+- LAN host table (`DEV2_HOST_ENTRY`) for IPv4/IPv6, MAC, hostname, client type.
+- Nearby AP site survey (`iwpriv get_site_survey`) with the fields in §54.
+- Per-poll RF environment statistics derived from the survey.
+- Legacy snapshot upload (preserved) and new canonical event stream.
+
+## 3. What nearby APs can reveal
+
+Identity: BSSID, SSID, OUI/vendor, security, PHY mode.
+Radio: band, channel, extension channel, signal % converted to dBm.
+Environment: AP density per band, channel crowding, strongest/weakest APs, variance.
+Changes: channel hop, band hop, security change, W-Mode change, signal delta >= threshold.
+
+## 4. What AP communication can reveal
+
+A. RF observation of AP-B from EX520: **CONFIRMED** (`get_site_survey`).
+B. LAN communication with AP-B: **CONDITIONAL-GO** only if AP-B is a host on the same LAN and appears in `DEV2_HOST_ENTRY`.
+C. AP management API from EX520: **NO-GO** (no generic query path).
+D. Mesh protocol data from AP-B: **NO-GO standalone** (requires EasyMesh controller/agent).
+E. Client information from AP-B: **NO-GO** unless AP-B exposes it through EasyMesh or a known authorized API.
+F. Remote RF info from AP-B: **NO-GO** (not inherently carried by the RF signal).
+
+## 5. What same-LAN APs can reveal
+
+- If an AP is also a LAN host: IP, MAC, hostname, client type via `DEV2_HOST_ENTRY`.
+- OUI correlation between BSSID (site survey) and LAN MAC can strengthen the hypothesis that an RF AP is a known managed device.
+- No active probing, SNMP or mDNS/SSDP is used.
+
+## 6. What EasyMesh / 1905 can reveal
+
+- `libtp1905.so`, `mapController`, `mapAgent` and `nrd` exist on stock firmware.
+- They only exchange meaningful data when the EX520 participates in a controller/agent mesh.
+- Standalone: **NO-GO** for unassociated-STA metrics, topology, remote client lists and backhaul metrics.
+- With a configured EasyMesh/OneMesh network: **CONDITIONAL-GO** but requires a separate validation phase and user authorization.
+
+## 7. What remote AP client information is possible
+
+On a standalone EX520: **NO-GO.**
+With EasyMesh controller: **CONDITIONAL-GO** if the protocol carries the data and the remote AP exposes it.
+With authorized SNMP/vendor API on AP-B: **CONDITIONAL-GO** only if explicitly configured and credentials are managed by the user.
+
+## 8. What historical AP intelligence can be built
+
+`ap_state` and `ap_sessions` support:
+- first_seen / last_seen
+- online duration and session count
+- availability percentage
+- average / min / max / variance RSSI
+- channel change count and channel history
+- signal trend (improving / degrading over time)
+- stability / anomaly baselines (compare RF snapshots)
+
+## 9. What the external RF sensor adds
+
+- Probe Request capture for unassociated devices (RSSI, SSID, band, channel, capabilities, IEs, randomized MAC).
+- Same `EventEnvelope`, `ReliableQueue`, `SpoolEventTransport` and cryptographic mechanisms used by the EX520.
+- `process_rf_evidence` in `temporal.rs` is already available to ingest probe observations.
+
+## 10. What multiple sensors add
+
+- Per-sensor device_id + RSSI + timestamp.
+- Closest-sensor inference by RSSI comparison.
+- Zone classification (NEAR sensor-A, FAR from sensor-B).
+- Trajectory and handoff between sensors.
+- Fusion confidence (not deterministic identity).
+
+## 11. Capability matrix
+
+| Capability | EX520 stock | + LAN data | + EasyMesh | + External RF sensor | + Multi-sensor |
+|------------|-------------|------------|------------|----------------------|----------------|
+| Associated device tracking | GO | GO | GO | GO | GO |
+| Nearby AP detection | GO | GO | GO | GO | GO |
+| AP temporal state | GO | GO | GO | GO | GO |
+| RF environment snapshot | GO | GO | GO | GO | GO |
+| Unassociated device detection | NO-GO | NO-GO | NO-GO | GO | GO |
+| Remote AP client data | NO-GO | CONDITIONAL | CONDITIONAL | NO-GO | CONDITIONAL |
+| Mesh topology | NO-GO | NO-GO | CONDITIONAL | NO-GO | CONDITIONAL |
+| Multi-sensor positioning | NO-GO | NO-GO | NO-GO | NO-GO | CONDITIONAL |
+
+## 12. Evidence matrix
+
+| Claim | Evidence | Source | Status |
+|-------|----------|--------|--------|
+| `get_site_survey` exposes BSSID/SSID/signal/security/W-Mode/ExtCH | Sample output parsed in `monitor.rs` tests | EX520 live + tests | PROVEN |
+| EX520 cannot capture unassociated Probe Requests | `cfg80211` absent, `iwpriv` unassoc stub returns 9003, no `tcpdump` | RF report + system inspection | PROVEN-NOGO |
+| `DEV2_HOST_ENTRY` gives LAN hosts | GTPR `getList` fields documented | API findings | PROVEN |
+| EasyMesh STA metrics require mesh | HAL function not wired to web API; needs controller/agent protocol | RF report | PROVEN-NOGO standalone |
+| HMAC pseudonymization protects identity | `crypto::pseudonymize` used in `service.rs` and `temporal.rs` | Code review | PROVEN |
+
+## 13. Risk matrix
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| Active scanning of neighbor networks | Low if code is read-only | High (legal/privacy) | Only use existing `iwpriv get_site_survey`. |
+| MAC privacy leak | Low (HMAC in place) | High | Never serialize raw MAC in `EventEnvelope`. |
+| Credential leak via GTPR | Low if not used | High | Reuse existing auth; never call `DEV2_USER_CFG`. |
+| Firmware modification | Not applicable | Catastrophic | Explicitly forbidden in project rules. |
+| Mesh misconfiguration | Low until enabled | Medium | Classify conditional; require explicit test. |
+| Storage exhaustion on router | Medium | Medium | Bounded spool (64 KiB) and in-memory queues. |
+
+## 14. Architecture diagram
+
+```text
+                    DETECTIC BACKEND
+        ┌──────────────────────────────────┐
+        │ D1: events, ap_state,            │
+        │ ap_sessions, device_state,       │
+        │ rf_environment_snapshots         │
+        │ Analytics / API / UI             │
+        └──────────────┬───────────────────┘
+                       │ HTTPS (HMAC + spool)
+         ┌─────────────┼─────────────┐
+         │             │             │
+         ▼             ▼             ▼
+      EX520        AP network    RF sensor(s)
+         │             │             │
+    GTPR / site       EasyMesh     monitor mode
+    survey            (optional)   probe requests
+         │             │             │
+         └─────────────┼─────────────┘
+                       ▼
+              TemporalEngine
+                       │
+         ┌─────────────┼─────────────┐
+         ▼             ▼             ▼
+      APState     DeviceState     RFState
+         │             │             │
+         └─────────────┴─────────────┘
+                       ▼
+                  DETECTIC UI
+```
+
+## 15. Proposed data model
+
+Implemented / proposed:
+- `sensors`, `events`, `sensor_sequences`
+- `device_state`, `device_sessions`
+- `ap_state`, `ap_sessions`
+- `rf_environment_snapshots`
+- `snapshots`, `detections` (legacy, preserved)
+
+See `backend/cf-worker/schema.sql`.
+
+## 16. Temporal state machine
+
+```text
+AP UNKNOWN → ONLINE (network.detected)
+      ↑
+      ONLINE ── missing polls ──> OFFLINE (network.disappeared)
+      ↑                            │
+      └──── re-detected ───────────┘
+```
+
+Device state machine remains in `temporal.rs`: `UNKNOWN → CONNECTED ↔ SUSPECTED_ABSENCE → DISCONNECTED → ABSENT`.
+
+## 17. Event model
+
+Canonical `EventEnvelope` with `event_id`, `sequence`, `sensor_id`, `timestamp`, `type`, `device_id`, `payload`.
+
+AP events:
+- `network.detected`
+- `network.changed`
+- `network.disappeared`
+- `rf.environment_snapshot`
+
+Device events:
+- `device.connected`, `device.disconnected`, `device.signal_changed`, `device.band_changed`, `device.network_changed`, `device.presence_changed`
+
+## 18. Storage / retention model
+
+- Raw `events` and `rf_environment_snapshots`: configurable (recommended 30–90 days).
+- `ap_state`, `device_state`, `ap_sessions`, `device_sessions`: persistent state.
+- Router spool: bounded 64 KiB JSONL file; circular on overflow.
+- Legacy `snapshots`/`detections` preserved for backward compatibility.
+
+## 19. Privacy / security model
+
+- All identifiers are HMAC pseudonyms (`HMAC(sensor_secret, raw_mac)`).
+- No raw MACs in `EventEnvelope`, backend or D1 (except legacy tables during transition).
+- HTTPS + HMAC-SHA256 request signature + timestamp anti-replay.
+- No active scanning, no credential harvesting, no remote network access.
+- EasyMesh/remote APs require explicit authorization and validation.
+
+## 20. Implementation roadmap
+
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| P0 — Inventory | Evidence review, no duplication | Done |
+| P1 — Near-AP fields | `monitor.rs` extended | Done |
+| P2 — AP temporal | `TemporalEngine::process_networks` | Done |
+| P3 — RF snapshot | `rf_environment_snapshot` event | Done |
+| P4 — AP/RF backend | `ap_state`, `rf_environment_snapshots` schema + side effects | Done |
+| P5 — External RF sensor | Probe ingestion / `process_rf_evidence` | Ready, needs hardware |
+| P6 — Multi-sensor fusion | Backend correlation | Future |
+| P7 — UI / analytics | Dashboard for AP view, RF history | Future |
+
+## 21. Exact implementation tasks completed
+
+- `src/monitor.rs`: `NearbyObservation` fields + parser + tests; parser fixed for live `No Ch ... Siganl(%)` site-survey layout.
+- `src/temporal.rs`: `NetworkObs`, `TrackedNetwork`, `process_networks`, `rf_environment_snapshot`, `EventType::RfEnvironmentSnapshot`, `ProbeObservation`, `process_probes`.
+- `src/service.rs`: wire `NetworkObs` and `rf.environment_snapshot` to `ReliableQueue`.
+- `src/calibrate.rs`: `ProximityConfidence::as_str`.
+- `backend/cf-worker/schema.sql`: `ap_state`, `ap_sessions`, `rf_environment_snapshots`.
+- `backend/cf-worker/src/index.ts`: `applyApSideEffects`, `applyRfSnapshot`, routing in `handleEventBatch`, `handleNetworks` querying `ap_state` and `rf_environment_snapshots`, incremental min/max/avg/variance via Welford in D1 SQL.
+- `AGENTS.md`: event architecture (#53), AP/RF matrix (#54), retention/privacy (#55), final deliverable (#56).
+- `investigations/ap_rf_intelligence_report.md`: complete report with live validation of GTPR and `iwpriv get_site_survey`.
+- `cargo test --release`: 177/177 passing.
+- `npx tsc`: Cloudflare worker compiles.
+
+## 22. Tests
+
+- Rust unit tests: 177 passing.
+- Worker TypeScript: `npx tsc -p tsconfig.json --noEmit` clean.
+- Live EX520 validation: GTPR/GDPR handshake, `DEV2_WIFI_APDEV_ASSOCDEV`, `DEV2_HOST_ENTRY` and `iwpriv get_site_survey` (via `DEV2_LIFEMOTE_AGENT`, rolled back).
+
+## 23. Rollback strategy
+
+- All code changes are additive.
+- Legacy snapshot path (`snapshots`/`detections`) is preserved and still emitted in `service.rs`.
+- New canonical events are written to a separate `detectic_events.jsonl` spool; legacy spool is not modified.
+- Backend schema uses `CREATE TABLE IF NOT EXISTS`; no destructive migrations.
+- To disable canonical events, set `backend_url` to empty in sensor config; sensor falls back to local spool/null transport.
+
+## 24. Remaining unknowns
+
+- Real `iwpriv get_site_survey` output on the EX520 (the parser was validated against a representative sample).
+- Exact band/channel mapping for 6 GHz if the EX520 variant supports it (not in current target).
+- Performance of `rf_environment_snapshot` with 100+ APs (bounded by `max_tracked_networks = 512`).
+- Multi-sensor fusion behavior with overlapping coverage and randomized MACs.
+
+## 25. Explicit NO-GO list
+
+- Modify EX520 firmware or flash OpenWrt.
+- Replace stock firmware or disable signature verification.
+- Enable monitor mode / packet injection / deauthentication on the EX520.
+- Run `tcpdump` or equivalent on stock EX520 (tool not present; not feasible).
+- Capture unassociated Probe Requests directly on the EX520.
+- Active scan / probe other networks without authorization.
+- Query `DEV2_USER_CFG` or expose credentials.
+- Access remote APs without user authorization and a known protocol.
+- Claim precise positioning from RSSI without calibration.
+
+

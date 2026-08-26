@@ -468,6 +468,7 @@ mod tests {
             timestamp: 1000,
             source: NearbySource::Survey,
             confidence: 0.6,
+            ..Default::default()
         }];
         let probes = vec![ProbeObservation {
             mac: "EE:EE".into(),
@@ -514,6 +515,7 @@ mod tests {
             timestamp: 1000,
             source: NearbySource::Survey,
             confidence: 0.6,
+            ..Default::default()
         }];
         let probes = vec![ProbeObservation {
             mac: "AA:BB:CC:44:55:66".into(),
@@ -560,6 +562,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
+            ..Default::default()
             }]
         };
 
@@ -613,6 +616,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
+            ..Default::default()
             },
             NearbyObservation {
                 mac: "CC:CC".into(),
@@ -624,6 +628,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
+            ..Default::default()
             },
         ];
         let b = ObservationBatch {
@@ -652,6 +657,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
+            ..Default::default()
             }],
             probes: vec![],
         };

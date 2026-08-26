@@ -10,6 +10,7 @@ pub mod collector;
 pub mod config;
 pub mod crypto;
 pub mod driver;
+pub mod event_transport;
 pub mod events;
 pub mod fusion;
 pub mod gtpr;
@@ -31,6 +32,7 @@ pub mod service;
 pub mod snapshot;
 #[cfg(feature = "persist")]
 pub mod store;
+pub mod temporal;
 pub mod transport;
 
 pub use crypto::*;

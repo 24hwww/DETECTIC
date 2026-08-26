@@ -12,13 +12,17 @@
 //! - idle CPU between polls
 
 use crate::backend::{BackendTransport, NullBackend};
+use crate::calibrate::Band;
 use crate::config::SensorConfig;
+use crate::crypto;
+use crate::event_transport::{HttpEventTransport, ReliableQueue, SpoolEventTransport};
 use crate::logging;
 use crate::monitor::{MediaTekMonitorProvider, MonitorProvider, NullMonitorProvider};
 use crate::presence::{PresenceEngine, PresenceObservation};
 use crate::runtime::install_signal_handlers;
 use crate::runtime::should_shutdown;
 use crate::snapshot::{diff_snapshots, SensorSnapshot};
+use crate::temporal::{DeviceObs, NetworkObs, TemporalConfig, TemporalEngine};
 use crate::transport::{Dialect, GtprClient};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -130,6 +134,8 @@ pub struct DetecticService {
     pub last_upload: Option<Instant>,
     pub last_snapshot: Option<SensorSnapshot>,
     pub presence: PresenceEngine,
+    pub temporal: TemporalEngine,
+    pub event_queue: ReliableQueue,
     #[cfg(feature = "persist")]
     pub notifier: Option<SmtpNotifier>,
 }
@@ -137,6 +143,8 @@ pub struct DetecticService {
 impl DetecticService {
     pub fn new(config: SensorConfig) -> Self {
         let presence_cfg = config.presence.clone();
+        let temporal = TemporalEngine::new(&config.sensor_id, TemporalConfig::default());
+        let event_queue = ReliableQueue::new(4096, 4096);
         Self {
             config,
             dialect: Dialect::GdprJson,
@@ -146,6 +154,8 @@ impl DetecticService {
             last_upload: None,
             last_snapshot: None,
             presence: PresenceEngine::new(presence_cfg),
+            temporal,
+            event_queue,
             #[cfg(feature = "persist")]
             notifier: None,
         }
@@ -408,10 +418,99 @@ impl DetecticService {
         let _obs: Vec<PresenceObservation> =
             self.presence.update(&snapshot.stations, snapshot.timestamp);
 
+        // Build canonical temporal event envelopes from the snapshot.
+        let mut device_obs = Vec::with_capacity(snapshot.stations.len());
+        for d in &snapshot.stations {
+            let identity = d.identity();
+            let pseudo =
+                crypto::pseudonymize(secret, d.mac.as_deref().unwrap_or(&identity));
+            let band = d
+                .radio_mac
+                .as_deref()
+                .map(Band::from_radio_mac)
+                .and_then(|b| match b {
+                    Band::Ghz2_4 => Some("2.4GHz".to_string()),
+                    Band::Ghz5 => Some("5GHz".to_string()),
+                    _ => d.standard.clone(),
+                });
+            let noise = d.noise.map(|n| n as i64);
+            device_obs.push(DeviceObs {
+                identity: identity.clone(),
+                pseudonym: pseudo,
+                rssi: d.rssi,
+                noise,
+                band,
+                interface: d.interface.clone().or(d.radio_mac.clone()),
+            });
+        }
+        let canonical = self
+            .temporal
+            .process_associated(snapshot.timestamp, &device_obs);
+        self.event_queue.submit(canonical);
+
         // Collect nearby observations if monitor is available
         let nearby = monitor.scan();
         if !nearby.is_empty() {
             logging::info(&format!("nearby_observations count={}", nearby.len()));
+            let mut network_obs = Vec::with_capacity(nearby.len());
+            for n in &nearby {
+                let pseudo = crypto::pseudonymize(secret, &n.bssid);
+                network_obs.push(NetworkObs {
+                    bssid_pseudonym: pseudo,
+                    band: if n.band.is_empty() {
+                        None
+                    } else {
+                        Some(n.band.clone())
+                    },
+                    channel: if n.channel == 0 {
+                        None
+                    } else {
+                        Some(n.channel as u8)
+                    },
+                    signal: n.rssi,
+                    security: n.security.clone(),
+                    w_mode: n.w_mode.clone(),
+                    extch: n.extch.clone(),
+                });
+            }
+            let net_events = self
+                .temporal
+                .process_networks(snapshot.timestamp, &network_obs);
+            self.event_queue.submit(net_events);
+
+            if let Some(env) = self.temporal.rf_environment_snapshot(snapshot.timestamp) {
+                self.event_queue.submit(vec![env]);
+            }
+        }
+
+        // Flush canonical events to the backend if configured.
+        // SpoolEventTransport persists undelivered events to disk and drains
+        // any previous spool before attempting the current batch.
+        if let Some(url) = self.config.backend_url.as_deref() {
+            let http = HttpEventTransport::new(url, &self.config.sensor_id, secret, Duration::from_secs(30));
+            // Use a separate events spool so the legacy snapshot spool is not
+            // corrupted by the new canonical event format.
+            let events_spool = self
+                .config
+                .spool_path
+                .with_file_name("detectic_events.jsonl");
+            let mut transport =
+                SpoolEventTransport::new(Box::new(http), events_spool, 65536);
+            let drained = transport.drain();
+            if drained > 0 {
+                logging::info(&format!("events_spool_drained count={}", drained));
+            }
+            let report = self.event_queue.flush(&mut transport);
+            if report.sent > 0 {
+                self.last_upload = Some(Instant::now());
+            }
+            logging::info(&format!(
+                "events_flush sent={} kept={} dropped={} spool_drained={}",
+                report.sent,
+                report.kept,
+                self.event_queue.dropped_total(),
+                drained
+            ));
         }
 
         // Change detection

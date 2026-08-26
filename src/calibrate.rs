@@ -94,6 +94,15 @@ impl ProximityConfidence {
             _ => ProximityConfidence::None,
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProximityConfidence::High => "high",
+            ProximityConfidence::Medium => "medium",
+            ProximityConfidence::Low => "low",
+            ProximityConfidence::None => "none",
+        }
+    }
 }
 
 /// Proximity estimate with confidence.

@@ -44,6 +44,11 @@ interface SensorPayload {
     device_id?: string;
     snapshot?: unknown;
     schema_version?: string;
+    // Canonical envelope (schema v3)
+    type?: string;
+    timestamp?: number;
+    sequence?: number;
+    payload?: unknown;
   }>;
 }
 
@@ -164,6 +169,9 @@ async function patchColumns(db: D1Database): Promise<void> {
     `ALTER TABLE collector_captures ADD COLUMN payload_hash TEXT`,
     `ALTER TABLE device_identity ADD COLUMN bssid_manufacturer TEXT`,
     `ALTER TABLE device_identity ADD COLUMN identity_json TEXT`,
+    `ALTER TABLE events ADD COLUMN payload_json TEXT`,
+    `ALTER TABLE events ADD COLUMN sequence INTEGER`,
+    `ALTER TABLE events ADD COLUMN acked INTEGER NOT NULL DEFAULT 0`,
   ];
   for (const sql of alters) {
     try { await db.exec(sql); } catch { /* column already exists */ }
@@ -211,6 +219,27 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS device_state (
+        sensor_id TEXT NOT NULL, device_id TEXT NOT NULL, state TEXT NOT NULL,
+        last_signal INTEGER, noise INTEGER, band TEXT, interface TEXT,
+        current_session_id TEXT, first_seen INTEGER, last_seen INTEGER,
+        total_connected_time INTEGER NOT NULL DEFAULT 0,
+        connection_count INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (sensor_id, device_id)
+      )`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_ds_state ON device_state(sensor_id, state)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_ds_last_seen ON device_state(sensor_id, last_seen)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS device_sessions (
+        session_id TEXT PRIMARY KEY, sensor_id TEXT NOT NULL, device_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL, ended_at INTEGER, duration_seconds INTEGER,
+        band TEXT, last_signal INTEGER, last_noise INTEGER, received_at INTEGER NOT NULL
+      )`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_dss_dev ON device_sessions(sensor_id, device_id)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_dss_start ON device_sessions(started_at)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS sensor_sequences (
+        sensor_id TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      )`),
     ]);
     schemaReady = true;
     // Self-heal: older live tables may predate columns added later.
@@ -237,6 +266,13 @@ async function ensureSchema(db: D1Database): Promise<void> {
       `CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`,
       `CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`,
+      `CREATE TABLE IF NOT EXISTS device_state (sensor_id TEXT NOT NULL, device_id TEXT NOT NULL, state TEXT NOT NULL, last_signal INTEGER, noise INTEGER, band TEXT, interface TEXT, current_session_id TEXT, first_seen INTEGER, last_seen INTEGER, total_connected_time INTEGER NOT NULL DEFAULT 0, connection_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (sensor_id, device_id))`,
+      `CREATE INDEX IF NOT EXISTS idx_ds_state ON device_state(sensor_id, state)`,
+      `CREATE INDEX IF NOT EXISTS idx_ds_last_seen ON device_state(sensor_id, last_seen)`,
+      `CREATE TABLE IF NOT EXISTS device_sessions (session_id TEXT PRIMARY KEY, sensor_id TEXT NOT NULL, device_id TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER, duration_seconds INTEGER, band TEXT, last_signal INTEGER, last_noise INTEGER, received_at INTEGER NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_dss_dev ON device_sessions(sensor_id, device_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_dss_start ON device_sessions(started_at)`,
+      `CREATE TABLE IF NOT EXISTS sensor_sequences (sensor_id TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
     ];
     for (const sql of sqls) {
       try { await db.exec(sql); } catch { /* ignore */ }
@@ -379,27 +415,50 @@ async function handleEventBatch(
 
   let accepted = 0;
   let duplicates = 0;
+  let maxSeq: number | null = null;
+  const sideEffects: D1PreparedStatement[] = [];
 
   for (const evt of events) {
     const eventId = evt.event_id || "";
     if (!eventId) continue;
 
+    const type = evt.type || evt.event_type || "";
+    const ts = evt.timestamp ?? evt.event_timestamp ?? now;
+    const deviceId = evt.device_id ?? null;
+    const payloadJson = evt.payload !== undefined ? JSON.stringify(evt.payload) : null;
+    const seq = typeof evt.sequence === "number" ? evt.sequence : null;
+    if (seq !== null) {
+      maxSeq = maxSeq === null ? seq : Math.max(maxSeq, seq);
+    }
+
     try {
       await env.DB.prepare(
-        "INSERT INTO events (sensor_id, event_id, event_type, event_timestamp, device_id, snapshot_json, schema_version, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO events (sensor_id, event_id, event_type, event_timestamp, device_id, snapshot_json, payload_json, sequence, schema_version, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       )
         .bind(
           sensorId,
           eventId,
-          evt.event_type || "",
-          evt.event_timestamp || 0,
-          evt.device_id || null,
+          type,
+          ts,
+          deviceId,
           evt.snapshot ? JSON.stringify(evt.snapshot) : null,
-          evt.schema_version || "2.0",
+          payloadJson,
+          seq,
+          evt.schema_version || (evt.type ? "3.0" : "2.0"),
           now
         )
         .run();
       accepted++;
+
+      if (deviceId) {
+        if (type.startsWith("device.")) {
+          applyTemporalSideEffects(env, sideEffects, sensorId, type, ts, now, deviceId, evt.payload);
+        } else if (type.startsWith("network.")) {
+          applyApSideEffects(env, sideEffects, sensorId, type, ts, now, deviceId, evt.payload);
+        }
+      } else if (type === "rf.environment_snapshot") {
+        applyRfSnapshot(env, sideEffects, sensorId, eventId, ts, now, evt.payload);
+      }
     } catch (e: any) {
       if (e.message?.includes("UNIQUE")) {
         duplicates++;
@@ -407,7 +466,298 @@ async function handleEventBatch(
     }
   }
 
+  if (maxSeq !== null) {
+    sideEffects.push(
+      env.DB.prepare(
+        `INSERT INTO sensor_sequences (sensor_id, last_sequence, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(sensor_id) DO UPDATE SET
+           last_sequence = MAX(last_sequence, excluded.last_sequence),
+           updated_at = excluded.updated_at`
+      ).bind(sensorId, maxSeq, now)
+    );
+  }
+  if (sideEffects.length > 0) {
+    await env.DB.batch(sideEffects);
+  }
+
   return jsonResponse(202, { accepted, duplicates }, origin);
+}
+
+interface SessionPayload {
+  session_id?: string;
+  started_at?: number;
+  ended_at?: number;
+  duration_seconds?: number;
+  band?: string | null;
+  last_signal?: number | null;
+  last_noise?: number | null;
+}
+
+function applyTemporalSideEffects(
+  env: Env,
+  stmts: D1PreparedStatement[],
+  sensorId: string,
+  type: string,
+  ts: number,
+  now: number,
+  deviceId: string,
+  rawPayload: unknown
+): void {
+  const p = (rawPayload && typeof rawPayload === "object" ? rawPayload : {}) as Record<string, any>;
+
+  const stateUpdate = (state: string, extra: Record<string, any> = {}) => {
+    stmts.push(
+      env.DB.prepare(
+        `INSERT INTO device_state
+         (sensor_id, device_id, state, last_signal, noise, band, interface,
+          current_session_id, first_seen, last_seen, total_connected_time,
+          connection_count, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(sensor_id, device_id) DO UPDATE SET
+           state = COALESCE(excluded.state, device_state.state),
+           last_signal = COALESCE(excluded.last_signal, device_state.last_signal),
+           noise = COALESCE(excluded.noise, device_state.noise),
+           band = COALESCE(excluded.band, device_state.band),
+           interface = COALESCE(excluded.interface, device_state.interface),
+           current_session_id = COALESCE(excluded.current_session_id, device_state.current_session_id),
+           first_seen = COALESCE(device_state.first_seen, excluded.first_seen),
+           last_seen = excluded.last_seen,
+           total_connected_time = device_state.total_connected_time + excluded.total_connected_time,
+           connection_count = device_state.connection_count + excluded.connection_count,
+           updated_at = excluded.updated_at`
+      ).bind(
+        sensorId,
+        deviceId,
+        state,
+        extra.last_signal ?? null,
+        extra.noise ?? null,
+        extra.band ?? null,
+        extra.interface ?? null,
+        extra.current_session_id ?? null,
+        ts,
+        ts,
+        extra.total_connected_time ?? 0,
+        extra.connection_count ?? 0,
+        now
+      )
+    );
+  };
+
+  switch (type) {
+    case "device.connected": {
+      const sess = typeof p.session_id === "string" ? p.session_id : null;
+      stateUpdate("CONNECTED", {
+        last_signal: numOrNull(p.rssi ?? p.signal),
+        noise: numOrNull(p.noise),
+        band: strOrNull(p.band),
+        current_session_id: sess,
+        connection_count: typeof p.connection_count === "number" ? 1 : 0,
+      });
+      if (sess) {
+        stmts.push(
+          env.DB.prepare(
+            `INSERT OR REPLACE INTO device_sessions
+             (session_id, sensor_id, device_id, started_at, ended_at, duration_seconds, band, last_signal, last_noise, received_at)
+             VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`
+          ).bind(sess, sensorId, deviceId, ts, strOrNull(p.band), numOrNull(p.rssi ?? p.signal), numOrNull(p.noise), now)
+        );
+      }
+      break;
+    }
+    case "device.disconnected": {
+      stateUpdate("DISCONNECTED", {
+        total_connected_time: typeof p.duration_seconds === "number" ? p.duration_seconds : 0,
+      });
+      if (typeof p.session_id === "string") {
+        stmts.push(
+          env.DB.prepare(
+            `INSERT INTO device_sessions
+             (session_id, sensor_id, device_id, started_at, ended_at, duration_seconds, band, last_signal, last_noise, received_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(session_id) DO UPDATE SET
+               ended_at = excluded.ended_at,
+               duration_seconds = excluded.duration_seconds,
+               last_signal = COALESCE(excluded.last_signal, device_sessions.last_signal),
+               last_noise = COALESCE(excluded.last_noise, device_sessions.last_noise),
+               received_at = excluded.received_at`
+          ).bind(
+            p.session_id,
+            sensorId,
+            deviceId,
+            typeof p.started_at === "number" ? p.started_at : ts,
+            typeof p.ended_at === "number" ? p.ended_at : ts,
+            typeof p.duration_seconds === "number" ? p.duration_seconds : null,
+            strOrNull(p.band),
+            numOrNull(p.last_signal),
+            numOrNull(p.last_noise),
+            now
+          )
+        );
+        stmts.push(
+          env.DB.prepare(
+            `UPDATE device_state SET current_session_id = NULL
+             WHERE sensor_id = ? AND current_session_id = ?`
+          ).bind(sensorId, p.session_id)
+        );
+      }
+      break;
+    }
+    case "device.signal_changed": {
+      stateUpdate("", {
+        last_signal: numOrNull(p.new_signal),
+        band: strOrNull(p.band),
+      });
+      break;
+    }
+    case "device.band_changed": {
+      stateUpdate("", { band: strOrNull(p.new_band) });
+      break;
+    }
+    case "device.network_changed": {
+      stateUpdate("", { interface: strOrNull(p.new_interface) });
+      break;
+    }
+    case "device.presence_changed": {
+      if (typeof p.to_state === "string") {
+        stateUpdate(p.to_state);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+function newOrValue(v: unknown): unknown {
+  if (v && typeof v === "object" && !Array.isArray(v) && "new" in (v as Record<string, unknown>)) {
+    return (v as Record<string, unknown>).new;
+  }
+  return v;
+}
+
+function applyApSideEffects(
+  env: Env,
+  stmts: D1PreparedStatement[],
+  sensorId: string,
+  type: string,
+  ts: number,
+  now: number,
+  apId: string,
+  rawPayload: unknown
+): void {
+  const p = (rawPayload && typeof rawPayload === "object" ? rawPayload : {}) as Record<string, any>;
+
+  if (type === "network.detected" || type === "network.changed") {
+    const signal = numOrNull(newOrValue(p.signal));
+    stmts.push(
+      env.DB.prepare(
+        `INSERT INTO ap_state
+         (sensor_id, ap_id, status, band, channel, current_signal, security,
+          w_mode, extch, observation_count, first_seen, last_seen, online_since,
+          updated_at, average_signal, min_signal, max_signal, rssi_variance)
+         VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(sensor_id, ap_id) DO UPDATE SET
+           status = 'ONLINE',
+           band = COALESCE(excluded.band, ap_state.band),
+           channel = COALESCE(excluded.channel, ap_state.channel),
+           current_signal = COALESCE(excluded.current_signal, ap_state.current_signal),
+           security = COALESCE(excluded.security, ap_state.security),
+           w_mode = COALESCE(excluded.w_mode, ap_state.w_mode),
+           extch = COALESCE(excluded.extch, ap_state.extch),
+           observation_count = ap_state.observation_count + 1,
+           first_seen = COALESCE(ap_state.first_seen, excluded.first_seen),
+           last_seen = excluded.last_seen,
+           online_since = COALESCE(ap_state.online_since, excluded.online_since),
+           updated_at = excluded.updated_at,
+           min_signal = MIN(COALESCE(ap_state.min_signal, excluded.current_signal), excluded.current_signal),
+           max_signal = MAX(COALESCE(ap_state.max_signal, excluded.current_signal), excluded.current_signal),
+           average_signal = (COALESCE(ap_state.average_signal, 0) * ap_state.observation_count + excluded.current_signal) / (ap_state.observation_count + 1),
+           rssi_variance = CASE
+             WHEN ap_state.rssi_variance IS NULL THEN 0.0
+             ELSE (
+               ap_state.observation_count * ap_state.rssi_variance
+               + (excluded.current_signal - ap_state.average_signal)
+               * (excluded.current_signal - ((COALESCE(ap_state.average_signal, 0) * ap_state.observation_count + excluded.current_signal) / (ap_state.observation_count + 1)))
+             ) / (ap_state.observation_count + 1)
+           END`
+      ).bind(
+        sensorId,
+        apId,
+        strOrNull(newOrValue(p.band)),
+        numOrNull(newOrValue(p.channel)),
+        signal,
+        strOrNull(newOrValue(p.security)),
+        strOrNull(newOrValue(p.w_mode)),
+        strOrNull(newOrValue(p.extch)),
+        ts,
+        ts,
+        ts,
+        now,
+        signal,
+        signal,
+        signal,
+        null
+      )
+    );
+  } else if (type === "network.disappeared") {
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE ap_state
+         SET status = 'OFFLINE', last_seen = ?, online_since = NULL, updated_at = ?
+         WHERE sensor_id = ? AND ap_id = ?`
+      ).bind(ts, now, sensorId, apId)
+    );
+  }
+}
+
+function applyRfSnapshot(
+  env: Env,
+  stmts: D1PreparedStatement[],
+  sensorId: string,
+  eventId: string,
+  ts: number,
+  now: number,
+  rawPayload: unknown
+): void {
+  if (!rawPayload || typeof rawPayload !== "object") return;
+  const p = rawPayload as Record<string, any>;
+  const top = p.top_aps && Array.isArray(p.top_aps) ? JSON.stringify(p.top_aps) : null;
+  const channels = p.channel_distribution ? JSON.stringify(p.channel_distribution) : null;
+
+  stmts.push(
+    env.DB.prepare(
+      `INSERT INTO rf_environment_snapshots
+       (event_id, sensor_id, event_timestamp, ap_count, ap_count_2_4, ap_count_5,
+        strongest_signal, weakest_signal, average_signal, rssi_variance,
+        channel_distribution, top_aps, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(event_id) DO UPDATE SET
+         received_at = excluded.received_at`
+    ).bind(
+      eventId,
+      sensorId,
+      ts,
+      typeof p.ap_count === "number" ? p.ap_count : 0,
+      typeof p.ap_count_2_4 === "number" ? p.ap_count_2_4 : 0,
+      typeof p.ap_count_5 === "number" ? p.ap_count_5 : 0,
+      numOrNull(p.strongest_signal),
+      numOrNull(p.weakest_signal),
+      numOrNull(p.average_signal),
+      typeof p.rssi_variance === "number" ? p.rssi_variance : null,
+      channels,
+      top,
+      now
+    )
+  );
 }
 
 async function handleDevices(
@@ -644,15 +994,101 @@ async function handleReadyz(
 }
 
 async function handleNetworks(
-  _request: Request,
+  request: Request,
   env: Env
 ): Promise<Response> {
+  const url = new URL(request.url);
+  const sensorId = url.searchParams.get("sensor_id");
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24"), 168);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+  const origin = request.headers.get("Origin") || undefined;
+
+  const apConds: string[] = ["last_seen >= ?"];
+  const apBinds: (string | number)[] = [cutoff];
+  if (sensorId) {
+    apConds.push("sensor_id = ?");
+    apBinds.push(sensorId);
+  }
   const { results } = await env.DB.prepare(
-    `SELECT bssid_pseudonym, ssid, manufacturer, band, first_seen, last_seen,
-            observation_count
-     FROM wifi_network_observation ORDER BY observation_count DESC LIMIT 100`
-  ).all();
-  return jsonResponse(200, { networks: results });
+    `SELECT ap_id, status, ssid, band, channel, current_signal, average_signal,
+            min_signal, max_signal, rssi_variance, observation_count, session_count,
+            first_seen, last_seen, online_since, security, w_mode, extch
+     FROM ap_state WHERE ${apConds.join(" AND ")}
+     ORDER BY last_seen DESC LIMIT 500`
+  )
+    .bind(...apBinds)
+    .all();
+
+  const snapConds: string[] = ["event_timestamp >= ?"];
+  const snapBinds: (string | number)[] = [cutoff];
+  if (sensorId) {
+    snapConds.push("sensor_id = ?");
+    snapBinds.push(sensorId);
+  }
+  const { results: snapResults } = await env.DB.prepare(
+    `SELECT event_id, sensor_id, event_timestamp, ap_count, ap_count_2_4, ap_count_5,
+            strongest_signal, weakest_signal, average_signal, rssi_variance,
+            channel_distribution, top_aps
+     FROM rf_environment_snapshots WHERE ${snapConds.join(" AND ")}
+     ORDER BY event_timestamp DESC LIMIT 100`
+  )
+    .bind(...snapBinds)
+    .all();
+
+  return jsonResponse(200, { hours, sensor_id: sensorId, aps: results, rf_snapshots: snapResults }, origin);
+}
+
+async function handleDeviceState(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const sensorId = url.searchParams.get("sensor_id");
+  const origin = request.headers.get("Origin") || undefined;
+
+  let query = `SELECT device_id, state, last_signal, noise, band, interface,
+                      current_session_id, first_seen, last_seen,
+                      total_connected_time, connection_count, updated_at
+               FROM device_state`;
+  const binds: string[] = [];
+  if (sensorId) {
+    query += ` WHERE sensor_id = ?`;
+    binds.push(sensorId);
+  }
+  query += ` ORDER BY last_seen DESC LIMIT 500`;
+
+  const stmt = binds.length
+    ? env.DB.prepare(query).bind(...binds)
+    : env.DB.prepare(query);
+  const { results } = await stmt.all();
+  return jsonResponse(200, { devices: results }, origin);
+}
+
+async function handleSessions(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "168"), 720);
+  const deviceId = url.searchParams.get("device_id");
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+  const origin = request.headers.get("Origin") || undefined;
+
+  const conds: string[] = [`started_at >= ?`];
+  const binds: (string | number)[] = [cutoff];
+  if (deviceId) {
+    conds.push(`device_id = ?`);
+    binds.push(deviceId);
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT session_id, sensor_id, device_id, started_at, ended_at,
+            duration_seconds, band, last_signal, last_noise
+     FROM device_sessions WHERE ${conds.join(" AND ")}
+     ORDER BY started_at DESC LIMIT 500`
+  )
+    .bind(...binds)
+    .all();
+  return jsonResponse(200, { hours, sessions: results }, origin);
 }
 
 async function handleTimeline(
@@ -942,6 +1378,8 @@ export default {
         else if (path === "/api/v1/stats") response = await handleStats(request, env);
         else if (path === "/api/v1/timeline") response = await handleTimeline(request, env);
         else if (path === "/api/v1/networks") response = await handleNetworks(request, env);
+        else if (path === "/api/v1/state") response = await handleDeviceState(request, env);
+        else if (path === "/api/v1/sessions") response = await handleSessions(request, env);
       }
 
       if (!response) response = jsonResponse(404, { error: "not found" });
