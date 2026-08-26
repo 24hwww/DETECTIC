@@ -30,7 +30,7 @@ export function RealtimeIndicator() {
     return (
       <Badge
         variant="outline"
-        className="gap-1.5 text-xs text-red-500"
+        className="gap-1.5 text-xs text-[var(--color-offline)]"
       >
         <CloudOff className="h-3 w-3" />
         <span>Offline</span>
@@ -41,7 +41,7 @@ export function RealtimeIndicator() {
   return (
     <Badge
       variant="outline"
-      className="gap-1.5 text-xs text-green-500"
+      className="gap-1.5 text-xs text-[var(--color-online)]"
       title={last ? `Último evento hace ${ago}` : "Sin eventos aún"}
     >
       <Activity className="h-3 w-3" />

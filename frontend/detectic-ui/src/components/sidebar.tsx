@@ -79,9 +79,9 @@ export function Sidebar() {
         </Section>
 
         <Section title="Intelligence">
-          <NavItem to="/" icon={Monitor} label="Sessions" />
-          <NavItem to="/" icon={Activity} label="Events" />
-          <NavItem to="/" icon={Server} label="History" />
+          <NavItem to="/sessions" icon={Monitor} label="Sessions" />
+          <NavItem to="/events" icon={Activity} label="Events" />
+          <NavItem to="/history" icon={Server} label="History" />
           <NavItem to="/map" icon={MapIcon} label="Map" />
         </Section>
 

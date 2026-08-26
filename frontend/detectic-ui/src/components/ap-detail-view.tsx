@@ -98,8 +98,8 @@ export function APDetailView() {
           variant={online ? "default" : "secondary"}
           className={
             online
-              ? "ml-auto bg-green-500/10 text-green-500"
-              : "ml-auto bg-red-500/10 text-red-500"
+              ? "ml-auto bg-[var(--color-online)]/10 text-[var(--color-online)]"
+              : "ml-auto bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
           }
         >
           {online ? "online" : "offline"}
@@ -121,8 +121,8 @@ export function APDetailView() {
                   variant="outline"
                   className={
                     online
-                      ? "bg-green-500/10 text-green-500"
-                      : "bg-red-500/10 text-red-500"
+                      ? "bg-[var(--color-online)]/10 text-[var(--color-online)]"
+                      : "bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
                   }
                 >
                   {online ? "ONLINE" : "OFFLINE"}

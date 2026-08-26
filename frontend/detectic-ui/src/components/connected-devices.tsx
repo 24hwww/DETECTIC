@@ -14,9 +14,9 @@ function timeAgo(ms?: number) {
 
 function signalColor(r?: number) {
   if (r == null) return "bg-muted text-muted-foreground";
-  if (r >= -50) return "bg-green-500/15 text-green-500";
-  if (r >= -70) return "bg-yellow-500/15 text-yellow-500";
-  return "bg-red-500/15 text-red-500";
+  if (r >= -50) return "bg-[var(--color-online)]/10 text-[var(--color-online)]";
+  if (r >= -70) return "bg-[var(--color-warning)]/10 text-[var(--color-warning)]";
+  return "bg-[var(--color-offline)]/10 text-[var(--color-offline)]";
 }
 
 export function ConnectedDevices({ devices }: { devices: Device[] }) {

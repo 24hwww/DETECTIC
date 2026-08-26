@@ -42,14 +42,14 @@ const columns = [
       info.getValue() ? (
         <Badge
           variant="default"
-          className="bg-green-500/10 text-green-500 hover:bg-green-500/10"
+          className="bg-[var(--color-online)]/10 text-[var(--color-online)] hover:bg-[var(--color-online)]/10"
         >
           connected
         </Badge>
       ) : (
         <Badge
           variant="secondary"
-          className="bg-red-500/10 text-red-500 hover:bg-red-500/10"
+          className="bg-[var(--color-offline)]/10 text-[var(--color-offline)] hover:bg-[var(--color-offline)]/10"
         >
           offline
         </Badge>

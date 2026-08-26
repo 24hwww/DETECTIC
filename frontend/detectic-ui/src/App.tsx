@@ -235,7 +235,7 @@ export function MapView() {
       <CardContent className="p-0">
         <div className="h-[70vh] w-full">
           <MapComponent
-            theme="dark"
+            theme="light"
             className="h-full w-full"
             viewport={{
               center: [-49.35, -28.68],

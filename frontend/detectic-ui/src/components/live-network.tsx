@@ -61,8 +61,8 @@ export function LiveNetwork({
                       variant="outline"
                       className={`text-[10px] ${
                         d.connected
-                          ? "bg-green-500/10 text-green-500"
-                          : "bg-red-500/10 text-red-500"
+                          ? "bg-[var(--color-online)]/10 text-[var(--color-online)]"
+                          : "bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
                       }`}
                     >
                       {d.connected ? "conn" : "disc"}
@@ -98,8 +98,8 @@ export function LiveNetwork({
                       variant="outline"
                       className={`text-[10px] ${
                         n.status === "ONLINE"
-                          ? "bg-green-500/10 text-green-500"
-                          : "bg-red-500/10 text-red-500"
+                          ? "bg-[var(--color-online)]/10 text-[var(--color-online)]"
+                          : "bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
                       }`}
                     >
                       {n.status || "—"}

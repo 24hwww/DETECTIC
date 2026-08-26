@@ -6,6 +6,9 @@ import { DeviceDetailView } from "@/components/device-detail-view";
 import { AccessPointsView } from "@/components/access-points-view";
 import { APDetailView } from "@/components/ap-detail-view";
 import { RFEnvironmentView } from "@/components/rf-environment-view";
+import { EventsView } from "@/components/events-view";
+import { SessionsView } from "@/components/sessions-view";
+import { HistoryView } from "@/components/history-view";
 
 const rootRoute = createRootRoute({
   component: DashboardLayout,
@@ -53,6 +56,24 @@ const rfRoute = createRoute({
   component: RFEnvironmentView,
 });
 
+const eventsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/events",
+  component: EventsView,
+});
+
+const sessionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sessions",
+  component: SessionsView,
+});
+
+const historyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/history",
+  component: HistoryView,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   mapRoute,
@@ -61,6 +82,9 @@ const routeTree = rootRoute.addChildren([
   accessPointsRoute,
   apDetailRoute,
   rfRoute,
+  eventsRoute,
+  sessionsRoute,
+  historyRoute,
 ]);
 
 export const router = createRouter({ routeTree });

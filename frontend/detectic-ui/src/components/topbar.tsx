@@ -9,6 +9,9 @@ const breadcrumbMap: Record<string, string> = {
   "/devices": "Devices",
   "/access-points": "Access Points",
   "/rf": "RF Environment",
+  "/events": "Events",
+  "/sessions": "Sessions",
+  "/history": "History",
 };
 
 export function Topbar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
