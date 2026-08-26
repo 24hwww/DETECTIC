@@ -137,10 +137,15 @@ impl Default for SensorConfig {
 }
 
 impl SensorConfig {
-    /// Build configuration from environment variables, falling back to defaults.
+    /// Build configuration from environment variables, falling back to defaults
+    /// and an optional key=value env file.
     /// Required: `DETECTIC_PASSWORD`, `DETECTIC_SECRET`.
     pub fn from_env() -> Self {
-        let mut cfg = Self::default();
+        let mut cfg = if let Ok(v) = std::env::var("DETECTIC_ENV_FILE") {
+            Self::from_file(std::path::Path::new(&v))
+        } else {
+            Self::default()
+        };
 
         if let Ok(v) = std::env::var("DETECTIC_URL") {
             cfg.router_url = v;
@@ -255,17 +260,6 @@ impl SensorConfig {
                     }
                 }
             }
-        }
-        // Env vars override file
-        let env_cfg = Self::from_env();
-        if std::env::var("DETECTIC_URL").is_ok() {
-            cfg.router_url = env_cfg.router_url;
-        }
-        if std::env::var("DETECTIC_PASSWORD").is_ok() {
-            cfg.router_password = env_cfg.router_password;
-        }
-        if std::env::var("DETECTIC_SECRET").is_ok() {
-            cfg.secret = env_cfg.secret;
         }
         cfg
     }

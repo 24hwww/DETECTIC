@@ -70,12 +70,10 @@ $BB cp "$TMPPKG/detectic.ab" /var/tmp/detectic/detectic.ab 2>/dev/null || log "c
 $BB cp "$TMPPKG/launcher.sh" "$DIR/launcher.sh" 2>/dev/null || log "copy_launcher_failed"
 $BB rm -f "$TMPPKG/launcher.sh"
 if [ -f "$TMPPKG/detectic.env" ]; then
-    $BB cp "$TMPPKG/detectic.env" "$DIR/detectic.env" 2>/dev/null || {
-        log "copy_env_failed_writing_to_vartmp"
-        # Fallback: write env to /var/tmp so sensor picks it up
-        $BB mkdir -p /var/tmp/detectic 2>/dev/null
-        $BB cp "$TMPPKG/detectic.env" /var/tmp/detectic/detectic.env 2>/dev/null || log "copy_env_vartmp_failed"
-    }
+    # Always keep the runtime env in both places so launcher finds the latest copy.
+    $BB mkdir -p /var/tmp/detectic 2>/dev/null
+    $BB cp "$TMPPKG/detectic.env" /var/tmp/detectic/detectic.env 2>/dev/null || log "copy_env_vartmp_failed"
+    $BB cp /var/tmp/detectic/detectic.env "$DIR/detectic.env" 2>/dev/null || log "copy_env_dir_failed"
     $BB rm -f "$TMPPKG/detectic.env"
 fi
 $BB cp "$TMPPKG/version" "$DIR/version" 2>/dev/null || log "copy_version_failed"

@@ -13,7 +13,8 @@ use tungstenite::protocol::{Message, WebSocket};
 use tungstenite::stream::MaybeTlsStream;
 
 const WSS_PROTOCOL: u8 = 1;
-const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+// Allow the DO time to persist each event and reply.
+const ACK_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct WssEventTransport {

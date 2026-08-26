@@ -81,10 +81,12 @@ do_start() {
         set -a
         . "/var/tmp/detectic/detectic.env" 2>/dev/null
         set +a
+        export DETECTIC_ENV_FILE="/var/tmp/detectic/detectic.env"
     elif [ -f "$ENVF" ]; then
         set -a
         . "$ENVF" 2>/dev/null
         set +a
+        export DETECTIC_ENV_FILE="$ENVF"
     fi
     # Observability: confirm the backend upload URL is visible to the sensor.
     log "env_check upload_url=${DETECTIC_UPLOAD_URL:-UNSET} backend_url=${DETECTIC_BACKEND_URL:-UNSET} interval=${DETECTIC_INTERVAL:-UNSET}"

@@ -17,14 +17,84 @@
  *   GET  /                  — real-time dashboard UI
  */
 
-import dashboardHtml from './dashboard.html';
 import { RealtimeHub } from './realtime';
+
+const MANIFEST_JSON = JSON.stringify({
+  name: "Detectic",
+  short_name: "Detectic",
+  description: "Identidad y huella Wi-Fi en tiempo real",
+  start_url: "/",
+  display: "standalone",
+  background_color: "#0a0a0f",
+  theme_color: "#0a0a0f",
+  orientation: "portrait",
+  icons: [
+    { src: "/icon.svg", sizes: "any", type: "image/svg+xml" },
+    { src: "/icon.svg", sizes: "192x192", type: "image/svg+xml" },
+    { src: "/icon.svg", sizes: "512x512", type: "image/svg+xml" },
+  ],
+});
+
+const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="24" fill="#0a0a0f"/><circle cx="96" cy="96" r="28" fill="#58a6ff"/><path d="M96 48c-26.5 0-48 21.5-48 48 0 26.5 21.5 48 48 48" stroke="#58a6ff" stroke-width="8" fill="none" stroke-linecap="round"/><path d="M96 32c-35.3 0-64 28.7-64 64 0 35.3 28.7 64 64 64" stroke="#3fb950" stroke-width="8" fill="none" stroke-linecap="round"/><path d="M96 16c-44.2 0-80 35.8-80 80 0 44.2 35.8 80 80 80" stroke="#d29922" stroke-width="8" fill="none" stroke-linecap="round"/></svg>`;
+
+const SW_JS = `self.addEventListener('install', event => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET' || !event.request.url.startsWith(self.location.origin)) return;
+  event.respondWith(
+    fetch(event.request)
+      .then(networkResponse => {
+        if (networkResponse && networkResponse.status === 200) {
+          const clone = networkResponse.clone();
+          caches.open('detectic-v1').then(cache => cache.put(event.request, clone));
+        }
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request).then(cached => cached || new Response('Offline', { status: 503 })))
+  );
+});
+
+self.addEventListener('push', event => {
+  let data = { title: 'Detectic', body: 'Nuevo evento', tag: 'detectic', url: '/' };
+  if (event.data) {
+    try { data = event.data.json(); } catch (e) {}
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icon.svg',
+      badge: '/icon.svg',
+      tag: data.tag,
+      requireInteraction: true,
+      data: { url: data.url || '/' },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(self.clients.openWindow(url));
+});
+`;
+
+const HUB_NAME = "hub";
+function hubStub(env: Env) {
+  return env.REALTIME_HUB.get(env.REALTIME_HUB.idFromName(HUB_NAME));
+}
 
 interface Env {
   DB: D1Database;
   DETECTIC_SENSORS: string;  // JSON: {"sensor_id": "secret", ...}
   DETECTIC_MASTER_SECRET: string;
   REALTIME_HUB: DurableObjectNamespace<RealtimeHub>;
+  ASSETS: Fetcher;
 }
 
 interface SensorPayload {
@@ -345,20 +415,29 @@ async function handleIngest(
     return jsonResponse(400, { error: "invalid json" }, origin);
   }
 
+  // Extract sensor network / geolocation metadata from Cloudflare
+  const cf = (request as any).cf || {};
+  const publicIp = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for")?.split(",")[0].trim() || cf.clientIp || null;
+  const geoip: Location | undefined = (typeof cf.latitude === "number" && typeof cf.longitude === "number")
+    ? { latitude: cf.latitude, longitude: cf.longitude, accuracy_m: 10000, source: "ip_geolocation", confidence: null, timestamp: Date.now() }
+    : undefined;
+
   // Handle event batch
   if (payload.events && Array.isArray(payload.events)) {
-    return handleEventBatch(env, ctx, sensorId, payload, origin);
+    return handleEventBatch(env, ctx, sensorId, payload, origin, publicIp, geoip);
   }
 
   // Handle snapshot
-  return handleSnapshot(env, sensorId, payload, origin);
+  return handleSnapshot(env, sensorId, payload, origin, publicIp, geoip);
 }
 
 async function handleSnapshot(
   env: Env,
   sensorId: string,
   payload: SensorPayload,
-  origin?: string
+  origin?: string,
+  publicIp?: string | null,
+  geoip?: Location
 ): Promise<Response> {
   const now = Math.floor(Date.now() / 1000);
   const capturedAt = payload.captured_at || now;
@@ -394,11 +473,17 @@ async function handleSnapshot(
     await env.DB.batch(stmts);
   }
 
-  // Update sensor last_seen
+  // Update sensor last_seen, public IP and geoip
+  const existing = await env.DB.prepare("SELECT location FROM sensors WHERE id = ?").bind(sensorId).first() as { location?: string } | null;
+  const merged = mergeSensorLocation(existing?.location ?? null, publicIp ?? null, geoip ?? null);
   await env.DB.prepare(
-    "INSERT INTO sensors (id, created_at, last_seen) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_seen = ?"
+    `INSERT INTO sensors (id, created_at, last_seen, location) VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       last_seen = excluded.last_seen,
+       location = excluded.location,
+       created_at = coalesce(sensors.created_at, excluded.created_at)`
   )
-    .bind(sensorId, now, now, now)
+    .bind(sensorId, now, now, JSON.stringify(merged))
     .run();
 
   return jsonResponse(
@@ -413,7 +498,9 @@ async function handleEventBatch(
   ctx: ExecutionContext,
   sensorId: string,
   payload: SensorPayload,
-  origin?: string
+  origin?: string,
+  publicIp?: string | null,
+  geoip?: Location
 ): Promise<Response> {
   const now = Math.floor(Date.now() / 1000);
   const events = (payload.events || []).slice(0, 100); // max 100 per batch
@@ -493,6 +580,19 @@ async function handleEventBatch(
       env.REALTIME_HUB.getByName("hub").notify(acceptedEvents, sensorId)
     );
   }
+
+  // Update sensor last_seen, public IP and geoip
+  const existing = await env.DB.prepare("SELECT location FROM sensors WHERE id = ?").bind(sensorId).first() as { location?: string } | null;
+  const merged = mergeSensorLocation(existing?.location ?? null, publicIp ?? null, geoip ?? null);
+  await env.DB.prepare(
+    `INSERT INTO sensors (id, created_at, last_seen, location) VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       last_seen = excluded.last_seen,
+       location = excluded.location,
+       created_at = coalesce(sensors.created_at, excluded.created_at)`
+  )
+    .bind(sensorId, now, now, JSON.stringify(merged))
+    .run();
 
   return jsonResponse(202, { accepted, duplicates }, origin);
 }
@@ -644,6 +744,46 @@ function applyTemporalSideEffects(
 
 function numOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+type Location = {
+  latitude?: number;
+  longitude?: number;
+  source?: string;
+  accuracy_m?: number;
+  confidence?: number | null;
+  timestamp?: number;
+  method?: string;
+};
+
+const LOCATION_SOURCE_PRIORITY = ["gps", "manual", "sensor_known_location", "ip_geolocation", "rf_estimation", "estimated", "unknown"];
+
+function resolveLocation(...locs: (Location | undefined)[]): Location {
+  const valid = locs.filter((l): l is Location => !!l && typeof l.latitude === "number" && typeof l.longitude === "number");
+  const sorted = valid.sort((a, b) => {
+    const ra = LOCATION_SOURCE_PRIORITY.indexOf(a.source || "unknown");
+    const rb = LOCATION_SOURCE_PRIORITY.indexOf(b.source || "unknown");
+    if (ra !== rb) return ra - rb;
+    return (a.accuracy_m ?? Infinity) - (b.accuracy_m ?? Infinity);
+  });
+  return sorted[0] || { source: "unknown" };
+}
+
+function mergeSensorLocation(existingJson: string | null, publicIp: string | null, geoip: Location | null): {
+  public_ip: string | null;
+  geoip?: Location;
+  manual?: Location;
+  gps?: Location;
+  current: Location;
+} {
+  const base: any = {};
+  if (existingJson) {
+    try { Object.assign(base, JSON.parse(existingJson)); } catch {}
+  }
+  if (publicIp) base.public_ip = publicIp;
+  if (geoip) base.geoip = geoip;
+  base.current = resolveLocation(base.gps, base.manual, base.known, base.geoip);
+  return base;
 }
 
 function strOrNull(v: unknown): string | null {
@@ -925,6 +1065,46 @@ async function handlePresence(
   return jsonResponse(200, { hours, devices: results }, origin);
 }
 
+async function handleUpdateSensorLocation(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const origin = request.headers.get("Origin") || undefined;
+  const path = new URL(request.url).pathname;
+  const match = path.match(/^\/api\/v1\/sensors\/([^/]+)\/location$/);
+  if (!match) return jsonResponse(400, { error: "invalid path" }, origin);
+  const sensorId = decodeURIComponent(match[1]);
+  let body: any;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: "invalid json" }, origin); }
+  if (!body || typeof body.latitude !== "number" || typeof body.longitude !== "number") {
+    return jsonResponse(400, { error: "latitude and longitude required" }, origin);
+  }
+  const manual: Location = {
+    latitude: body.latitude,
+    longitude: body.longitude,
+    source: "manual",
+    accuracy_m: typeof body.accuracy_m === "number" ? body.accuracy_m : 10,
+    confidence: 1.0,
+    timestamp: Date.now()
+  };
+  const existing = await env.DB.prepare("SELECT location FROM sensors WHERE id = ?").bind(sensorId).first() as { location?: string } | null;
+  const base: any = {};
+  if (existing?.location) {
+    try { Object.assign(base, JSON.parse(existing.location)); } catch {}
+  }
+  base.manual = manual;
+  base.current = resolveLocation(base.gps, base.manual, base.known, base.geoip);
+  await env.DB.prepare(
+    `INSERT INTO sensors (id, created_at, last_seen, location) VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       location = excluded.location,
+       created_at = coalesce(sensors.created_at, excluded.created_at)`
+  )
+    .bind(sensorId, Math.floor(Date.now()/1000), Math.floor(Date.now()/1000), JSON.stringify(base))
+    .run();
+  return jsonResponse(200, { id: sensorId, location: base.current }, origin);
+}
+
 async function handleSensors(
   _request: Request,
   env: Env
@@ -955,13 +1135,35 @@ async function handleSensors(
     });
   }
 
-  const sensors = Array.from(bySensor.entries()).map(([id, s]) => ({
-    id,
-    last_seen: s.last_seen,
-    ap_count: s.ap_count || 0,
-    distinct_devices: s.distinct_devices || 0,
-    total_devices: s.total_devices || 0,
-  })).sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0));
+  const locRows = await env.DB.prepare(
+    `SELECT id, name, location, created_at, last_seen FROM sensors`
+  ).all();
+  const locBySensor = new Map<string, any>();
+  for (const r of (locRows.results as any[])) locBySensor.set(r.id, r);
+
+  const sensors = Array.from(bySensor.entries()).map(([id, s]) => {
+    const meta = locBySensor.get(id);
+    let location: any = { source: "unknown" };
+    let public_ip: string | null = null;
+    if (meta?.location) {
+      try {
+        const parsed = JSON.parse(meta.location);
+        location = parsed.current || { source: "unknown" };
+        public_ip = parsed.public_ip || null;
+      } catch {}
+    }
+    return {
+      id,
+      name: meta?.name || id,
+      last_seen: Math.max(s.last_seen || 0, meta?.last_seen || 0),
+      ap_count: s.ap_count || 0,
+      distinct_devices: s.distinct_devices || 0,
+      total_devices: s.total_devices || 0,
+      location,
+      public_ip,
+      created_at: meta?.created_at || null
+    };
+  }).sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0));
 
   return jsonResponse(200, { sensors });
 }
@@ -1533,6 +1735,14 @@ async function handleReportsDevices(request: Request, env: Env): Promise<Respons
   return jsonResponse(200, { ...data, hours }, origin);
 }
 
+async function handleReportsNetworks(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
+  const origin = request.headers.get('Origin') || undefined;
+  const data = await fetchRealtimeNetworks(env, hours);
+  return jsonResponse(200, { ...data, hours }, origin);
+}
+
 function msToDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -1843,22 +2053,36 @@ export default {
           response = await handleIngest(request, env, ctx);
         } else if (path === "/api/v1/captures/sync") {
           response = await handleCollectorSync(request, env);
+        } else if (path === "/api/v1/subscribe" || path === "/api/v1/unsubscribe") {
+          return hubStub(env).fetch(request);
+        } else if (path.match(/^\/api\/v1\/sensors\/[^/]+\/location$/)) {
+          response = await handleUpdateSensorLocation(request, env);
         }
       }
 
       // GET endpoints
       else if (request.method === "GET") {
-        // Realtime WebSocket (Durable Object)
-        if (path === "/ws") {
-          const id = env.REALTIME_HUB.idFromName("hub");
-          const stub = env.REALTIME_HUB.get(id);
-          return stub.fetch(request);
+        // Realtime WebSocket / Durable Object paths
+        if (path === "/ws" || path === "/api/v1/vapid/public-key") {
+          return hubStub(env).fetch(request);
         }
-        // Dashboard UI
-        if (path === "/" || path === "/dashboard" || path === "/index.html") {
-          response = new Response(dashboardHtml, {
-            headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=60" },
+        if (path === "/manifest.json") {
+          response = new Response(MANIFEST_JSON, {
+            headers: { "Content-Type": "application/manifest+json" },
           });
+        } else if (path === "/sw.js") {
+          response = new Response(SW_JS, {
+            headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-cache" },
+          });
+        } else if (path === "/icon.svg" || path === "/favicon.ico") {
+          response = new Response(ICON_SVG, {
+            headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" },
+          });
+        }
+        // Dashboard / Map UI — served from the shadcn/React build in src/frontend-dist
+        else if (path === "/" || path === "/dashboard" || path === "/map" || path === "/index.html") {
+          const indexUrl = new URL("/index.html", request.url);
+          response = await env.ASSETS.fetch(new Request(indexUrl, request));
         } else if (path === "/api/v1/healthz") response = await handleHealthz(request, env);
         else if (path === "/api/v1/readyz") response = await handleReadyz(request, env);
         else if (path === "/api/v1/devices") response = await handleDevices(request, env);
@@ -1871,6 +2095,7 @@ export default {
         else if (path === "/api/v1/state") response = await handleDeviceState(request, env);
         else if (path === "/api/v1/sessions") response = await handleSessions(request, env);
         else if (path === "/api/v1/reports/devices") response = await handleReportsDevices(request, env);
+        else if (path === "/api/v1/reports/networks") response = await handleReportsNetworks(request, env);
         else if (path === "/api/v1/reports/email") response = await handleEmailReport(request, env);
         else if (path === "/api/v1/events") response = await handleEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
@@ -1878,7 +2103,13 @@ export default {
         else if (/^\/api\/v1\/devices\/[^/]+\/signals$/.test(path)) response = await handleDeviceSignals(request, env);
       }
 
-      if (!response) response = jsonResponse(404, { error: "not found" });
+      if (!response) {
+        if (request.method === "GET" && env.ASSETS) {
+          response = await env.ASSETS.fetch(request);
+        } else {
+          response = jsonResponse(404, { error: "not found" });
+        }
+      }
     } catch (e: any) {
       // Surface the real error so misconfigured queries / schema drift are diagnosable.
       console.error("REQUEST_ERROR", path, e?.message, e?.stack);

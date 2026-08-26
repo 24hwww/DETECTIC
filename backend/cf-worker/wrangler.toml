@@ -27,6 +27,14 @@ class_name = "RealtimeHub"
 tag = "v2"
 new_sqlite_classes = ["RealtimeHub"]
 
+# Static assets built from the shadcn/React frontend (frontend/detectic-ui).
+# `run_worker_first = true` lets index.ts serve API/WSCustom routes and fall back
+# to the asset binding for everything else (e.g. /, /assets/*, /favicon.svg).
+[assets]
+directory = "./src/frontend-dist"
+binding = "ASSETS"
+run_worker_first = true
+
 # Environment variables (set via: npx wrangler secret put DETECTIC_SENSORS)
 # DETECTIC_SENSORS = '{"ex520-001": "your-sensor-secret"}'
 # DETECTIC_MASTER_SECRET = 'your-master-secret'

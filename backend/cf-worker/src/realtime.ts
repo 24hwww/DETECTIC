@@ -1,7 +1,14 @@
 import { DurableObject } from 'cloudflare:workers';
+import { generateVapidKeys, serializeVapidKeys, deserializeVapidKeys, sendPushNotification } from 'web-push-browser';
 
 export interface Env {
   REALTIME_HUB: DurableObjectNamespace<RealtimeHub>;
+}
+
+interface PushSubscription {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: { p256dh: string; auth: string };
 }
 
 type SocketMeta = { role?: string; sensor_id?: string };
@@ -38,6 +45,9 @@ export class RealtimeHub extends DurableObject {
   private networks: Map<string, NetworkSummary> = new Map();
   private devicesLoaded = false;
   private networksLoaded = false;
+  private pushSubs: PushSubscription[] = [];
+  private pushSubsLoaded = false;
+  private vapidKeys: CryptoKeyPair | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -72,6 +82,101 @@ export class RealtimeHub extends DurableObject {
     for (const [id, n] of this.networks) obj[id] = n;
     await this.ctx.storage.put('rt-networks', obj);
   }
+
+  private async loadPushSubs() {
+    if (this.pushSubsLoaded) return;
+    const stored = await this.ctx.storage.get<PushSubscription[]>('push-subs') || [];
+    this.pushSubs = stored;
+    this.pushSubsLoaded = true;
+  }
+
+  private async savePushSubs() {
+    await this.ctx.storage.put('push-subs', this.pushSubs);
+  }
+
+  private async getVapidKeys(): Promise<CryptoKeyPair> {
+    if (this.vapidKeys) return this.vapidKeys;
+    const pub = await this.ctx.storage.get<string>('vapid-public');
+    const priv = await this.ctx.storage.get<string>('vapid-private');
+    if (pub && priv) {
+      this.vapidKeys = await deserializeVapidKeys({ publicKey: pub, privateKey: priv });
+      return this.vapidKeys;
+    }
+    const generated = await generateVapidKeys();
+    const serialized = await serializeVapidKeys(generated);
+    await this.ctx.storage.put('vapid-public', serialized.publicKey);
+    await this.ctx.storage.put('vapid-private', serialized.privateKey);
+    this.vapidKeys = generated;
+    return generated;
+  }
+
+  async getVapidPublicKey(): Promise<string> {
+    const keys = await this.getVapidKeys();
+    const serialized = await serializeVapidKeys(keys);
+    return serialized.publicKey;
+  }
+
+  async subscribePush(sub: PushSubscription) {
+    await this.loadPushSubs();
+    this.pushSubs = this.pushSubs.filter(s => s.endpoint !== sub.endpoint);
+    this.pushSubs.push(sub);
+    await this.savePushSubs();
+  }
+
+  async unsubscribePush(endpoint: string) {
+    await this.loadPushSubs();
+    this.pushSubs = this.pushSubs.filter(s => s.endpoint !== endpoint);
+    await this.savePushSubs();
+  }
+
+  async pushEvent(title: string, body: string, tag: string, url = '/') {
+    if (!this.pushSubs.length) await this.loadPushSubs();
+    if (!this.pushSubs.length) return;
+    const keys = await this.getVapidKeys();
+    const payload = JSON.stringify({ title, body, tag, url, ts: Date.now() });
+    const dead: string[] = [];
+    await Promise.all(this.pushSubs.map(async (sub) => {
+      try {
+        const res = await sendPushNotification(keys, {
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+        }, 'mailto:notify@detectic.local', payload, { algorithm: 'aes128gcm', ttl: 60 });
+        if (res.status === 410 || res.status === 404) dead.push(sub.endpoint);
+      } catch (e) {
+        console.error('push send error:', e);
+      }
+    }));
+    if (dead.length) {
+      this.pushSubs = this.pushSubs.filter(s => !dead.includes(s.endpoint));
+      await this.savePushSubs();
+    }
+  }
+
+  async maybePushForEvent(sensorId: string, msg: any) {
+    const p = msg.payload || {};
+    const dev = p.payload || {};
+    const eventType = String(p.type || p.event_type || '');
+    const id = String(p.device_id || '—').slice(0, 16);
+
+    if (eventType === 'network.detected') {
+      const net = this.networks.get(id);
+      const name = dev.ssid || net?.ssid || id;
+      await this.pushEvent('Nueva red detectada', `red: ${name}`, `net-detected-${id}`, '/');
+    } else if (eventType === 'network.disappeared') {
+      const net = this.networks.get(id);
+      const name = net?.ssid || id;
+      await this.pushEvent('Red desaparecida', `red: ${name} perdió señal`, `net-gone-${id}`, '/');
+    } else if (eventType === 'device.connected') {
+      const device = this.devices.get(id);
+      const name = device?.hostname || id;
+      await this.pushEvent('Dispositivo conectado', `dispositivo: ${name} se conectó`, `dev-conn-${id}`, '/');
+    } else if (eventType === 'device.disconnected') {
+      const device = this.devices.get(id);
+      const name = device?.hostname || id;
+      await this.pushEvent('Dispositivo desconectado', `dispositivo: ${name} se desconectó`, `dev-disc-${id}`, '/');
+    }
+  }
+
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -131,6 +236,33 @@ export class RealtimeHub extends DurableObject {
       });
     }
 
+    if (url.pathname === '/api/v1/vapid/public-key') {
+      const publicKey = await this.getVapidPublicKey();
+      return new Response(JSON.stringify({ publicKey }), {
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
+    }
+
+    if (url.pathname === '/api/v1/subscribe' && request.method === 'POST') {
+      const sub = await request.json() as PushSubscription;
+      if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+        return new Response(JSON.stringify({ ok: false, error: 'invalid subscription' }), { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+      }
+      await this.subscribePush(sub);
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
+    }
+
+    if (url.pathname === '/api/v1/unsubscribe' && request.method === 'POST') {
+      const body = await request.json() as { endpoint?: string };
+      if (!body?.endpoint) return new Response(JSON.stringify({ ok: false, error: 'missing endpoint' }), { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+      await this.unsubscribePush(body.endpoint);
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
+    }
+
     const upgrade = request.headers.get('Upgrade');
     if (upgrade !== 'websocket') {
       return new Response('expected websocket', { status: 400 });
@@ -172,6 +304,7 @@ export class RealtimeHub extends DurableObject {
     const now = Date.now();
     const p = msg.payload || {};
     const dev = p.payload || {};
+    await this.loadDevices();
 
     const deviceId = String(dev.device_id || p.device_id || dev.pseudonym || 'unknown');
     const eventType = String(dev.type || p.event_type || p.type || 'unknown');
@@ -220,6 +353,7 @@ export class RealtimeHub extends DurableObject {
     const now = Date.now();
     const p = msg.payload || {};
     const dev = p.payload || {};
+    await this.loadNetworks();
 
     const apId = String(p.device_id || dev.ap_id || dev.bssid_pseudonym || 'unknown');
     const eventType = String(p.type || p.event_type || 'unknown');
@@ -234,7 +368,7 @@ export class RealtimeHub extends DurableObject {
       event_count: 0,
       last_type: eventType,
       status: 'ONLINE',
-      sensor_id,
+      sensor_id: sensorId,
     };
 
     summary.sensor_id = sensorId;
@@ -329,18 +463,27 @@ export class RealtimeHub extends DurableObject {
       const sensorId = msg.sensor_id || 'unknown';
       const p = msg.payload || {};
       const eventType = String(p.type || p.event_type || '');
+      if (eventType.startsWith('network.')) {
+        try {
+          await this.updateNetwork(sensorId, msg);
+        } catch (e: any) {
+          console.error('updateNetwork error:', e?.message || e);
+        }
+      } else {
+        try {
+          await this.updateDevice(sensorId, msg);
+        } catch (e: any) {
+          console.error('updateDevice error:', e?.message || e);
+        }
+      }
+      this.broadcastToFrontends(sensorId, msg, { observed_at: msg.observed_at });
+      await this.maybePushForEvent(sensorId, msg);
       const ack = JSON.stringify({
         type: 'event_ack',
         event_id: msg.event_id,
         received_at: now,
       });
       ws.send(ack);
-      if (eventType.startsWith('network.')) {
-        await this.updateNetwork(sensorId, msg);
-      } else {
-        await this.updateDevice(sensorId, msg);
-      }
-      this.broadcastToFrontends(sensorId, msg, { observed_at: msg.observed_at });
     } else if (type === 'subscribe') {
       (ws as any).serializeAttachment({
         role: 'frontend',
@@ -357,7 +500,13 @@ export class RealtimeHub extends DurableObject {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean) {
-    ws.close(code, reason);
+    try {
+      // 1006 is reserved and may not be used as a close code we send.
+      const closeCode = code === 1006 ? 1000 : (code || 1000);
+      ws.close(closeCode, reason);
+    } catch {
+      // Already closed or invalid code; nothing more to do.
+    }
   }
 
   // RPC entry point for the Worker to push ingested HTTP events into the

@@ -52,8 +52,29 @@ def pseudonymize(identifier: str) -> str:
 def mask_mac(mac: str) -> str:
     parts = mac.split(":")
     if len(parts) == 6:
-        return f"{parts[0]}:{parts[1]}:{parts[2]}:**:**:{parts[4]}:{parts[5]}"
+        return f"{parts[0]}:{parts[1]}:{parts[2]}:**:{parts[4]}:{parts[5]}"
     return mac
+
+
+def normalize_mac(mac):
+    """Return canonical lowercase colon-delimited MAC (00:1a:2b:3c:4d:5e)."""
+    if not mac:
+        return ""
+    raw = "".join(
+        c for c in str(mac).lower()
+        if c in "0123456789abcdef"
+    )
+    if len(raw) != 12:
+        return ""
+    return ":".join(raw[i:i + 2] for i in range(0, 12, 2))
+
+
+def is_wired_interface(interface_type):
+    """Return True if the host interface type is wired/cable."""
+    if not interface_type:
+        return True  # default to wired for unknown host entries
+    it = str(interface_type).lower()
+    return not any(w in it for w in ("wifi", "wireless", "802.11", "wlan", "wl"))
 
 
 def collect_observation():
@@ -145,7 +166,7 @@ def build_device_summary(results):
     # Build STA lookup by MAC for extra stats
     sta_by_mac = {}
     for s in sta:
-        mac = s.get("MACAddress", "")
+        mac = normalize_mac(s.get("MACAddress", ""))
         if mac:
             sta_by_mac[mac] = s
 
@@ -153,7 +174,7 @@ def build_device_summary(results):
     seen = set()
 
     for d in assoc:
-        mac = d.get("MACAddress", "")
+        mac = normalize_mac(d.get("MACAddress", ""))
         if not mac or mac in seen:
             continue
         seen.add(mac)
@@ -230,12 +251,14 @@ def build_device_summary(results):
         })
 
     # Add host-only devices not seen in WiFi assoc (wired / cable)
-    wifi_macs = {d.get("MACAddress", "") for d in assoc}
+    wifi_macs = {normalize_mac(d.get("MACAddress", "")) for d in assoc}
     for h in host:
-        mac = h.get("physAddress", "")
+        mac = normalize_mac(h.get("physAddress", ""))
         if not mac or mac in seen or mac in wifi_macs:
             continue
         seen.add(mac)
+        interface_type = h.get("interfaceType", "cable")
+        wired = is_wired_interface(interface_type)
         devices.append({
             "pseudonym": pseudonymize(mac)[:16],
             "hostname": h.get("hostName", "Dispositivo desconhecido"),
@@ -244,7 +267,7 @@ def build_device_summary(results):
             "signal_strength_raw": None,
             "signal_strength_level": None,
             "noise_raw": None,
-            "band": None,
+            "band": interface_type,
             "standard": None,
             "tx_rate_kbps": 0,
             "rx_rate_kbps": 0,
@@ -253,14 +276,15 @@ def build_device_summary(results):
             "connected": True,
             "association_time": "",
             "radio_mac": "",
-            "source": h.get("interfaceType", "cable"),
+            "source": "host",
+            "interface_type": interface_type,
             "bytes_sent": 0,
             "bytes_recv": 0,
             "errors": 0,
             "retries": 0,
-            "proximity_label": "Cabo",
+            "proximity_label": "Cabo" if wired else "Incerto",
             "proximity_color": "#888",
-            "proximity_sort": 4,
+            "proximity_sort": 4 if wired else 5,
             "quality_label": "N/A",
             "quality_color": "#999",
         })
@@ -269,7 +293,7 @@ def build_device_summary(results):
     active_count = sum(1 for d in devices if d["active"])
     connected_count = sum(1 for d in devices if d["connected"])
     wifi_count = sum(1 for d in devices if d["source"] == "wifi")
-    wired_count = sum(1 for d in devices if d["source"] != "wifi")
+    wired_count = sum(1 for d in devices if d["source"] == "host" and is_wired_interface(d.get("interface_type", "cable")))
 
     # Proximity buckets
     prox_buckets = {"Muito perto": 0, "Perto": 0, "Distancia media": 0, "Longe": 0, "Incerto": 0, "Cabo": 0}
