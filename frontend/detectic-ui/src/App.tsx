@@ -12,6 +12,7 @@ import { DashboardCharts } from "@/components/charts";
 import { DeviceTable } from "@/components/device-table";
 import { NetworkTable } from "@/components/network-table";
 import { LiveFeed } from "@/components/live-feed";
+import { ConnectedDevices } from "@/components/connected-devices";
 import { RssiTimelineChart } from "@/components/rssi-timeline-chart";
 import { ActivityTimelineChart } from "@/components/activity-timeline-chart";
 import { DeviceClassChart } from "@/components/device-class-chart";
@@ -129,13 +130,13 @@ export function DashboardView() {
   const detailed = allDevices.data || [];
   const points = timeline.data?.points || [];
 
-  const online = allDevs.filter((d) => d.connected).length;
-  const offline = allDevs.length - online;
+  const offline = allDevs.filter((d) => !d.connected).length;
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard title="Conectados" value={online} sub="en las últimas 24h" />
+    <div className="space-y-4 p-4 md:space-y-6 md:p-6">
+      <ConnectedDevices devices={allDevs} />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         <StatCard title="No conectados" value={offline} sub="en las últimas 24h" />
         <StatCard
           title="Dispositivos detectados"
@@ -148,9 +149,6 @@ export function DashboardView() {
           sub="señales Wi-Fi"
         />
         <StatCard title="Detecciones" value={s.total_detections ?? "—"} sub="eventos" />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard title="Sensores" value={s.total_sensors ?? "—"} sub="activos" />
         <StatCard
           title="RSSI medio"
@@ -160,12 +158,12 @@ export function DashboardView() {
         <StatCard
           title="MAC aleatoria"
           value={s.randomized_macs ?? "—"}
-          sub="dispositivos con privacidad MAC"
+          sub="privacidad MAC"
         />
         <StatCard
           title="Vendores"
           value={s.known_vendors ?? "—"}
-          sub={`${s.snapshots_last_hour ?? 0} snapshots última hora`}
+          sub={`${s.snapshots_last_hour ?? 0} snapshots/h`}
         />
         <StatCard
           title="Snapshots"

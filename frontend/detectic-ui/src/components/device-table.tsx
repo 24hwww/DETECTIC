@@ -24,9 +24,19 @@ const columns = [
     header: "Estado",
     cell: (info) =>
       info.getValue() ? (
-        <Badge variant="default">online</Badge>
+        <Badge
+          variant="default"
+          className="bg-green-500/10 text-green-500 hover:bg-green-500/10"
+        >
+          online
+        </Badge>
       ) : (
-        <Badge variant="secondary">offline</Badge>
+        <Badge
+          variant="secondary"
+          className="bg-red-500/10 text-red-500 hover:bg-red-500/10"
+        >
+          offline
+        </Badge>
       ),
   }),
   columnHelper.accessor("last_signal", {
