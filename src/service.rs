@@ -468,6 +468,11 @@ impl DetecticService {
                         Some(n.channel as u8)
                     },
                     signal: n.rssi,
+                    ssid: if n.ssid.is_empty() {
+                        None
+                    } else {
+                        Some(n.ssid.clone())
+                    },
                     security: n.security.clone(),
                     w_mode: n.w_mode.clone(),
                     extch: n.extch.clone(),

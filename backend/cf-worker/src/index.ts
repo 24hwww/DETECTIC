@@ -663,12 +663,13 @@ function applyApSideEffects(
     stmts.push(
       env.DB.prepare(
         `INSERT INTO ap_state
-         (sensor_id, ap_id, status, band, channel, current_signal, security,
+         (sensor_id, ap_id, status, ssid, band, channel, current_signal, security,
           w_mode, extch, observation_count, first_seen, last_seen, online_since,
           updated_at, average_signal, min_signal, max_signal, rssi_variance)
-         VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, 'ONLINE', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(sensor_id, ap_id) DO UPDATE SET
            status = 'ONLINE',
+           ssid = COALESCE(excluded.ssid, ap_state.ssid),
            band = COALESCE(excluded.band, ap_state.band),
            channel = COALESCE(excluded.channel, ap_state.channel),
            current_signal = COALESCE(excluded.current_signal, ap_state.current_signal),
@@ -694,6 +695,7 @@ function applyApSideEffects(
       ).bind(
         sensorId,
         apId,
+        strOrNull(newOrValue(p.ssid)),
         strOrNull(newOrValue(p.band)),
         numOrNull(newOrValue(p.channel)),
         signal,

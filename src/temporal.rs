@@ -135,6 +135,7 @@ pub struct NetworkObs {
     pub band: Option<String>,
     pub channel: Option<u8>,
     pub signal: Option<i64>,
+    pub ssid: Option<String>,
     pub security: Option<String>,
     pub w_mode: Option<String>,
     pub extch: Option<String>,
@@ -301,6 +302,7 @@ struct TrackedNetwork {
     band: Option<String>,
     channel: Option<u8>,
     last_signal: Option<i64>,
+    ssid: Option<String>,
     security: Option<String>,
     w_mode: Option<String>,
     extch: Option<String>,
@@ -700,6 +702,7 @@ impl TemporalEngine {
             let prev_band = entry.band.clone();
             let prev_channel = entry.channel;
             let prev_signal = entry.last_signal;
+            let prev_ssid = entry.ssid.clone();
             let prev_security = entry.security.clone();
             let prev_w_mode = entry.w_mode.clone();
             let prev_extch = entry.extch.clone();
@@ -715,6 +718,7 @@ impl TemporalEngine {
                         "band": n.band,
                         "channel": n.channel,
                         "signal": n.signal,
+                        "ssid": n.ssid,
                         "security": n.security,
                         "w_mode": n.w_mode,
                         "extch": n.extch,
@@ -741,6 +745,12 @@ impl TemporalEngine {
                             serde_json::json!({ "old": old, "new": new }),
                         );
                     }
+                }
+                if prev_ssid != n.ssid && !(prev_ssid.is_none() && n.ssid.is_none()) {
+                    changed.insert(
+                        "ssid".into(),
+                        serde_json::json!({ "old": prev_ssid, "new": n.ssid }),
+                    );
                 }
                 if prev_security != n.security && !(prev_security.is_none() && n.security.is_none()) {
                     changed.insert(
@@ -775,6 +785,7 @@ impl TemporalEngine {
             entry.band = n.band.clone();
             entry.channel = n.channel;
             entry.last_signal = n.signal;
+            entry.ssid = n.ssid.clone();
             entry.security = n.security.clone();
             entry.w_mode = n.w_mode.clone();
             entry.extch = n.extch.clone();
