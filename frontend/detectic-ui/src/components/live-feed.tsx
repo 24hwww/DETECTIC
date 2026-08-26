@@ -35,20 +35,35 @@ export function LiveFeed() {
 
   const rendered = useMemo(() => {
     return events.slice(0, 20).map((e) => {
-      const p = (e.payload as any)?.payload || e.payload || {};
-      const label = eventLabel(p.type || p.event_type || e.type);
+      const outer = (e.payload as any) || {};
+      const inner = outer?.payload || {};
+      const type = outer.type || outer.event_type || e.type;
+      const label = eventLabel(type);
       const id = String(
-        p.device_id || p.ap_id || p.pseudonym || p.bssid_pseudonym || "—"
+        outer.device_id ||
+          outer.ap_id ||
+          inner.pseudonym ||
+          inner.ap_id ||
+          inner.bssid_pseudonym ||
+          outer.pseudonym ||
+          "—"
       ).slice(0, 24);
-      const rssi = p.rssi != null ? `${p.rssi} dBm` : null;
-      const band = p.band ? `· ${p.band}` : "";
+      const rssi =
+        inner.rssi != null
+          ? `${inner.rssi} dBm`
+          : inner.new_signal != null
+          ? `${inner.new_signal} dBm`
+          : inner.last_signal != null
+          ? `${inner.last_signal} dBm`
+          : null;
+      const band = inner.band ? `· ${inner.band}` : "";
       return {
         label,
         id,
         rssi,
         band,
-        time: e.server_time || e.observed_at,
-        type: p.type || p.event_type || e.type,
+        time: e.server_time || outer.timestamp * 1000 || e.observed_at,
+        type,
       };
     });
   }, [events]);

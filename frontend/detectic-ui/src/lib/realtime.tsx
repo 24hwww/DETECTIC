@@ -29,53 +29,111 @@ function wsUrl() {
   return `${proto}//${window.location.host}/ws?role=frontend&sensor_id=*`;
 }
 
-function extractDevice(event: any): Device | null {
-  const p = event?.payload?.payload || event?.payload || {};
+// Event envelope broadcast by the backend:
+// {
+//   type: "broadcast",
+//   sensor_id: "...",
+//   server_time: 123,
+//   payload: {
+//     event_id: "...",
+//     sequence: 1,
+//     sensor_id: "...",
+//     timestamp: 1234567890,
+//     type: "device.connected",
+//     device_id: "...",
+//     payload: { rssi, band, hostname, ... }
+//   }
+// }
+//
+// `extractDevice` must read the outer event type (not the inner payload)
+// to determine whether a device connected or disconnected.
+
+function parseOuterPayload(event: any) {
+  const outer = event?.payload || {};
+  const inner = outer?.payload || {};
+  return { outer, inner, type: String(outer.type || outer.event_type || "") };
+}
+
+export function extractDevice(event: any): Device | null {
+  const { outer, inner, type } = parseOuterPayload(event);
+  if (!type.startsWith("device.")) return null;
+
   const deviceId = String(
-    p.device_id || p.pseudonym || event?.payload?.device_id || "unknown"
+    outer.device_id ||
+      inner.pseudonym ||
+      outer.pseudonym ||
+      event?.payload?.device_id ||
+      "unknown"
   );
+  if (deviceId === "unknown") return null;
+
   const rssi =
-    p.rssi != null
-      ? Number(p.rssi)
-      : p.new_signal != null
-      ? Number(p.new_signal)
+    inner.rssi != null
+      ? Number(inner.rssi)
+      : inner.new_signal != null
+      ? Number(inner.new_signal)
+      : inner.last_signal != null
+      ? Number(inner.last_signal)
+      : inner.signal != null
+      ? Number(inner.signal)
       : undefined;
-  const connected = !String(p.type || p.event_type || "").includes(
-    "disconnected"
-  );
+
+  const connected = type === "device.disconnected" ? false : true;
+
   const observedAt =
-    event?.observed_at || event?.payload?.observed_at || Date.now();
+    typeof outer.timestamp === "number"
+      ? outer.timestamp * 1000
+      : event?.observed_at ||
+        event?.payload?.observed_at ||
+        event?.server_time ||
+        Date.now();
+
   return {
     device_id: deviceId,
     connected,
     last_signal: rssi,
-    sensor_id: event?.sensor_id || event?.payload?.sensor_id,
+    sensor_id: outer.sensor_id || event?.sensor_id,
     last_seen: observedAt,
     event_count: 1,
-    last_type: String(p.type || p.event_type || ""),
-    hostname: p.hostname || undefined,
-    band: p.band || undefined,
+    last_type: type,
+    hostname: inner.hostname,
+    band: inner.band || inner.new_band || inner.old_band,
   };
 }
 
-function extractPoint(event: any): TimelinePoint | null {
-  const p = event?.payload?.payload || event?.payload || {};
+export function extractPoint(event: any): TimelinePoint | null {
+  const { outer, inner, type } = parseOuterPayload(event);
+  if (!type.startsWith("device.")) return null;
+
   const rssi =
-    p.rssi != null
-      ? Number(p.rssi)
-      : p.new_signal != null
-      ? Number(p.new_signal)
+    inner.rssi != null
+      ? Number(inner.rssi)
+      : inner.new_signal != null
+      ? Number(inner.new_signal)
+      : inner.last_signal != null
+      ? Number(inner.last_signal)
       : null;
   if (rssi == null) return null;
+
   const observedAt =
-    event?.observed_at || event?.payload?.observed_at || Date.now();
+    typeof outer.timestamp === "number"
+      ? outer.timestamp * 1000
+      : event?.observed_at ||
+        event?.payload?.observed_at ||
+        event?.server_time ||
+        Date.now();
+
   return {
     pseudonym: String(
-      p.device_id || p.pseudonym || event?.payload?.device_id || "unknown"
+      outer.device_id ||
+        inner.pseudonym ||
+        outer.pseudonym ||
+        event?.payload?.device_id ||
+        "unknown"
     ),
     rssi,
-    band: p.band || undefined,
-    bssid_pseudonym: p.bssid_pseudonym || undefined,
+    band: inner.band || inner.new_band || inner.old_band,
+    bssid_pseudonym: inner.bssid_pseudonym,
     ts: Math.floor(observedAt / 1000),
   };
 }
@@ -142,24 +200,35 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
           });
 
           setNetworks((prev) => {
-            const p = msg?.payload?.payload || msg?.payload || {};
-            const apId = String(p.ap_id || p.bssid_pseudonym || p.device_id || "unknown");
-            if (apId === "unknown") return prev;
+            const { outer, inner } = parseOuterPayload(msg);
+            const apId = String(
+              outer.ap_id ||
+                outer.device_id ||
+                inner.ap_id ||
+                inner.bssid_pseudonym ||
+                outer.pseudonym ||
+                "unknown"
+            );
+            if (apId === "unknown" || !String(outer.type || "").startsWith("network.")) {
+              return prev;
+            }
             const next = new Map(prev);
             const existing = next.get(apId);
             next.set(apId, {
               ...existing,
               ap_id: apId,
-              ssid: p.ssid || existing?.ssid,
-              status: p.status || existing?.status,
+              ssid: inner.ssid || existing?.ssid,
+              status: inner.status || existing?.status,
               last_signal:
-                p.rssi != null
-                  ? Number(p.rssi)
-                  : p.new_signal != null
-                  ? Number(p.new_signal)
+                inner.rssi != null
+                  ? Number(inner.rssi)
+                  : inner.new_signal != null
+                  ? Number(inner.new_signal)
+                  : inner.last_signal != null
+                  ? Number(inner.last_signal)
                   : existing?.last_signal,
-              band: p.band || existing?.band,
-              sensor_id: msg.sensor_id || existing?.sensor_id,
+              band: inner.band || existing?.band,
+              sensor_id: outer.sensor_id || msg.sensor_id || existing?.sensor_id,
             } as Network);
             return next;
           });
