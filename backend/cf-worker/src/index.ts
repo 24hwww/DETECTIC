@@ -347,7 +347,7 @@ async function handleIngest(
 
   // Handle event batch
   if (payload.events && Array.isArray(payload.events)) {
-    return handleEventBatch(env, sensorId, payload, origin);
+    return handleEventBatch(env, ctx, sensorId, payload, origin);
   }
 
   // Handle snapshot
@@ -410,6 +410,7 @@ async function handleSnapshot(
 
 async function handleEventBatch(
   env: Env,
+  ctx: ExecutionContext,
   sensorId: string,
   payload: SensorPayload,
   origin?: string
@@ -483,6 +484,14 @@ async function handleEventBatch(
   }
   if (sideEffects.length > 0) {
     await env.DB.batch(sideEffects);
+  }
+
+  // Fan accepted events out to subscribed frontends via the realtime hub.
+  if (accepted > 0 && env.REALTIME_HUB) {
+    const acceptedEvents = events.filter((_, i) => i < accepted);
+    ctx.waitUntil(
+      env.REALTIME_HUB.getByName("hub").notify(acceptedEvents, sensorId)
+    );
   }
 
   return jsonResponse(202, { accepted, duplicates }, origin);

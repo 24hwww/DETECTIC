@@ -4,6 +4,8 @@ export interface Env {
   REALTIME_HUB: DurableObjectNamespace<RealtimeHub>;
 }
 
+type SocketMeta = { role?: string; sensor_id?: string };
+
 export class RealtimeHub extends DurableObject {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -21,12 +23,14 @@ export class RealtimeHub extends DurableObject {
 
     const [client, server] = Object.values(new WebSocketPair());
 
+    (server as any).serializeAttachment({ role, sensor_id: sensorId } as SocketMeta);
     this.ctx.acceptWebSocket(server);
 
     const hello = JSON.stringify({
       type: 'hello_ack',
       protocol: 1,
       role,
+      sensor_id: sensorId,
       server_time: Date.now(),
       message: 'DETECTIC-RT/1 ready',
     });
@@ -36,6 +40,30 @@ export class RealtimeHub extends DurableObject {
       status: 101,
       webSocket: client,
     });
+  }
+
+  private meta(ws: WebSocket): SocketMeta {
+    try {
+      return ((ws as any).deserializeAttachment() ?? {}) as SocketMeta;
+    } catch {
+      return {};
+    }
+  }
+
+  private broadcastToFrontends(sensorId: string, payload: unknown, extras?: Record<string, unknown>) {
+    const message = JSON.stringify({
+      type: 'broadcast',
+      sensor_id: sensorId,
+      payload,
+      server_time: Date.now(),
+      ...extras,
+    });
+    for (const s of this.ctx.getWebSockets()) {
+      const m = this.meta(s);
+      if (m.role === 'frontend' && (m.sensor_id === sensorId || m.sensor_id === '*')) {
+        s.send(message);
+      }
+    }
   }
 
   async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string) {
@@ -71,13 +99,15 @@ export class RealtimeHub extends DurableObject {
         server_time: now,
       }));
       // Full-duplex probe: push a harmless diagnostic command
-      // from Cloudflare → EX520 over the same WSS.
-      ws.send(JSON.stringify({
-        type: 'command',
-        command: 'GET_STATUS',
-        protocol: 1,
-        server_time: now,
-      }));
+      // from Cloudflare -> EX520 over the same WSS, but only to sensors.
+      if (this.meta(ws).role === 'sensor') {
+        ws.send(JSON.stringify({
+          type: 'command',
+          command: 'GET_STATUS',
+          protocol: 1,
+          server_time: now,
+        }));
+      }
     } else if (type === 'command_ack') {
       ws.send(JSON.stringify({
         type: 'command_ack_ok',
@@ -85,8 +115,7 @@ export class RealtimeHub extends DurableObject {
         server_time: now,
       }));
     } else if (type === 'event') {
-      // For the real-time fan-out test: echo back an ack and broadcast to all
-      // connected clients (including frontends subscribed to this sensor).
+      // Sensor sent a real-time event over WSS. Echo ack and fan out.
       const sensorId = msg.sensor_id || 'unknown';
       const ack = JSON.stringify({
         type: 'event_ack',
@@ -94,16 +123,17 @@ export class RealtimeHub extends DurableObject {
         received_at: now,
       });
       ws.send(ack);
-
-      const broadcast = JSON.stringify({
-        type: 'broadcast',
-        sensor_id: sensorId,
-        payload: msg.payload,
-        received_at: now,
-      });
-      for (const s of this.ctx.getWebSockets()) {
-        if (s !== ws) s.send(broadcast);
-      }
+      this.broadcastToFrontends(sensorId, msg, { observed_at: msg.observed_at });
+    } else if (type === 'subscribe') {
+      (ws as any).serializeAttachment({
+        role: 'frontend',
+        sensor_id: msg.sensor_id || '*',
+      } as SocketMeta);
+      ws.send(JSON.stringify({
+        type: 'subscribe_ack',
+        sensor_id: msg.sensor_id || '*',
+        server_time: now,
+      }));
     } else {
       ws.send(JSON.stringify({ type: 'error', message: `unknown type: ${type}` }));
     }
@@ -111,5 +141,18 @@ export class RealtimeHub extends DurableObject {
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean) {
     ws.close(code, reason);
+  }
+
+  // RPC entry point for the Worker to push ingested HTTP events into the
+  // real-time fan-out without waiting for the response to the sensor.
+  async notify(events: any[], sensorId: string): Promise<void> {
+    for (const e of events) {
+      this.broadcastToFrontends(sensorId, e, { via: 'http_ingest', persisted: true });
+    }
+  }
+
+  // RPC entry point for a frontend or command fan-out.
+  async say(payload: { sensor_id: string; text: string }): Promise<void> {
+    this.broadcastToFrontends(payload.sensor_id, payload, { kind: 'system' });
   }
 }
