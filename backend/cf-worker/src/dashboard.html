@@ -70,6 +70,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
 .live-list li{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:8px 10px;font-size:12px;color:#c9d1d9}
 .live-list li b{color:#58a6ff}
 .live-list li .ts{color:#8b949e;font-size:11px}
+.rt-table{width:100%;border-collapse:collapse;font-size:12px}
+.rt-table th{text-align:left;padding:8px 10px;background:#0d1117;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d}
+.rt-table td{padding:8px 10px;border-bottom:1px solid #21262d;color:#c9d1d9}
+.rt-table tr:hover td{background:#161b22}
+.rt-table .mono{font-family:ui-monospace,monospace}
+.rt-table .time{font-size:11px;color:#8b949e;white-space:nowrap}
+.rt-table .dur{font-size:11px;color:#79c0ff;white-space:nowrap}
+.rt-actions{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.rt-actions a,.rt-actions button{font-size:12px;color:#58a6ff;background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:6px 10px;cursor:pointer;text-decoration:none}
+.rt-actions a:hover,.rt-actions button:hover{background:#161b22}
 @media(max-width:640px){.grid{padding:12px}.card .big{font-size:24px}.banner{margin:12px}}
 </style>
 </head>
@@ -127,6 +137,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
   <div class="chart-card section">
     <h3>Eventos en tiempo real</h3>
     <ul class="live-list" id="liveEvents"><li class="empty" style="padding:12px">Esperando conexión WebSocket…</li></ul>
+  </div>
+
+  <!-- Realtime devices with time/duration -->
+  <div class="chart-card section">
+    <div class="rt-actions">
+      <h3>🕒 Dispositivos en tiempo real</h3>
+      <a href="/api/v1/reports/email" target="_blank">Ver informe email</a>
+      <a href="/api/v1/reports/devices" target="_blank">JSON</a>
+    </div>
+    <table class="rt-table" id="rtDevices">
+      <thead>
+        <tr>
+          <th>Dispositivo</th>
+          <th>Estado</th>
+          <th>Primera detección</th>
+          <th>Última conexión</th>
+          <th>Tiempo total</th>
+          <th>Desde última</th>
+          <th>Eventos</th>
+          <th>Señal</th>
+          <th>Banda</th>
+        </tr>
+      </thead>
+      <tbody id="rtDevicesBody"><tr><td colspan="9" class="empty" style="text-align:center;padding:24px 0">Esperando dispositivos…</td></tr></tbody>
+    </table>
   </div>
 
   <!-- Charts -->
@@ -353,6 +388,17 @@ function setStatus(s) {
 }
 function setText(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtDateTime(ts) { return new Date(ts).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'medium' }); }
+function msToDuration(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
 function timeAgo(ts) {
   if (!ts) return '—';
   const diff = Math.floor(Date.now()/1000) - ts;
@@ -360,6 +406,71 @@ function timeAgo(ts) {
   if (diff < 3600) return Math.floor(diff/60) + 'm';
   if (diff < 86400) return Math.floor(diff/3600) + 'h';
   return Math.floor(diff/86400) + 'd';
+}
+
+let rtDevices = new Map();
+
+function updateRtDevice(deviceId, observedAt, eventType, connected, signal, band) {
+  const d = rtDevices.get(deviceId) || {
+    first_seen: observedAt, last_seen: observedAt, event_count: 0,
+    last_type: eventType, connected: !eventType.includes('disconnected'),
+    last_signal: null, band: ''
+  };
+  d.first_seen = Math.min(d.first_seen, observedAt);
+  d.last_seen = Math.max(d.last_seen, observedAt);
+  d.event_count += 1;
+  d.last_type = eventType;
+  if (eventType === 'device.connected' || eventType === 'device.detected') d.connected = true;
+  else if (eventType === 'device.disconnected') d.connected = false;
+  if (signal != null) d.last_signal = signal;
+  if (band) d.band = band;
+  rtDevices.set(deviceId, d);
+  renderRtDevices();
+}
+
+function renderRtDevices() {
+  const tbody = document.getElementById('rtDevicesBody');
+  const now = Date.now();
+  const sorted = Array.from(rtDevices.entries())
+    .map(([id, d]) => ({ id, ...d }))
+    .sort((a, b) => b.last_seen - a.last_seen);
+  if (!sorted.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty" style="text-align:center;padding:24px 0">Esperando dispositivos…</td></tr>';
+    return;
+  }
+  tbody.innerHTML = sorted.map(d => {
+    const total = msToDuration(d.last_seen - d.first_seen);
+    const since = msToDuration(now - d.last_seen);
+    const status = d.connected ? '<span class="chip chip-stable">Conectado</span>' : '<span class="chip chip-unk">Desconectado</span>';
+    return `<tr>
+      <td class="mono">${esc(d.id.slice(0, 16))}</td>
+      <td>${status}</td>
+      <td class="time">${esc(fmtDateTime(d.first_seen))}</td>
+      <td class="time">${esc(fmtDateTime(d.last_seen))}</td>
+      <td class="dur">${esc(total)}</td>
+      <td class="dur">${esc(since)}</td>
+      <td>${d.event_count}</td>
+      <td>${d.last_signal != null ? d.last_signal + ' dBm' : '—'}</td>
+      <td>${esc(d.band || '—')}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadRealtimeReport() {
+  try {
+    const r = await fetch(`${API}/reports/devices?hours=24`);
+    if (!r.ok) return;
+    const data = await r.json();
+    rtDevices = new Map();
+    for (const d of (data.devices || [])) {
+      rtDevices.set(d.device_id, {
+        first_seen: d.first_seen, last_seen: d.last_seen, event_count: d.event_count,
+        last_type: d.last_type, connected: d.connected,
+        last_signal: d.last_signal, band: d.band || ''
+      });
+    }
+    renderRtDevices();
+  } catch (e) { console.error('loadRealtimeReport error:', e); }
 }
 
 function addLiveEvent(text, ts, eventId) {
@@ -436,18 +547,25 @@ function connectRealtime() {
         const p = msg.payload || {};
         const dev = p.payload || {};
         if (p.event_id) { lastEventId = p.event_id; lastEventTs = p.event_timestamp || msg.server_time; }
-        const ts = p.event_timestamp ? p.event_timestamp * 1000 : (msg.server_time || Date.now());
+        const ts = msg.observed_at || (p.event_timestamp ? p.event_timestamp * 1000 : (msg.server_time || Date.now()));
+        const deviceId = dev.device_id || p.device_id || dev.pseudonym || '—';
+        const eventType = dev.type || p.event_type || p.type || 'evento';
+        const signal = dev.rssi ?? p.rssi ?? dev.new_signal ?? null;
+        const band = dev.band || p.band || '';
+        const connected = eventType !== 'device.disconnected';
+        updateRtDevice(deviceId, ts, eventType, connected, signal, band);
+
         if (p.event_type === 'device.detected' || dev.type === 'device.detected') {
-          addLiveEvent(`Dispositivo detectado <b>${esc(dev.device_id || p.device_id || dev.pseudonym || '—').slice(0,16)}</b> · RSSI ${dev.rssi ?? p.rssi ?? '—'} dBm`, ts, p.event_id);
+          addLiveEvent(`Dispositivo detectado <b>${esc(deviceId).slice(0,16)}</b> · RSSI ${dev.rssi ?? p.rssi ?? '—'} dBm`, ts, p.event_id);
           poll();
         } else if (p.event_type === 'device.connected' || dev.type === 'device.connected') {
-          addLiveEvent(`Conectado <b>${esc(dev.device_id || p.device_id || dev.pseudonym || '—').slice(0,16)}</b>`, ts, p.event_id);
+          addLiveEvent(`Conectado <b>${esc(deviceId).slice(0,16)}</b>`, ts, p.event_id);
           poll();
         } else if (p.event_type === 'device.disconnected' || dev.type === 'device.disconnected') {
-          addLiveEvent(`Desconectado <b>${esc(dev.device_id || p.device_id || dev.pseudonym || '—').slice(0,16)}</b>`, ts, p.event_id);
+          addLiveEvent(`Desconectado <b>${esc(deviceId).slice(0,16)}</b>`, ts, p.event_id);
           poll();
         } else {
-          addLiveEvent(`${esc(p.event_type || p.type || 'evento')}`, ts, p.event_id);
+          addLiveEvent(`${esc(eventType)}`, ts, p.event_id);
         }
       }
     } catch (e) { console.error('ws message parse:', e); }
@@ -465,6 +583,8 @@ function connectRealtime() {
 initCharts();
 poll();
 setInterval(poll, POLL);
+loadRealtimeReport();
+setInterval(renderRtDevices, 1000);
 connectRealtime();
 </script>
 </body>

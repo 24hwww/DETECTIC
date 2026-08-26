@@ -6,18 +6,71 @@ export interface Env {
 
 type SocketMeta = { role?: string; sensor_id?: string };
 
+interface DeviceSummary {
+  first_seen: number;
+  last_seen: number;
+  event_count: number;
+  last_type: string;
+  connected: boolean;
+  last_signal?: number;
+  band?: string;
+}
+
 export class RealtimeHub extends DurableObject {
+  private devices: Map<string, DeviceSummary> = new Map();
+  private loaded = false;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
   }
 
+  private async loadDevices() {
+    if (this.loaded) return;
+    const stored = await this.ctx.storage.get<Record<string, DeviceSummary>>('rt-devices') || {};
+    for (const [id, d] of Object.entries(stored)) {
+      this.devices.set(id, d);
+    }
+    this.loaded = true;
+  }
+
+  private async persistDevices() {
+    const obj: Record<string, DeviceSummary> = {};
+    for (const [id, d] of this.devices) obj[id] = d;
+    await this.ctx.storage.put('rt-devices', obj);
+  }
+
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    await this.loadDevices();
+
+    if (url.pathname === '/summary') {
+      const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
+      const cutoff = Date.now() - hours * 3600 * 1000;
+      const devices: any[] = [];
+      for (const [id, d] of this.devices) {
+        if (d.last_seen < cutoff) continue;
+        devices.push({
+          device_id: id,
+          first_seen: d.first_seen,
+          last_seen: d.last_seen,
+          event_count: d.event_count,
+          last_type: d.last_type,
+          connected: d.connected,
+          last_signal: d.last_signal,
+          band: d.band,
+        });
+      }
+      devices.sort((a, b) => b.last_seen - a.last_seen);
+      return new Response(JSON.stringify({ devices, generated_at: Date.now() }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const upgrade = request.headers.get('Upgrade');
     if (upgrade !== 'websocket') {
       return new Response('expected websocket', { status: 400 });
     }
 
-    const url = new URL(request.url);
     const role = url.searchParams.get('role') || 'unknown';
     const sensorId = url.searchParams.get('sensor_id') || 'unknown';
 
@@ -48,6 +101,46 @@ export class RealtimeHub extends DurableObject {
     } catch {
       return {};
     }
+  }
+
+  private async updateDevice(sensorId: string, msg: any) {
+    const now = Date.now();
+    const p = msg.payload || {};
+    const dev = p.payload || {};
+
+    const deviceId = String(dev.device_id || p.device_id || dev.pseudonym || 'unknown');
+    const eventType = String(dev.type || p.event_type || p.type || 'unknown');
+    const observedAt = typeof msg.observed_at === 'number' ? msg.observed_at
+      : (typeof p.observed_at === 'number' ? p.observed_at
+        : (typeof p.event_timestamp === 'number' ? p.event_timestamp * 1000 : now));
+
+    const existing = this.devices.get(deviceId);
+    const summary: DeviceSummary = existing || {
+      first_seen: observedAt,
+      last_seen: observedAt,
+      event_count: 0,
+      last_type: eventType,
+      connected: !eventType.includes('disconnected'),
+    };
+
+    summary.last_seen = Math.max(summary.last_seen, observedAt);
+    summary.first_seen = Math.min(summary.first_seen, observedAt);
+    summary.event_count += 1;
+    summary.last_type = eventType;
+
+    if (eventType === 'device.connected' || eventType === 'device.detected') {
+      summary.connected = true;
+    } else if (eventType === 'device.disconnected' || eventType === 'device.network_changed') {
+      summary.connected = false;
+    }
+
+    if (dev.rssi != null) summary.last_signal = Number(dev.rssi);
+    else if (dev.new_signal != null) summary.last_signal = Number(dev.new_signal);
+    else if (p.rssi != null) summary.last_signal = Number(p.rssi);
+    if (dev.band || p.band) summary.band = String(dev.band || p.band || '');
+
+    this.devices.set(deviceId, summary);
+    await this.persistDevices();
   }
 
   private broadcastToFrontends(sensorId: string, payload: unknown, extras?: Record<string, unknown>) {
@@ -98,8 +191,6 @@ export class RealtimeHub extends DurableObject {
         protocol: 1,
         server_time: now,
       }));
-      // Full-duplex probe: push a harmless diagnostic command
-      // from Cloudflare -> EX520 over the same WSS, but only to sensors.
       if (this.meta(ws).role === 'sensor') {
         ws.send(JSON.stringify({
           type: 'command',
@@ -115,7 +206,6 @@ export class RealtimeHub extends DurableObject {
         server_time: now,
       }));
     } else if (type === 'event') {
-      // Sensor sent a real-time event over WSS. Echo ack and fan out.
       const sensorId = msg.sensor_id || 'unknown';
       const ack = JSON.stringify({
         type: 'event_ack',
@@ -123,6 +213,7 @@ export class RealtimeHub extends DurableObject {
         received_at: now,
       });
       ws.send(ack);
+      await this.updateDevice(sensorId, msg);
       this.broadcastToFrontends(sensorId, msg, { observed_at: msg.observed_at });
     } else if (type === 'subscribe') {
       (ws as any).serializeAttachment({
@@ -149,10 +240,5 @@ export class RealtimeHub extends DurableObject {
     for (const e of events) {
       this.broadcastToFrontends(sensorId, e, { via: 'http_ingest', persisted: true });
     }
-  }
-
-  // RPC entry point for a frontend or command fan-out.
-  async say(payload: { sensor_id: string; text: string }): Promise<void> {
-    this.broadcastToFrontends(payload.sensor_id, payload, { kind: 'system' });
   }
 }

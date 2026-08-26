@@ -1509,6 +1509,94 @@ async function handleCollectorSync(
   return jsonResponse(200, { synced: true, ...results }, origin);
 }
 
+async function fetchRealtimeSummary(env: Env, hours: number): Promise<any> {
+  const id = env.REALTIME_HUB.idFromName('hub');
+  const stub = env.REALTIME_HUB.get(id);
+  const r = await stub.fetch(new Request(`https://internal/summary?hours=${hours}`, { method: 'GET' }));
+  if (!r.ok) return { devices: [] };
+  return r.json();
+}
+
+async function handleReportsDevices(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
+  const origin = request.headers.get('Origin') || undefined;
+  const data = await fetchRealtimeSummary(env, hours);
+  return jsonResponse(200, { ...data, hours }, origin);
+}
+
+function msToDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+function fmtDateTime(ts: number): string {
+  return new Date(ts).toLocaleString('es-CL', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+  });
+}
+
+async function handleEmailReport(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
+  const origin = request.headers.get('Origin') || undefined;
+  const data = await fetchRealtimeSummary(env, hours);
+  const generatedAt = new Date().toLocaleString('es-CL');
+  const now = Date.now();
+  const rows = (data.devices || []).map((d: any) => {
+    const duration = msToDuration(d.last_seen - d.first_seen);
+    const sinceLast = msToDuration(now - d.last_seen);
+    const status = d.connected ? '🟢 Conectado' : '🔴 Desconectado';
+    return `<tr>
+      <td><code>${d.device_id.slice(0, 16)}</code></td>
+      <td>${status}</td>
+      <td>${fmtDateTime(d.first_seen)}</td>
+      <td>${fmtDateTime(d.last_seen)}</td>
+      <td>${duration}</td>
+      <td>${sinceLast}</td>
+      <td>${d.event_count}</td>
+      <td>${d.last_signal ?? '—'} dBm</td>
+      <td>${d.band || '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="utf-8"><title>Informe Detectic</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#f6f8fa;color:#24292f;padding:24px}
+h2{color:#0969da}
+table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #d0d7de}
+th,td{padding:10px 12px;border-bottom:1px solid #d0d7de;text-align:left;font-size:13px}
+th{background:#f3f4f6;font-weight:600}
+</style>
+</head>
+<body>
+<h2>📡 Informe Detectic — Dispositivos en tiempo real</h2>
+<p>Generado: <b>${generatedAt}</b> · Ventana: <b>${hours}h</b> · Dispositivos: <b>${data.devices?.length || 0}</b></p>
+<table>
+<thead><tr>
+<th>Dispositivo</th><th>Estado</th><th>Primera detección</th><th>Última conexión</th>
+<th>Tiempo total</th><th>Desde última</th><th>Eventos</th><th>Señal</th><th>Banda</th>
+</tr></thead>
+<tbody>${rows || '<tr><td colspan="9" style="text-align:center;color:#666">Sin dispositivos en el período</td></tr>'}</tbody>
+</table>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { 'Content-Type': 'text/html;charset=utf-8', ...corsHeaders(origin) },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Main router
 // ---------------------------------------------------------------------------
@@ -1571,6 +1659,8 @@ export default {
         else if (path === "/api/v1/fusion") response = await handleFusion(request, env);
         else if (path === "/api/v1/state") response = await handleDeviceState(request, env);
         else if (path === "/api/v1/sessions") response = await handleSessions(request, env);
+        else if (path === "/api/v1/reports/devices") response = await handleReportsDevices(request, env);
+        else if (path === "/api/v1/reports/email") response = await handleEmailReport(request, env);
         else if (path === "/api/v1/events") response = await handleEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);
