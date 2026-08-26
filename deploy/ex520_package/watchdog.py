@@ -47,11 +47,10 @@ DOWN_THRESHOLD = int(os.environ.get("DOWN_THRESHOLD", "30"))
 PHOENIX_GRACE = int(os.environ.get("PHOENIX_GRACE", "45"))
 HEALTH_TIMEOUT = int(os.environ.get("HEALTH_TIMEOUT", "120"))
 PACKAGE_ROOT = os.environ.get("PACKAGE_ROOT", os.path.dirname(os.path.abspath(__file__)))
-# Optional TCP health probe target.  The DETECTIC sensor currently does not
-# expose a well-known health port, so this is a placeholder for a future sensor
-# health endpoint.  When set, the supervisor will attempt to connect to this
-# host:port as a secondary health signal.
-HEALTH_TCP_HOST = os.environ.get("DETECTIC_HEALTH_TCP_HOST", "")
+# TCP health probe target.  The EX520V Detectic sensor exposes /health on
+# TCP/8787 once it is running.  When this host:port is reachable, the supervisor
+# treats the sensor as healthy even if the package-server log upload is delayed.
+HEALTH_TCP_HOST = os.environ.get("DETECTIC_HEALTH_TCP_HOST", "192.168.0.1")
 HEALTH_TCP_PORT = int(os.environ.get("DETECTIC_HEALTH_TCP_PORT", "8787"))
 
 SECRET_RE = re.compile(
@@ -300,26 +299,24 @@ class EdgeSupervisor:
             self.state.sensor_log_mtime = mtime
             self.state.last_health = time.time()
 
-        if self.state.last_trigger is None:
-            # We have never triggered; sensor cannot be healthy yet.
-            return False
-
         now = time.time()
-        since_trigger = now - self.state.last_trigger
-
-        # Wait at least a short startup window before expecting health.
-        if since_trigger < self.cfg.phoenix_grace:
-            return False
 
         # A callback/log newer than the trigger means the sensor has been active.
-        if self.state.last_health is not None:
-            since_health = now - self.state.last_health
-            if since_health <= self.cfg.health_timeout:
-                return True
+        if self.state.last_trigger is not None:
+            since_trigger = now - self.state.last_trigger
 
-        # Secondary signal: TCP 8787 reachable on the router (only if the
-        # sensor exposes it).  Disabled by default because the current DETECTIC
-        # sensor does not expose this port.
+            # Wait at least a short startup window before expecting health.
+            if since_trigger < self.cfg.phoenix_grace:
+                return False
+
+            if self.state.last_health is not None:
+                since_health = now - self.state.last_health
+                if since_health <= self.cfg.health_timeout:
+                    return True
+
+        # Secondary signal: TCP 8787 reachable on the router.  This also lets
+        # the supervisor discover an already-running sensor when it starts up
+        # after a restart.
         host = HEALTH_TCP_HOST
         if host:
             if self._tcp(host, HEALTH_TCP_PORT, timeout=1.0):

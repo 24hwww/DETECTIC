@@ -960,9 +960,10 @@ IPv6 LINK-LOCAL       = PROVEN-LIVE
 HTTP/80               = PROVEN-LIVE
 GTPR/GDPR             = PROVEN-LIVE
 AUTHENTICATION        = PROVEN-LIVE
-gl/go                 = PROVEN-LIVE
-DEV2_WIFI_APDEV_ASSOCDEV = PROVEN-LIVE
-IPv4 192.168.0.1      = CURRENTLY UNREACHABLE (GTPR endpoints may respond)
+gl                    = PROVEN-LIVE (used by sensor collector; `go` can return 9003 for list OIDs)
+go                    = PROVEN-LIVE for scalar OIDs; may return 9003 for list OIDs
+DEV2_WIFI_APDEV_ASSOCDEV = PROVEN-LIVE via `gl` (sensor collector returns 6 devices)
+IPv4 192.168.0.1      = REACHABLE for sensor HTTP/8787 and routed LAN; IPv4 GTPR/HTTP still unproven
 Telnet                = UNKNOWN
 SSH                   = UNKNOWN
 misc_rw access        = PROVEN-LIVE
@@ -970,8 +971,12 @@ misc_rw_bak access    = PROVEN-LIVE
 arbitrary execution   = PROVEN-LIVE (via DEV2_LIFEMOTE_AGENT /usr/bin/phoenix.sh)
 persistence           = PROVEN-LIVE (split Detectic binary in misc_rw + misc_rw_bak)
 manual autostart      = PROVEN-LIVE (phoenix downloads and executes bootstart.sh)
-watchdog trigger      = PROVEN-LIVE (cold boot: DOWN -> UP -> GTPR so SENT)
+watchdog trigger      = PROVEN-LIVE (cold boot: DOWN -> UP -> GTPR so SENT; manual trigger verified)
 cold boot             = PROVEN-LIVE (watchdog -> phoenix -> bootstart -> detectic; done?status=ok&ret=0)
+sensor HTTP/8787      = PROVEN-LIVE (curl /health and /devices from host)
+sensor GTPR collection = PROVEN-LIVE (sensor populated 6 Wi-Fi devices via DEV2_WIFI_APDEV_ASSOCDEV gl)
+Edge Supervisor health = PROVEN-LIVE (watchdog reached SENSOR_HEALTHY via TCP 8787 probe)
+SHA-256 verify         = PROVEN-LIVE (OpenSSL dgst -sha256; BusyBox sha256sum applet is non-functional)
 email delivery        = PROVEN-LIVE (emaild + Brevo; email_test from router sent and delivered)
 startup email         = BUG FIXED (launcher.sh curl line continuation); next clean start will deliver
 ```
