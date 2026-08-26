@@ -1,68 +1,9 @@
-import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-
-type LiveEvent = {
-  type: string;
-  sensor_id?: string;
-  payload?: unknown;
-  server_time?: number;
-};
-
-function wsUrl() {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws?role=frontend&sensor_id=*`;
-}
+import { useRealtime } from "@/lib/realtime";
 
 export function LiveFeed() {
-  const [events, setEvents] = useState<LiveEvent[]>([]);
-  const [status, setStatus] = useState<"conectando" | "en línea" | "desconectado">(
-    "conectando"
-  );
-  const wsRef = useRef<WebSocket | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    const connect = () => {
-      if (!alive) return;
-      const ws = new WebSocket(wsUrl());
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        setStatus("en línea");
-        ws.send(JSON.stringify({ type: "subscribe", sensor_id: "*" }));
-      };
-
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data) as LiveEvent;
-          if (msg.type === "hello_ack" || msg.type === "subscribe_ack") return;
-          if (msg.type === "pong") return;
-          setEvents((prev) => [msg, ...prev].slice(0, 50));
-        } catch {
-          setEvents((prev) =>
-            [{ type: "raw", payload: e.data }, ...prev].slice(0, 50)
-          );
-        }
-      };
-
-      ws.onerror = () => {
-        setStatus("desconectado");
-      };
-
-      ws.onclose = () => {
-        if (!alive) return;
-        setStatus("desconectado");
-        setTimeout(connect, 5000);
-      };
-    };
-
-    connect();
-    return () => {
-      alive = false;
-      wsRef.current?.close();
-    };
-  }, []);
+  const { events, status } = useRealtime();
 
   return (
     <Card>

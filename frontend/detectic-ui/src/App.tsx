@@ -1,6 +1,7 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Map,
+  Map as MapComponent,
   MapControls,
   MapMarker,
   MarkerContent,
@@ -16,6 +17,8 @@ import { ConnectedDevices } from "@/components/connected-devices";
 import { RssiTimelineChart } from "@/components/rssi-timeline-chart";
 import { ActivityTimelineChart } from "@/components/activity-timeline-chart";
 import { DeviceClassChart } from "@/components/device-class-chart";
+import { SignalProximityChart } from "@/components/signal-proximity-chart";
+import { useRealtime } from "@/lib/realtime";
 import { sourceColor } from "@/lib/location";
 import {
   fetchSensors,
@@ -97,7 +100,27 @@ function useDashboardData() {
   return { stats, devices, networks, allDevices, timeline, sensors };
 }
 
+function mergeLive<T extends { device_id?: string; ap_id?: string }>(
+  fetched: T[],
+  live: Map<string, T>
+): T[] {
+  const map = new Map<string, T>();
+  for (const d of fetched) {
+    const key = d.device_id || d.ap_id || "";
+    if (key) map.set(key, d);
+  }
+  for (const [key, d] of live) {
+    map.set(key, { ...map.get(key), ...d } as T);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    const ta = (a as any).last_seen ?? 0;
+    const tb = (b as any).last_seen ?? 0;
+    return tb - ta;
+  });
+}
+
 export function DashboardView() {
+  const live = useRealtime();
   const { stats, devices, networks, allDevices, timeline, sensors } =
     useDashboardData();
 
@@ -124,17 +147,35 @@ export function DashboardView() {
   }
 
   const s = stats.data || {};
-  const allDevs = devices.data || [];
-  const allNets = networks.data || [];
+  const fetchedDevs = devices.data || [];
+  const fetchedNets = networks.data || [];
   const allSensors = sensors.data || [];
   const detailed = allDevices.data || [];
-  const points = timeline.data?.points || [];
+  const fetchedPoints = timeline.data?.points || [];
 
-  const offline = allDevs.filter((d) => !d.connected).length;
+  const liveDevs = useMemo(
+    () => mergeLive(fetchedDevs, live.devices),
+    [fetchedDevs, live.devices]
+  );
+
+  const liveNets = useMemo(
+    () => mergeLive(fetchedNets, live.networks),
+    [fetchedNets, live.networks]
+  );
+
+  const livePoints = useMemo(
+    () =>
+      [...fetchedPoints, ...live.points]
+        .sort((a, b) => a.ts - b.ts)
+        .slice(-500),
+    [fetchedPoints, live.points]
+  );
+
+  const offline = liveDevs.filter((d) => !d.connected).length;
 
   return (
     <div className="space-y-4 p-4 md:space-y-6 md:p-6">
-      <ConnectedDevices devices={allDevs} />
+      <ConnectedDevices devices={liveDevs} />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         <StatCard title="No conectados" value={offline} sub="en las últimas 24h" />
@@ -173,23 +214,27 @@ export function DashboardView() {
       </div>
 
       <DashboardCharts
-        devices={allDevs}
-        networks={allNets}
+        devices={liveDevs}
+        networks={liveNets}
         sensors={allSensors}
       />
 
-      <RssiTimelineChart points={points} />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <SignalProximityChart devices={liveDevs} />
+        <RssiTimelineChart points={livePoints} />
+      </div>
+
+      <ActivityTimelineChart points={livePoints} />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <ActivityTimelineChart points={points} />
         <DeviceClassChart devices={detailed} />
       </div>
 
       <LiveFeed />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <DeviceTable devices={allDevs} />
-        <NetworkTable networks={allNets} />
+        <DeviceTable devices={liveDevs} />
+        <NetworkTable networks={liveNets} />
       </div>
     </div>
   );
@@ -215,7 +260,7 @@ export function MapView() {
       </CardHeader>
       <CardContent className="p-0">
         <div className="h-[70vh] w-full">
-          <Map
+          <MapComponent
             theme="dark"
             className="h-full w-full"
             viewport={{
@@ -260,7 +305,7 @@ export function MapView() {
                 </MapMarker>
               ) : null
             )}
-          </Map>
+          </MapComponent>
         </div>
       </CardContent>
     </Card>
