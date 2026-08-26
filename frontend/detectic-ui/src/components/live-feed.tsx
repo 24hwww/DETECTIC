@@ -37,7 +37,10 @@ export function LiveFeed() {
     return events.slice(0, 20).map((e) => {
       const outer = (e.payload as any) || {};
       const inner = outer?.payload || {};
-      const type = outer.type || outer.event_type || e.type;
+      const type =
+        outer.type === "event" && inner?.type
+          ? inner.type
+          : outer.type || outer.event_type || e.type;
       const label = eventLabel(type);
       const id = String(
         outer.device_id ||

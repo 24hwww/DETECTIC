@@ -126,6 +126,70 @@ describe("extractDevice WSS shape", () => {
   });
 });
 
+// Raw WSS sensor message shape (deprecated backend format):
+// broadcast.payload is the sensor WebSocket message, real event is nested.
+function makeRawWssBroadcast(eventType: string, deviceId: string, inner: Record<string, unknown>) {
+  return {
+    type: "broadcast",
+    sensor_id: "ex520-001",
+    server_time: 1_700_000_000_000,
+    payload: {
+      event_id: "ev-raw-1",
+      observed_at: 1_700_000_000_000,
+      protocol: 1,
+      sensor_id: "ex520-001",
+      type: "event",
+      payload: {
+        event_id: "ev-raw-1",
+        sequence: 1,
+        sensor_id: "ex520-001",
+        timestamp: 1_700_000_000,
+        type: eventType,
+        device_id: eventType.startsWith("network.") ? undefined : deviceId,
+        payload: eventType.startsWith("network.") ? { ap_id: deviceId, ...inner } : inner,
+      },
+    },
+  };
+}
+
+describe("extractDevice raw WSS message shape", () => {
+  it("handles device.connected inside raw sensor msg", () => {
+    const dev = extractDevice(
+      makeRawWssBroadcast("device.connected", "raw-aa", {
+        rssi: -50,
+        band: "2.4GHz",
+        hostname: "phone",
+      })
+    );
+    expect(dev).not.toBeNull();
+    expect(dev?.device_id).toBe("raw-aa");
+    expect(dev?.connected).toBe(true);
+    expect(dev?.last_signal).toBe(-50);
+    expect(dev?.last_type).toBe("device.connected");
+  });
+
+  it("handles device.disconnected inside raw sensor msg", () => {
+    const dev = extractDevice(
+      makeRawWssBroadcast("device.disconnected", "raw-bb", {
+        last_signal: -88,
+        band: "5GHz",
+      })
+    );
+    expect(dev).not.toBeNull();
+    expect(dev?.device_id).toBe("raw-bb");
+    expect(dev?.connected).toBe(false);
+    expect(dev?.last_signal).toBe(-88);
+  });
+
+  it("handles device.signal_changed inside raw sensor msg", () => {
+    const dev = extractDevice(
+      makeRawWssBroadcast("device.signal_changed", "raw-cc", { new_signal: -60, band: "2.4GHz" })
+    );
+    expect(dev?.device_id).toBe("raw-cc");
+    expect(dev?.last_signal).toBe(-60);
+  });
+});
+
 describe("extractPoint", () => {
   it("creates a point from HTTP device.connected rssi", () => {
     const point = extractPoint(

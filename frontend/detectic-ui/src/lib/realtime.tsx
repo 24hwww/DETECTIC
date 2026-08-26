@@ -49,8 +49,27 @@ function wsUrl() {
 // to determine whether a device connected or disconnected.
 
 function parseOuterPayload(event: any) {
-  const outer = event?.payload || {};
-  const inner = outer?.payload || {};
+  let outer = event?.payload || {};
+  let inner = outer?.payload || {};
+
+  // Backward compatibility: some deployed Workers still broadcast the raw
+  // sensor WebSocket message, where the real event is one level deeper:
+  //
+  //   broadcast.payload = { type: "event", payload: { type: "device.x", ... } }
+  //
+  // When we see that shape, use the nested event as the outer envelope.
+  if (
+    outer.type === "event" &&
+    inner?.type &&
+    typeof inner.type === "string" &&
+    (inner.type.startsWith("device.") ||
+      inner.type.startsWith("network.") ||
+      inner.type.startsWith("rf."))
+  ) {
+    outer = inner;
+    inner = inner?.payload || {};
+  }
+
   return { outer, inner, type: String(outer.type || outer.event_type || "") };
 }
 
