@@ -1517,6 +1517,14 @@ async function fetchRealtimeSummary(env: Env, hours: number): Promise<any> {
   return r.json();
 }
 
+async function fetchRealtimeNetworks(env: Env, hours: number): Promise<any> {
+  const id = env.REALTIME_HUB.idFromName('hub');
+  const stub = env.REALTIME_HUB.get(id);
+  const r = await stub.fetch(new Request(`https://internal/networks?hours=${hours}`, { method: 'GET' }));
+  if (!r.ok) return { networks: [] };
+  return r.json();
+}
+
 async function handleReportsDevices(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
@@ -1602,13 +1610,15 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   const captureStart = new Date(data.generated_at || now.getTime());
   const captureEnd = now;
 
-  const [idRows, devRows, apRows] = await Promise.all([
+  const [idRows, devRows, networkData, apRows] = await Promise.all([
     env.DB.prepare('SELECT pseudonym, manufacturer, brand, model_guess, device_class, last_seen FROM device_identity').all(),
     env.DB.prepare(`SELECT d.pseudonym, d.hostname, d.operating_standard, d.identity_json, c.started_at
                      FROM collector_devices d
                      JOIN collector_captures c ON d.capture_id = c.capture_id
                      ORDER BY c.started_at DESC`).all(),
-    env.DB.prepare(`SELECT ssid, band, current_signal, status, sensor_id, last_seen
+    fetchRealtimeNetworks(env, hours),
+    env.DB.prepare(`SELECT ssid, band, current_signal, status, sensor_id, first_seen, last_seen, online_since,
+                           observation_count, w_mode, security
                     FROM ap_state
                     WHERE last_seen >= ?
                     ORDER BY last_seen DESC LIMIT 50`)
@@ -1641,10 +1651,6 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   const connectedCount = connected.length;
   const offCount = outOfRange.length;
 
-  const sensorId = (apRows.results[0]?.sensor_id as string) ||
-    (data.devices?.[0]?.sensor_id as string) ||
-    'desconocido';
-
   const connectedRows = connected.map((d: any) => {
     const id = { ...(identityMap.get(d.device_id) || {}), ...d };
     const name = deviceNameFrom(id, d.device_id.slice(0, 16));
@@ -1670,16 +1676,39 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
     </div>`;
   }).join('') || '<p style="color:#57606a">Ningún dispositivo fuera de rango.</p>';
 
-  const networkRows = (apRows.results as any[]).map((n: any) => `
-    <div style="margin-bottom:8px;font-size:13px">
+  const nowMs = Date.now();
+  const toMs = (ts: number) => (ts < 1e12 ? ts * 1000 : ts);
+  const rawNetworks = (networkData.networks?.length ? networkData.networks : apRows.results) as any[];
+  const networks = rawNetworks.length ? rawNetworks : (apRows.results as any[]);
+
+  const sensorId = (networks[0]?.sensor_id as string) ||
+    (data.devices?.[0]?.sensor_id as string) ||
+    'desconocido';
+
+  const STALE_MS = 10 * 60 * 1000;
+
+  const networkStatus = (n: any) => {
+    const firstMs = toMs(n.first_seen ?? n.last_seen);
+    const lastMs = toMs(n.last_seen ?? n.first_seen);
+    const duration = lastMs - firstMs;
+    const sinceLast = nowMs - lastMs;
+    const stale = sinceLast > STALE_MS && n.status !== 'OFFLINE';
+    const dot = n.status === 'OFFLINE' ? '🔴' : (stale ? '🟠' : '🟢');
+    const statusText = n.status === 'OFFLINE' ? 'OFFLINE' : (stale ? 'SIN SEÑAL RECIENTE' : 'ONLINE');
+    const active = n.online_since ? (lastMs - toMs(n.online_since)) : 0;
+    return `<div style="margin-bottom:10px;padding:10px;border:1px solid #d0d7de;border-radius:8px;background:#fff">
       <b>${escHtml(n.ssid || n.ap_id || '—')}</b>
-      <span style="color:#57606a"> 📡 ${n.band || 'unknown'}</span>
-    </div>
-  `).join('') || '<p style="color:#57606a">No se detectaron redes.</p>';
+      <div style="font-size:12px;color:#57606a">${dot} ${statusText} · 📡 ${n.band || '—'} · ${n.w_mode || '—'} · obs: ${n.event_count ?? n.observation_count ?? 0}</div>
+      <div style="font-size:11px;color:#57606a">primera detección: ${fmtDateTime(firstMs)} · última: ${fmtDateTime(lastMs)} · detectada: ${msToDuration(duration)} · desde última: ${msToDuration(sinceLast)}${n.online_since ? ` · activa: ${msToDuration(active)}` : ''}</div>
+    </div>`;
+  };
+
+  const networkRows = networks.map(networkStatus).join('') || '<p style="color:#57606a">No se detectaron redes.</p>';
+  const offlineRows = networks.filter((n: any) => n.status === 'OFFLINE' || (nowMs - toMs(n.last_seen) > STALE_MS && n.status !== 'OFFLINE')).map(networkStatus).join('') || '<p style="color:#57606a">Sin caídas de red registradas.</p>';
 
   const bands = new Set<string>();
   const standards = new Set<string>();
-  for (const n of (apRows.results as any[])) {
+  for (const n of networks) {
     if (n.band) bands.add(n.band);
     if (n.w_mode) standards.add(n.w_mode);
   }
@@ -1734,6 +1763,11 @@ h3{font-size:15px;color:#24292f;margin:18px 0 8px}
 <div class="card">
   <h3>🌐 Redes Wi-Fi Detectadas</h3>
   ${networkRows}
+</div>
+
+<div class="card">
+  <h3>🔴 Caídas / Desconexiones de red</h3>
+  ${offlineRows}
 </div>
 
 <div class="card">

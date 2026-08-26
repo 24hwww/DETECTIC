@@ -12,26 +12,44 @@ interface DeviceSummary {
   event_count: number;
   last_type: string;
   connected: boolean;
+  sensor_id?: string;
   last_signal?: number;
   band?: string;
   hostname?: string;
 }
 
+interface NetworkSummary {
+  first_seen: number;
+  last_seen: number;
+  event_count: number;
+  last_type: string;
+  status: 'ONLINE' | 'OFFLINE';
+  sensor_id?: string;
+  ssid?: string;
+  band?: string;
+  w_mode?: string;
+  security?: string;
+  last_signal?: number;
+  online_since?: number;
+}
+
 export class RealtimeHub extends DurableObject {
   private devices: Map<string, DeviceSummary> = new Map();
-  private loaded = false;
+  private networks: Map<string, NetworkSummary> = new Map();
+  private devicesLoaded = false;
+  private networksLoaded = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
   }
 
   private async loadDevices() {
-    if (this.loaded) return;
+    if (this.devicesLoaded) return;
     const stored = await this.ctx.storage.get<Record<string, DeviceSummary>>('rt-devices') || {};
     for (const [id, d] of Object.entries(stored)) {
       this.devices.set(id, d);
     }
-    this.loaded = true;
+    this.devicesLoaded = true;
   }
 
   private async persistDevices() {
@@ -40,11 +58,26 @@ export class RealtimeHub extends DurableObject {
     await this.ctx.storage.put('rt-devices', obj);
   }
 
+  private async loadNetworks() {
+    if (this.networksLoaded) return;
+    const stored = await this.ctx.storage.get<Record<string, NetworkSummary>>('rt-networks') || {};
+    for (const [id, n] of Object.entries(stored)) {
+      this.networks.set(id, n);
+    }
+    this.networksLoaded = true;
+  }
+
+  private async persistNetworks() {
+    const obj: Record<string, NetworkSummary> = {};
+    for (const [id, n] of this.networks) obj[id] = n;
+    await this.ctx.storage.put('rt-networks', obj);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    await this.loadDevices();
 
     if (url.pathname === '/summary') {
+      await this.loadDevices();
       const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
       const cutoff = Date.now() - hours * 3600 * 1000;
       const devices: any[] = [];
@@ -57,6 +90,7 @@ export class RealtimeHub extends DurableObject {
           event_count: d.event_count,
           last_type: d.last_type,
           connected: d.connected,
+          sensor_id: d.sensor_id,
           last_signal: d.last_signal,
           band: d.band,
           hostname: d.hostname,
@@ -64,6 +98,35 @@ export class RealtimeHub extends DurableObject {
       }
       devices.sort((a, b) => b.last_seen - a.last_seen);
       return new Response(JSON.stringify({ devices, generated_at: Date.now() }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url.pathname === '/networks') {
+      await this.loadNetworks();
+      const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
+      const cutoff = Date.now() - hours * 3600 * 1000;
+      const networks: any[] = [];
+      for (const [id, n] of this.networks) {
+        if (n.last_seen < cutoff && n.last_type !== 'network.disappeared') continue;
+        networks.push({
+          ap_id: id,
+          sensor_id: n.sensor_id,
+          first_seen: n.first_seen,
+          last_seen: n.last_seen,
+          event_count: n.event_count,
+          last_type: n.last_type,
+          status: n.status,
+          ssid: n.ssid,
+          band: n.band,
+          w_mode: n.w_mode,
+          security: n.security,
+          last_signal: n.last_signal,
+          online_since: n.online_since,
+        });
+      }
+      networks.sort((a, b) => b.last_seen - a.last_seen);
+      return new Response(JSON.stringify({ networks, generated_at: Date.now() }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -123,7 +186,10 @@ export class RealtimeHub extends DurableObject {
       event_count: 0,
       last_type: eventType,
       connected: !eventType.includes('disconnected'),
+      sensor_id: sensorId,
     };
+
+    summary.sensor_id = sensorId;
 
     const incomingHostname = dev.hostname || p.hostname;
     if (incomingHostname && !summary.hostname) {
@@ -148,6 +214,53 @@ export class RealtimeHub extends DurableObject {
 
     this.devices.set(deviceId, summary);
     await this.persistDevices();
+  }
+
+  private async updateNetwork(sensorId: string, msg: any) {
+    const now = Date.now();
+    const p = msg.payload || {};
+    const dev = p.payload || {};
+
+    const apId = String(p.device_id || dev.ap_id || dev.bssid_pseudonym || 'unknown');
+    const eventType = String(p.type || p.event_type || 'unknown');
+    const observedAt = typeof msg.observed_at === 'number' ? msg.observed_at
+      : (typeof p.observed_at === 'number' ? p.observed_at
+        : (typeof p.event_timestamp === 'number' ? p.event_timestamp * 1000 : now));
+
+    const existing = this.networks.get(apId);
+    const summary: NetworkSummary = existing || {
+      first_seen: observedAt,
+      last_seen: observedAt,
+      event_count: 0,
+      last_type: eventType,
+      status: 'ONLINE',
+      sensor_id,
+    };
+
+    summary.sensor_id = sensorId;
+
+    summary.last_seen = Math.max(summary.last_seen, observedAt);
+    summary.first_seen = Math.min(summary.first_seen, observedAt);
+    summary.event_count += 1;
+    summary.last_type = eventType;
+
+    if (eventType === 'network.disappeared') {
+      summary.status = 'OFFLINE';
+      summary.online_since = undefined;
+    } else {
+      summary.status = 'ONLINE';
+      if (!summary.online_since) summary.online_since = observedAt;
+    }
+
+    if (dev.ssid != null) summary.ssid = String(dev.ssid);
+    if (dev.band != null) summary.band = String(dev.band);
+    if (dev.w_mode != null) summary.w_mode = String(dev.w_mode);
+    if (dev.security != null) summary.security = String(dev.security);
+    if (dev.signal != null) summary.last_signal = Number(dev.signal);
+    else if (dev.current_signal != null) summary.last_signal = Number(dev.current_signal);
+
+    this.networks.set(apId, summary);
+    await this.persistNetworks();
   }
 
   private broadcastToFrontends(sensorId: string, payload: unknown, extras?: Record<string, unknown>) {
@@ -214,13 +327,19 @@ export class RealtimeHub extends DurableObject {
       }));
     } else if (type === 'event') {
       const sensorId = msg.sensor_id || 'unknown';
+      const p = msg.payload || {};
+      const eventType = String(p.type || p.event_type || '');
       const ack = JSON.stringify({
         type: 'event_ack',
         event_id: msg.event_id,
         received_at: now,
       });
       ws.send(ack);
-      await this.updateDevice(sensorId, msg);
+      if (eventType.startsWith('network.')) {
+        await this.updateNetwork(sensorId, msg);
+      } else {
+        await this.updateDevice(sensorId, msg);
+      }
       this.broadcastToFrontends(sensorId, msg, { observed_at: msg.observed_at });
     } else if (type === 'subscribe') {
       (ws as any).serializeAttachment({
