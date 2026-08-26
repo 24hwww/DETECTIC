@@ -164,6 +164,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
     </table>
   </div>
 
+  <!-- Full email-style report embedded -->
+  <div class="chart-card section">
+    <div class="rt-actions">
+      <h3>🛰️ Informe de Observación Autónoma</h3>
+      <button onclick="reloadReport()">Recargar informe</button>
+      <a href="/api/v1/reports/email" target="_blank">Abrir en pestaña</a>
+    </div>
+    <iframe id="reportFrame" src="/api/v1/reports/email" style="width:100%;height:900px;border:1px solid #21262d;border-radius:8px;background:#fff" onload="this.style.height=(this.contentDocument?.body?.scrollHeight+20||900)+'px'"></iframe>
+  </div>
+
   <!-- Charts -->
   <div class="charts-2">
     <div class="chart-card">
@@ -578,6 +588,11 @@ function connectRealtime() {
   };
 
   ws.onerror = (e) => { console.error('ws error:', e); };
+}
+
+function reloadReport() {
+  const f = document.getElementById('reportFrame');
+  if (f) f.src = '/api/v1/reports/email?hours=24&r=' + Date.now();
 }
 
 initCharts();

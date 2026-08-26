@@ -1543,51 +1543,175 @@ function fmtDateTime(ts: number): string {
   });
 }
 
+function signalLevel(rssi?: number | null): number {
+  if (rssi == null) return 0;
+  if (rssi >= -50) return 4;
+  if (rssi >= -60) return 3;
+  if (rssi >= -70) return 2;
+  if (rssi >= -80) return 1;
+  return 0;
+}
+
+function signalLabel(level: number): string {
+  const labels = ['Sin señal', 'Débil', 'Regular', 'Buena', 'Excelente'];
+  return labels[level] || 'Sin señal';
+}
+
+function signalBars(level: number): string {
+  return '🟢'.repeat(level) + '⚪'.repeat(4 - level);
+}
+
+function distanceLabel(rssi?: number | null): string {
+  if (rssi == null) return '~desconocido';
+  if (rssi >= -50) return '~muy cerca';
+  if (rssi >= -60) return '~cerca';
+  if (rssi >= -70) return '~a cierta distancia';
+  if (rssi >= -80) return '~lejos';
+  return '~muy lejos';
+}
+
+function deviceNameFrom(row: any, fallback: string): string {
+  const parts = [row?.manufacturer, row?.brand, row?.model_guess, row?.device_class].filter(Boolean);
+  if (parts.length) return parts.join(' ');
+  return fallback;
+}
+
+function reportSensorName(sensorId: string): string {
+  if (sensorId.includes('ex520') || sensorId.includes('EX520')) return `TP-Link EX520V · ${sensorId}`;
+  return sensorId;
+}
+
 async function handleEmailReport(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
   const origin = request.headers.get('Origin') || undefined;
+  const startMs = Date.now();
+
   const data = await fetchRealtimeSummary(env, hours);
-  const generatedAt = new Date().toLocaleString('es-CL');
-  const now = Date.now();
-  const rows = (data.devices || []).map((d: any) => {
-    const duration = msToDuration(d.last_seen - d.first_seen);
-    const sinceLast = msToDuration(now - d.last_seen);
-    const status = d.connected ? '🟢 Conectado' : '🔴 Desconectado';
-    return `<tr>
-      <td><code>${d.device_id.slice(0, 16)}</code></td>
-      <td>${status}</td>
-      <td>${fmtDateTime(d.first_seen)}</td>
-      <td>${fmtDateTime(d.last_seen)}</td>
-      <td>${duration}</td>
-      <td>${sinceLast}</td>
-      <td>${d.event_count}</td>
-      <td>${d.last_signal ?? '—'} dBm</td>
-      <td>${d.band || '—'}</td>
-    </tr>`;
-  }).join('');
+  const now = new Date();
+  const scheduled = new Date(Math.floor(now.getTime() / 300000) * 300000); // round to 5 min
+  const captureStart = new Date(data.generated_at || now.getTime());
+  const captureEnd = now;
+
+  const [idRows, apRows] = await Promise.all([
+    env.DB.prepare('SELECT pseudonym, manufacturer, brand, model_guess, device_class, last_seen FROM device_identity').all(),
+    env.DB.prepare(`SELECT ssid, band, current_signal, status, sensor_id, last_seen
+                    FROM ap_state
+                    WHERE last_seen >= ?
+                    ORDER BY last_seen DESC LIMIT 50`)
+      .bind(Math.floor(Date.now() / 1000) - 24 * 3600)
+      .all(),
+  ]);
+
+  const apiMs = Date.now() - startMs;
+  const identityMap = new Map<string, any>();
+  for (const r of idRows.results as any[]) identityMap.set(r.pseudonym, r);
+
+  const connected = (data.devices || []).filter((d: any) => d.connected);
+  const outOfRange = (data.devices || []).filter((d: any) => !d.connected);
+  const detectedCount = (data.devices || []).length;
+  const connectedCount = connected.length;
+  const offCount = outOfRange.length;
+
+  const sensorId = (apRows.results[0]?.sensor_id as string) ||
+    (data.devices?.[0]?.sensor_id as string) ||
+    'ex520-001';
+
+  const connectedRows = connected.map((d: any) => {
+    const id = identityMap.get(d.device_id) || {};
+    const name = deviceNameFrom(id, d.device_id.slice(0, 16));
+    const level = signalLevel(d.last_signal);
+    return `<div style="margin-bottom:14px;padding:10px;border:1px solid #d0d7de;border-radius:8px;background:#fff">
+      <b>${escHtml(name)}</b>
+      <div style="font-size:12px;margin:4px 0">📶 ${signalBars(level)} ${signalLabel(level)} (nivel ${level}/4)</div>
+      <div style="font-size:12px;color:#57606a">📡 ${d.band || '—'}</div>
+      <div style="font-size:12px;color:#57606a">📍 ${distanceLabel(d.last_signal)} · última ${fmtDateTime(d.last_seen)} · total ${msToDuration(d.last_seen - d.first_seen)}</div>
+    </div>`;
+  }).join('') || '<p style="color:#57606a">Ningún dispositivo conectado en el período.</p>';
+
+  const outRows = outOfRange.map((d: any) => {
+    const id = identityMap.get(d.device_id) || {};
+    const name = deviceNameFrom(id, d.device_id.slice(0, 16));
+    return `<div style="margin-bottom:10px;padding:8px;border:1px solid #d0d7de;border-radius:6px;background:#fff">
+      <b>${escHtml(name)}</b>
+      <span style="font-size:12px;color:#57606a"> 📡 ${d.band || '—'} · 💤 desconectado · última ${fmtDateTime(d.last_seen)}</span>
+    </div>`;
+  }).join('') || '<p style="color:#57606a">Ningún dispositivo fuera de rango.</p>';
+
+  const networkRows = (apRows.results as any[]).map((n: any) => `
+    <div style="margin-bottom:8px;font-size:13px">
+      <b>${escHtml(n.ssid || n.ap_id || '—')}</b>
+      <span style="color:#57606a"> 📡 ${n.band || 'unknown'}</span>
+    </div>
+  `).join('') || '<p style="color:#57606a">No se detectaron redes.</p>';
+
+  const bands = new Set<string>();
+  const standards = new Set<string>();
+  for (const n of (apRows.results as any[])) {
+    if (n.band) bands.add(n.band);
+    if (n.w_mode) standards.add(n.w_mode);
+  }
+
+  const reportId = `detectic-${sensorId}-${scheduled.toISOString().replace(/[-:]/g, '').slice(0,15)}`;
 
   const html = `<!DOCTYPE html>
 <html lang="es">
-<head><meta charset="utf-8"><title>Informe Detectic</title>
+<head><meta charset="utf-8"><title>🛰️ DETECTIC — Informe de Observación Autónoma</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#f6f8fa;color:#24292f;padding:24px}
-h2{color:#0969da}
-table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #d0d7de}
-th,td{padding:10px 12px;border-bottom:1px solid #d0d7de;text-align:left;font-size:13px}
-th{background:#f3f4f6;font-weight:600}
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f8fa;color:#24292f;padding:24px;line-height:1.5}
+h2{color:#0969da;margin-top:28px;margin-bottom:10px;font-size:20px}
+h3{font-size:15px;color:#24292f;margin:18px 0 8px}
+.card{background:#fff;border:1px solid #d0d7de;border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+.meta{color:#57606a;font-size:13px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;background:#dafbe1;color:#1a7f37;margin-right:6px}
 </style>
 </head>
 <body>
-<h2>📡 Informe Detectic — Dispositivos en tiempo real</h2>
-<p>Generado: <b>${generatedAt}</b> · Ventana: <b>${hours}h</b> · Dispositivos: <b>${data.devices?.length || 0}</b></p>
-<table>
-<thead><tr>
-<th>Dispositivo</th><th>Estado</th><th>Primera detección</th><th>Última conexión</th>
-<th>Tiempo total</th><th>Desde última</th><th>Eventos</th><th>Señal</th><th>Banda</th>
-</tr></thead>
-<tbody>${rows || '<tr><td colspan="9" style="text-align:center;color:#666">Sin dispositivos en el período</td></tr>'}</tbody>
-</table>
+<div class="card">
+  <h2>🛰️ DETECTIC — Informe de Observación Autónoma</h2>
+  <div class="meta"><b>Sensor:</b> ${escHtml(reportSensorName(sensorId))} (solo lectura)</div>
+  <div class="meta"><b>Programado:</b> ${fmtDateTime(scheduled.getTime())}</div>
+  <div class="meta"><b>Captura:</b> ${fmtDateTime(captureStart.getTime())} → ${fmtDateTime(captureEnd.getTime())}</div>
+  <br>
+  <div>📊 <b>Resumen:</b> ${detectedCount} dispositivos detectados, <span class="badge">${connectedCount} conectados</span> · <span style="color:#cf222e">😴 ${offCount} fuera de rango</span></div>
+  <div class="meta">⚡ Estado: <b>PERSISTIDO</b> · API: ${apiMs} ms · Reporte: ${reportId}</div>
+</div>
+
+<div class="card">
+  <h3>📱 Dispositivos Conectados</h3>
+  ${connectedRows}
+</div>
+
+<div class="card">
+  <h3>😴 Dispositivos Fuera de Rango</h3>
+  ${outRows}
+</div>
+
+<div class="card">
+  <h3>📶 Leyenda de Señal</h3>
+  <div style="font-size:13px">
+    <div>🟢🟢🟢🟢 Excelente (nivel 4 — dispositivo muy cerca del sensor)</div>
+    <div>🟢🟢🟢⚪ Buena (nivel 3 — dispositivo cerca)</div>
+    <div>🟢🟢⚪⚪ Regular (nivel 2 — señal aceptable)</div>
+    <div>🟢⚪⚪⚪ Débil (nivel 1 — puede perderse)</div>
+    <div>⚪⚪⚪⚪ Sin señal (nivel 0 — sin conexión estable)</div>
+  </div>
+  <p style="font-size:12px;color:#57606a">La distancia es una estimación basada en la señal RF. Varía según paredes, muebles, personas y obstáculos.</p>
+</div>
+
+<div class="card">
+  <h3>🌐 Redes Wi-Fi Detectadas</h3>
+  ${networkRows}
+</div>
+
+<div class="card">
+  <h3>🖥️ Redes Observadas</h3>
+  <div class="meta">📡 Bandas detectadas: ${Array.from(bands).join(', ') || '—'}</div>
+  <div class="meta">📟 Protocolos: ${Array.from(standards).join(', ') || '—'}</div>
+  <div class="meta">🔌 Sensor: TP-Link EX520V — solo lectura, sin modificaciones</div>
+  <div class="meta">🔒 Privacidad: identificadores pseudónimos HMAC-SHA256. Sin direcciones MAC reales. Router sin modificaciones.</div>
+  <div class="meta">ID: ${reportId}</div>
+</div>
 </body>
 </html>`;
 
@@ -1595,6 +1719,10 @@ th{background:#f3f4f6;font-weight:600}
     status: 200,
     headers: { 'Content-Type': 'text/html;charset=utf-8', ...corsHeaders(origin) },
   });
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ---------------------------------------------------------------------------
