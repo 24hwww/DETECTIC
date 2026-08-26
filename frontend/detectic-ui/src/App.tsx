@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Map as MapComponent,
   MapControls,
@@ -14,6 +14,8 @@ import { DeviceTable } from "@/components/device-table";
 import { NetworkTable } from "@/components/network-table";
 import { LiveFeed } from "@/components/live-feed";
 import { ConnectedDevices } from "@/components/connected-devices";
+import { LiveNetwork } from "@/components/live-network";
+import { PageHeader } from "@/components/page-header";
 import { RssiTimelineChart } from "@/components/rssi-timeline-chart";
 import { ActivityTimelineChart } from "@/components/activity-timeline-chart";
 import { DeviceClassChart } from "@/components/device-class-chart";
@@ -51,7 +53,7 @@ function ErrorMessage({ error }: { error?: Error | null }) {
   );
 }
 
-function StatCard({
+function KpiCard({
   title,
   value,
   sub,
@@ -68,7 +70,7 @@ function StatCard({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="text-3xl font-bold">{value}</div>
+        <div className="text-3xl font-bold tabular-nums">{value}</div>
         {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
       </CardContent>
     </Card>
@@ -120,6 +122,7 @@ function mergeLive<T extends { device_id?: string; ap_id?: string }>(
 }
 
 export function DashboardView() {
+  const queryClient = useQueryClient();
   const live = useRealtime();
   const { stats, devices, networks, allDevices, timeline, sensors } =
     useDashboardData();
@@ -171,47 +174,38 @@ export function DashboardView() {
     [fetchedPoints, live.points]
   );
 
-  const offline = liveDevs.filter((d) => !d.connected).length;
+  const connected = liveDevs.filter((d) => d.connected).length;
+  const eventsHour = s.snapshots_last_hour ?? 0;
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["stats"] });
+    queryClient.invalidateQueries({ queryKey: ["devices"] });
+    queryClient.invalidateQueries({ queryKey: ["networks"] });
+    queryClient.invalidateQueries({ queryKey: ["all-devices"] });
+    queryClient.invalidateQueries({ queryKey: ["timeline"] });
+    queryClient.invalidateQueries({ queryKey: ["sensors"] });
+  };
 
   return (
     <div className="space-y-4 md:space-y-6">
+      <PageHeader
+        title="Overview"
+        description="Real-time network and RF intelligence"
+        onRefresh={refresh}
+      />
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard title="Connected Devices" value={connected} sub="en línea" />
+        <KpiCard title="Observed Devices" value={liveDevs.length} sub="últimas 24h" />
+        <KpiCard title="Nearby APs" value={liveNets.length} sub="señales detectadas" />
+        <KpiCard title="Events / hour" value={eventsHour} sub="observaciones" />
+      </div>
+
+      <LiveNetwork devices={liveDevs} networks={liveNets} />
+
       <ConnectedDevices devices={liveDevs} />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-        <StatCard title="No conectados" value={offline} sub="en las últimas 24h" />
-        <StatCard
-          title="Dispositivos detectados"
-          value={s.distinct_devices ?? "—"}
-          sub={`${s.identified_devices ?? 0} identificados`}
-        />
-        <StatCard
-          title="APs detectadas"
-          value={s.total_networks ?? "—"}
-          sub="señales Wi-Fi"
-        />
-        <StatCard title="Detecciones" value={s.total_detections ?? "—"} sub="eventos" />
-        <StatCard title="Sensores" value={s.total_sensors ?? "—"} sub="activos" />
-        <StatCard
-          title="RSSI medio"
-          value={s.avg_rssi != null ? `${s.avg_rssi} dBm` : "—"}
-          sub="señal (dBm)"
-        />
-        <StatCard
-          title="MAC aleatoria"
-          value={s.randomized_macs ?? "—"}
-          sub="privacidad MAC"
-        />
-        <StatCard
-          title="Vendores"
-          value={s.known_vendors ?? "—"}
-          sub={`${s.snapshots_last_hour ?? 0} snapshots/h`}
-        />
-        <StatCard
-          title="Snapshots"
-          value={s.total_snapshots ?? "—"}
-          sub={`${s.snapshots_last_day ?? 0} en 24h`}
-        />
-      </div>
+      <LiveFeed />
 
       <DashboardCharts
         devices={liveDevs}
@@ -229,8 +223,6 @@ export function DashboardView() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DeviceClassChart devices={detailed} />
       </div>
-
-      <LiveFeed />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DeviceTable devices={liveDevs} />

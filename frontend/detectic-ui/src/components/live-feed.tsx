@@ -1,15 +1,63 @@
+import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useRealtime } from "@/lib/realtime";
+import { Wifi, Smartphone, Activity, AlertTriangle } from "lucide-react";
+
+function timeAgo(ms?: number) {
+  if (ms == null) return "—";
+  const diff = Math.floor(Date.now() - ms) / 1000;
+  if (diff < 60) return `${Math.floor(diff)}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
+
+function eventLabel(type: string) {
+  if (type.includes("device.connected")) return "Device connected";
+  if (type.includes("device.disconnected")) return "Device disconnected";
+  if (type.includes("device")) return "Device observed";
+  if (type.includes("network.detected")) return "AP observed";
+  if (type.includes("network.disappeared")) return "AP disappeared";
+  if (type.includes("network")) return "AP event";
+  return type || "Event";
+}
+
+function eventIcon(type: string) {
+  if (type.includes("device")) return <Smartphone className="h-3.5 w-3.5" />;
+  if (type.includes("network")) return <Wifi className="h-3.5 w-3.5" />;
+  if (type.includes("error")) return <AlertTriangle className="h-3.5 w-3.5" />;
+  return <Activity className="h-3.5 w-3.5" />;
+}
 
 export function LiveFeed() {
   const { events, status } = useRealtime();
+
+  const rendered = useMemo(() => {
+    return events.slice(0, 20).map((e) => {
+      const p = (e.payload as any)?.payload || e.payload || {};
+      const label = eventLabel(p.type || p.event_type || e.type);
+      const id = String(
+        p.device_id || p.ap_id || p.pseudonym || p.bssid_pseudonym || "—"
+      ).slice(0, 24);
+      const rssi = p.rssi != null ? `${p.rssi} dBm` : null;
+      const band = p.band ? `· ${p.band}` : "";
+      return {
+        label,
+        id,
+        rssi,
+        band,
+        time: e.server_time || e.observed_at,
+        type: p.type || p.event_type || e.type,
+      };
+    });
+  }, [events]);
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Eventos en tiempo real
+          Live Events
         </CardTitle>
         <div className="text-[10px] text-muted-foreground">
           {status === "en línea" ? (
@@ -24,37 +72,27 @@ export function LiveFeed() {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="max-h-[260px] space-y-2 overflow-y-auto pr-2">
-          {events.length === 0 && (
+        <div className="max-h-[320px] space-y-2 overflow-y-auto pr-2">
+          {rendered.length === 0 && (
             <div className="py-6 text-center text-sm text-muted-foreground">
-              Esperando conexión WebSocket…
+              Esperando eventos WebSocket…
             </div>
           )}
-          {events.map((e, i) => (
+          {rendered.map((e, i) => (
             <div
               key={i}
-              className="rounded-md border border-border bg-muted/40 p-2 text-xs"
+              className="flex items-start gap-3 rounded-md border border-border bg-muted/40 p-2.5 text-xs"
             >
-              <div className="mb-1 flex items-center gap-2">
-                <Badge variant="outline" className="text-[10px]">
-                  {e.type}
-                </Badge>
-                {e.sensor_id && (
-                  <span className="text-muted-foreground">{e.sensor_id}</span>
-                )}
-                {e.server_time && (
-                  <span className="ml-auto text-muted-foreground">
-                    {new Date(e.server_time).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}
-                  </span>
-                )}
+              <div className="mt-0.5 text-muted-foreground">{eventIcon(e.type)}</div>
+              <div className="flex-1">
+                <div className="font-medium">{e.label}</div>
+                <div className="font-mono text-muted-foreground">{e.id}</div>
+                <div className="mt-0.5 text-muted-foreground">
+                  {e.rssi && <span className="mr-2">{e.rssi}</span>}
+                  {e.band && <span className="mr-2">{e.band}</span>}
+                  <span className="tabular-nums">{timeAgo(e.time)}</span>
+                </div>
               </div>
-              <pre className="max-h-[80px] overflow-x-auto text-[10px] text-muted-foreground">
-                {JSON.stringify(e.payload, null, 2)}
-              </pre>
             </div>
           ))}
         </div>
