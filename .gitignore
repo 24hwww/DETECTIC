@@ -64,3 +64,4 @@ logs/
 
 # Runtime PID files (regenerated, never commit)
 deploy/ex520_package/.*.pid
+tools/wss_probe/target
