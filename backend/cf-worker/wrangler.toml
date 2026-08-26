@@ -18,6 +18,15 @@ database_name = "detectic-db"
 # Example: database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 database_id = "30f6af13-7a79-4203-9c7e-4c14b06e47c6"
 
+# Durable Object realtime hub
+[[durable_objects.bindings]]
+name = "REALTIME_HUB"
+class_name = "RealtimeHub"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RealtimeHub"]
+
 # Environment variables (set via: npx wrangler secret put DETECTIC_SENSORS)
 # DETECTIC_SENSORS = '{"ex520-001": "your-sensor-secret"}'
 # DETECTIC_MASTER_SECRET = 'your-master-secret'

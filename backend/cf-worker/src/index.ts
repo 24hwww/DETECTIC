@@ -18,11 +18,13 @@
  */
 
 import dashboardHtml from './dashboard.html';
+import { RealtimeHub } from './realtime';
 
 interface Env {
   DB: D1Database;
   DETECTIC_SENSORS: string;  // JSON: {"sensor_id": "secret", ...}
   DETECTIC_MASTER_SECRET: string;
+  REALTIME_HUB: DurableObjectNamespace<RealtimeHub>;
 }
 
 interface SensorPayload {
@@ -1438,6 +1440,12 @@ export default {
 
       // GET endpoints
       else if (request.method === "GET") {
+        // Realtime WebSocket (Durable Object)
+        if (path === "/ws") {
+          const id = env.REALTIME_HUB.idFromName("hub");
+          const stub = env.REALTIME_HUB.get(id);
+          return stub.fetch(request);
+        }
         // Dashboard UI
         if (path === "/" || path === "/dashboard" || path === "/index.html") {
           response = new Response(dashboardHtml, {
@@ -1470,3 +1478,5 @@ export default {
     return response;
   },
 };
+
+export { RealtimeHub };
