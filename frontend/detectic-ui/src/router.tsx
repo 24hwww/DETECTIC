@@ -1,16 +1,9 @@
-import { createRootRoute, createRoute, createRouter, Outlet } from "@tanstack/react-router";
-import { AppSidebar } from "@/components/app-sidebar";
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { DashboardLayout } from "@/layouts/dashboard-layout";
 import { DashboardView, MapView } from "@/App";
 
 const rootRoute = createRootRoute({
-  component: () => (
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
-      <AppSidebar />
-      <main className="flex-1 overflow-y-auto p-6">
-        <Outlet />
-      </main>
-    </div>
-  ),
+  component: DashboardLayout,
 });
 
 const indexRoute = createRoute({

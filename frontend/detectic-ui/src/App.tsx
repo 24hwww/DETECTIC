@@ -174,7 +174,7 @@ export function DashboardView() {
   const offline = liveDevs.filter((d) => !d.connected).length;
 
   return (
-    <div className="space-y-4 p-4 md:space-y-6 md:p-6">
+    <div className="space-y-4 md:space-y-6">
       <ConnectedDevices devices={liveDevs} />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
