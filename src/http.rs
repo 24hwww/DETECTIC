@@ -316,13 +316,13 @@ fn read_chunked_body<R: Read>(reader: &mut BufReader<R>) -> Result<String, Strin
 }
 
 fn parse_status(line: &str) -> Result<u16, String> {
-    // "HTTP/1.1 200 OK\r\n"
+    // "HTTP/1.1 200 OK\r\n" or a bare numeric status (e.g. "40\r\n").
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 2 {
+    if parts.is_empty() {
         return Err(format!("bad status line: {}", line.trim()));
     }
-    parts[1]
-        .parse::<u16>()
+    let code = if parts.len() >= 2 { parts[1] } else { parts[0] };
+    code.parse::<u16>()
         .map_err(|e| format!("bad status code: {}", e))
 }
 

@@ -4,10 +4,7 @@
 //! The sensor remains a single static binary; the layering is compile-time.
 
 use clap::{Parser, Subcommand, ValueEnum};
-#[cfg(feature = "persist")]
-use detectic::publisher::{
-    append_bounded, drain_buffer, upload_with_retry, UploadPayload,
-};
+
 use detectic::transport::{Dialect, GtprClient};
 #[cfg(feature = "persist")]
 use detectic::Store;

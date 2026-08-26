@@ -317,3 +317,54 @@ The live AP/RF regression was attempted but could not complete:
 - Re-run `cargo build --release --target aarch64-unknown-linux-musl`.
 - Fix or work around the `set` path for `DEV2_LIFEMOTE_AGENT` and repeat the
   one-shot `detectic sensor --once` with `enable_site_survey=true`.
+
+
+## 9. Toolchain Installation & Canonical aarch64 Build
+
+The user requested `aarch64-linux-musl`. Installed from:
+
+```bash
+curl -L -o aarch64-linux-musl-cross.tgz 'https://more.musl.cc/x86_64-linux-musl/aarch64-linux-musl-cross.tgz'
+tar xzf aarch64-linux-musl-cross.tgz -C ~/.local/musl
+export PATH="$HOME/.local/musl/aarch64-linux-musl-cross/bin:$PATH"
+export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
+export AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
+cargo build --release --target aarch64-unknown-linux-musl
+```
+
+Result: build succeeded, `dist/detectic-aarch64-musl` is 3.2 MB, package
+`detectic-ex520-20260826_044401.tar.gz` generated with split pieces
+`detectic.00..05`.
+
+## 10. EX520 `set` Path Status
+
+After making `http.rs` tolerate bare numeric status lines (e.g. `40`) and
+`transport.rs` tolerate empty encrypted bodies, `detectic set` no longer
+crashes on `DEV2_LIFEMOTE_AGENT`. However, the `so` response is consistently
+`40` (bare status, empty body) and a subsequent `query` still shows:
+
+```json
+{"enable":"0","state":"0","URL":"", ...}
+```
+
+So the `set` is not persisting. Additional attempts tried:
+
+- `enable` as integer and string
+- with and without `stack` / `state`
+- `URL` with and without path
+- `so` and `cgi` operations
+- data wrapped in `{"lifemote_agent":{...}}`
+
+The EX520 accepts the `so` request but returns `40` and does not change the
+agent URL. The exact `so` payload that the current firmware expects still
+needs to be determined, or the `40` is an authorization/validation code.
+
+### Current P5 status
+
+All local + real Worker/D1 gates pass. The only remaining P5 gate is a
+successful live canonical sensor run on the EX520, which requires:
+
+1. Correct `so` payload for `DEV2_LIFEMOTE_AGENT`, or an alternative trigger.
+2. Re-trigger `detectic set` with the new package and a one-shot
+   `bootstart_p5.sh`.

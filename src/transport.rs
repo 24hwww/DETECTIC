@@ -501,6 +501,10 @@ impl GtprClient {
         log_response("gl", &resp)?;
         let text = resp.body;
         log_body("gl", &text);
+        // Some so/cgi replies are bare numeric status lines with no encrypted body.
+        if text.trim().is_empty() {
+            return Ok(text);
+        }
         decode_response(&self.session_key, &self.session_iv, &text).map_err(GtprError::Crypto)
     }
 
