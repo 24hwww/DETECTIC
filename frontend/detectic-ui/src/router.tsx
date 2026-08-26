@@ -9,6 +9,9 @@ import { RFEnvironmentView } from "@/components/rf-environment-view";
 import { EventsView } from "@/components/events-view";
 import { SessionsView } from "@/components/sessions-view";
 import { HistoryView } from "@/components/history-view";
+import { SensorsView } from "@/components/sensors-view";
+import { RouterView } from "@/components/router-view";
+import { ConnectivityView } from "@/components/connectivity-view";
 
 const rootRoute = createRootRoute({
   component: DashboardLayout,
@@ -74,6 +77,24 @@ const historyRoute = createRoute({
   component: HistoryView,
 });
 
+const sensorsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sensors",
+  component: SensorsView,
+});
+
+const routerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/router",
+  component: RouterView,
+});
+
+const connectivityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/connectivity",
+  component: ConnectivityView,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   mapRoute,
@@ -85,6 +106,9 @@ const routeTree = rootRoute.addChildren([
   eventsRoute,
   sessionsRoute,
   historyRoute,
+  sensorsRoute,
+  routerRoute,
+  connectivityRoute,
 ]);
 
 export const router = createRouter({ routeTree });

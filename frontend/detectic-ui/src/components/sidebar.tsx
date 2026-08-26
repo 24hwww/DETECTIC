@@ -86,9 +86,9 @@ export function Sidebar() {
         </Section>
 
         <Section title="Network">
-          <NavItem to="/" icon={Server} label="Sensor" />
-          <NavItem to="/" icon={Router} label="Router" />
-          <NavItem to="/" icon={Wifi} label="Connectivity" />
+          <NavItem to="/sensors" icon={Server} label="Sensor" />
+          <NavItem to="/router" icon={Router} label="Router" />
+          <NavItem to="/connectivity" icon={Wifi} label="Connectivity" />
         </Section>
 
         <Section title="System">
