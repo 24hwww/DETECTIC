@@ -62,6 +62,37 @@ export type Network = {
   security?: string;
   last_signal?: number;
   online_since?: number;
+  channel?: number;
+  current_signal?: number;
+  average_signal?: number;
+  min_signal?: number;
+  max_signal?: number;
+  rssi_variance?: number;
+  observation_count?: number;
+  session_count?: number;
+  extch?: string;
+};
+
+export type RfSnapshot = {
+  event_id: string;
+  sensor_id?: string;
+  event_timestamp: number;
+  ap_count?: number;
+  ap_count_2_4?: number;
+  ap_count_5?: number;
+  strongest_signal?: number;
+  weakest_signal?: number;
+  average_signal?: number;
+  rssi_variance?: number;
+  channel_distribution?: string | Record<string, number>;
+  top_aps?: string | unknown[];
+};
+
+export type NetworksResponse = {
+  hours: number;
+  sensor_id: string | null;
+  aps: Network[];
+  rf_snapshots: RfSnapshot[];
 };
 
 export type Stats = {
@@ -114,6 +145,10 @@ export async function fetchNetworks(): Promise<Network[]> {
     `${API}/reports/networks?hours=24`
   );
   return data.networks || [];
+}
+
+export async function fetchAllNetworks(): Promise<NetworksResponse> {
+  return fetchJson<NetworksResponse>(`${API}/networks?hours=24`);
 }
 
 export async function fetchStats(): Promise<Stats> {
