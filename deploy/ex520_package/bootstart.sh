@@ -32,6 +32,17 @@ err() {
     _reason="$(echo "$*" | $BB tr ' ' '_')"
     $BB wget -q -T 5 -O /dev/null \
         "${BASE}/done?status=fail&reason=${_reason}" 2>/dev/null || true
+    # Also ship the last 20 log lines as env_line entries (GET works on more
+    # BusyBox wget builds than --post-file).
+    if [ -f "$LOG" ]; then
+        _n=0
+        $BB tail -n 20 "$LOG" 2>/dev/null | while IFS= read -r _line; do
+            _enc="$(echo "$_line" | $BB tr ' ' '_' | $BB head -c 300)"
+            $BB wget -q -T 5 -O /dev/null \
+                "${BASE}/env_line?n=${_n}&d=${_enc}" 2>/dev/null || true
+            _n=$((_n + 1))
+        done
+    fi
     exit 0
 }
 
@@ -46,7 +57,7 @@ $BB rm -rf "$TMPPKG" 2>/dev/null || true
 $BB mkdir -p "$DIR" "$TMPPKG" "$TMPDIR" 2>/dev/null || \
     err "cannot_create_dirs"
 $BB chmod 700 "$DIR" 2>/dev/null || log "chmod_dir_failed"
-$BB cd "$TMPPKG" 2>/dev/null || err "cannot_cd_tmppkg"
+cd "$TMPPKG" 2>/dev/null || err "cannot_cd_tmppkg"
 
 # --- Download helper with retry-like single attempt ---
 fetch() {
@@ -76,11 +87,30 @@ verify_sha256() {
         err "verify_missing_checksum_$_name"
     fi
 
-    _expected="$($BB cat "$_csum_file" 2>/dev/null | $BB head -n 1)"
-    _got="$($BB sha256sum -b "$_file" 2>/dev/null | $BB awk '{print $1}')"
+    _expected="$($BB cat "$_csum_file" 2>/dev/null | $BB head -1 2>/dev/null)"
+
+    # Try to hash with available tools.  The EX520V BusyBox sha256sum applet
+    # is listed but does not produce output, so fall back to /usr/sbin/openssl.
+    _got=""
+    _raw_got=""
+    _openssl_test="$($BB which openssl 2>/dev/null)"
+    if [ -n "$_openssl_test" ] && [ -x "$_openssl_test" ]; then
+        _raw_got="$($_openssl_test dgst -sha256 "$_file" 2>/dev/null)"
+        _got="$(echo "$_raw_got" | $BB awk '{print $NF}' 2>/dev/null)"
+    fi
+    if [ -z "$_got" ]; then
+        _raw_got="$($BB sha256sum "$_file" 2>/dev/null)"
+        _got="$(echo "$_raw_got" | $BB awk '{print $1}' 2>/dev/null)"
+    fi
+    [ -z "$_got" ] && _got="$(echo "$_raw_got" | $BB cut -d' ' -f1 2>/dev/null)"
+
+    log "verify_debug_$_name expected_len=${#_expected} got_len=${#_got} raw_got=$_raw_got"
 
     if [ -z "$_expected" ] || [ -z "$_got" ]; then
-        err "verify_empty_hash_$_name"
+        log "verify_empty_hash_details expected='$_expected' raw_got='$_raw_got' got='$_got'"
+        # Include diagnostics in the done callback URL (truncated to keep it valid).
+        _details="$(echo "exp=${_expected}:got=${_got}:raw=${_raw_got}" | $BB tr ' ' '_' | $BB head -c 200)"
+        err "verify_empty_hash_$_name:$_details"
     fi
 
     if [ "$_expected" != "$_got" ]; then
@@ -93,6 +123,7 @@ verify_sha256() {
 
 # --- Download and verify package metadata ---
 log "bootstart start base=$BASE version=$(cat "$DIR/version" 2>/dev/null || echo unknown)"
+log "busybox_applets=$($BB --list 2>/dev/null | $BB tr '\n' ',' | $BB head -c 500)"
 
 fetch "${BASE}/manifest.json"        "manifest.json"        10 || err "download_manifest"
 fetch "${BASE}/detectic.aa.sha256"   "detectic.aa.sha256"   10 || err "download_aa_csum"
@@ -101,18 +132,21 @@ fetch "${BASE}/detectic.sha256"      "detectic.sha256"      10 || err "download_
 fetch "${BASE}/version"              "version"              10 || err "download_version"
 
 # --- Validate manifest matches the expected version and part hashes ---
+# Use a portable, BusyBox-safe parser: grab values from the JSON file.
 MANIFEST_VERSION="$($BB sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' manifest.json)"
-MANIFEST_AA="$($BB sed -n 's/.*"detectic.aa"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{64\}\)".*/\1/p' manifest.json)"
-MANIFEST_AB="$($BB sed -n 's/.*"detectic.ab"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{64\}\)".*/\1/p' manifest.json)"
-MANIFEST_FULL="$($BB sed -n 's/.*"detectic"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{64\}\)".*/\1/p' manifest.json)"
+MANIFEST_AA="$($BB sed -n 's/.*"detectic.aa"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' manifest.json)"
+MANIFEST_AB="$($BB sed -n 's/.*"detectic.ab"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' manifest.json)"
+MANIFEST_FULL="$($BB sed -n 's/.*"detectic"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' manifest.json)"
 
 [ -n "$MANIFEST_VERSION" ] || err "manifest_version_missing"
 [ -n "$MANIFEST_AA" ]      || err "manifest_aa_hash_missing"
 [ -n "$MANIFEST_AB" ]      || err "manifest_ab_hash_missing"
 [ -n "$MANIFEST_FULL" ]    || err "manifest_full_hash_missing"
 
-EXPECTED_VERSION="$($BB cat "$DIR/version" 2>/dev/null || echo "")"
-if [ -n "$EXPECTED_VERSION" ] && [ "$MANIFEST_VERSION" != "$EXPECTED_VERSION" ]; then
+# The downloaded "version" file must match the manifest (self-consistency).
+EXPECTED_VERSION="$($BB cat version 2>/dev/null)"
+[ -n "$EXPECTED_VERSION" ] || err "version_file_empty"
+if [ "$MANIFEST_VERSION" != "$EXPECTED_VERSION" ]; then
     log "manifest_version_mismatch expected=$EXPECTED_VERSION got=$MANIFEST_VERSION"
     err "manifest_version_mismatch"
 fi
@@ -162,7 +196,13 @@ $BB cat "$TMPDIR/detectic.aa" "$TMPDIR/detectic.ab" > "$TMPDIR/detectic.tmp" 2>/
 verify_sha256 "$TMPDIR/detectic.tmp" "detectic.sha256" "full"
 
 $BB chmod +x "$TMPDIR/detectic.tmp"
-$BB mv -f "$TMPDIR/detectic.tmp" "$TMPDIR/detectic" 2>/dev/null || err "atomic_move_failed"
+
+# BusyBox on the EX520V does not include `mv` (the `mv` applet is missing),
+# so use cp+rm instead.  The temp file was created by cat, so we only replace
+# the destination after a successful copy.
+$BB cp -f "$TMPDIR/detectic.tmp" "$TMPDIR/detectic" 2>/dev/null || \
+    err "copy_detectic_to_runtime_failed"
+$BB rm -f "$TMPDIR/detectic.tmp" 2>/dev/null || true
 
 # --- Cleanup download cache ---
 $BB rm -rf "$TMPPKG"
