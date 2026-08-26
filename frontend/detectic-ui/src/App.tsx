@@ -10,8 +10,26 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DashboardCharts } from "@/components/charts";
 import { DeviceTable } from "@/components/device-table";
+import { NetworkTable } from "@/components/network-table";
+import { LiveFeed } from "@/components/live-feed";
+import { RssiTimelineChart } from "@/components/rssi-timeline-chart";
+import { ActivityTimelineChart } from "@/components/activity-timeline-chart";
+import { DeviceClassChart } from "@/components/device-class-chart";
 import { sourceColor } from "@/lib/location";
-import { fetchSensors, fetchDevices, fetchNetworks } from "@/lib/api";
+import {
+  fetchSensors,
+  fetchDevices,
+  fetchNetworks,
+  fetchStats,
+  fetchAllDevices,
+  fetchTimeline,
+  type Stats,
+  type Device,
+  type DetailedDevice,
+  type Network,
+  type Sensor,
+  type Timeline,
+} from "@/lib/api";
 
 function Loading() {
   return (
@@ -29,96 +47,152 @@ function ErrorMessage({ error }: { error?: Error | null }) {
   );
 }
 
+function StatCard({
+  title,
+  value,
+  sub,
+}: {
+  title: string;
+  value: React.ReactNode;
+  sub?: string;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-3xl font-bold">{value}</div>
+        {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 function useDashboardData() {
-  const sensors = useQuery({ queryKey: ["sensors"], queryFn: fetchSensors });
-  const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
-  const networks = useQuery({ queryKey: ["networks"], queryFn: fetchNetworks });
-  return { sensors, devices, networks };
+  const stats = useQuery<Stats>({ queryKey: ["stats"], queryFn: fetchStats });
+  const devices = useQuery<Device[]>({
+    queryKey: ["devices"],
+    queryFn: fetchDevices,
+  });
+  const networks = useQuery<Network[]>({
+    queryKey: ["networks"],
+    queryFn: fetchNetworks,
+  });
+  const allDevices = useQuery<DetailedDevice[]>({
+    queryKey: ["all-devices"],
+    queryFn: fetchAllDevices,
+  });
+  const timeline = useQuery<Timeline>({
+    queryKey: ["timeline"],
+    queryFn: fetchTimeline,
+  });
+  const sensors = useQuery<Sensor[]>({
+    queryKey: ["sensors"],
+    queryFn: fetchSensors,
+  });
+  return { stats, devices, networks, allDevices, timeline, sensors };
 }
 
 export function DashboardView() {
-  const { sensors, devices, networks } = useDashboardData();
+  const { stats, devices, networks, allDevices, timeline, sensors } =
+    useDashboardData();
 
-  if (sensors.isLoading || devices.isLoading || networks.isLoading) {
+  if (
+    stats.isLoading ||
+    devices.isLoading ||
+    networks.isLoading ||
+    allDevices.isLoading ||
+    timeline.isLoading ||
+    sensors.isLoading
+  ) {
     return <Loading />;
   }
 
-  const error = sensors.error || devices.error || networks.error;
+  const error =
+    stats.error ||
+    devices.error ||
+    networks.error ||
+    allDevices.error ||
+    timeline.error ||
+    sensors.error;
   if (error) {
     return <ErrorMessage error={error as Error} />;
   }
 
+  const s = stats.data || {};
+  const allDevs = devices.data || [];
+  const allNets = networks.data || [];
   const allSensors = sensors.data || [];
-  const allDevices = devices.data || [];
-  const allNetworks = networks.data || [];
+  const detailed = allDevices.data || [];
+  const points = timeline.data?.points || [];
 
-  const knownSensors = allSensors.filter((s) => s.location?.latitude != null);
-  const onlineDevices = allDevices.filter((d) => d.connected).length;
-  const offlineDevices = allDevices.length - onlineDevices;
+  const online = allDevs.filter((d) => d.connected).length;
+  const offline = allDevs.length - online;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Sensores
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{allSensors.length}</div>
-            <p className="text-xs text-muted-foreground">
-              {knownSensors.length} con ubicación
-            </p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <StatCard title="Conectados" value={online} sub="en las últimas 24h" />
+        <StatCard title="No conectados" value={offline} sub="en las últimas 24h" />
+        <StatCard
+          title="Dispositivos detectados"
+          value={s.distinct_devices ?? "—"}
+          sub={`${s.identified_devices ?? 0} identificados`}
+        />
+        <StatCard
+          title="APs detectadas"
+          value={s.total_networks ?? "—"}
+          sub="señales Wi-Fi"
+        />
+        <StatCard title="Detecciones" value={s.total_detections ?? "—"} sub="eventos" />
+      </div>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Dispositivos online
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{onlineDevices}</div>
-            <p className="text-xs text-muted-foreground">
-              {allDevices.length} vistos en 24h
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Redes Wi-Fi
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{allNetworks.length}</div>
-            <p className="text-xs text-muted-foreground">APs observados</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Dispositivos offline
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{offlineDevices}</div>
-            <p className="text-xs text-muted-foreground">últimas 24h</p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <StatCard title="Sensores" value={s.total_sensors ?? "—"} sub="activos" />
+        <StatCard
+          title="RSSI medio"
+          value={s.avg_rssi != null ? `${s.avg_rssi} dBm` : "—"}
+          sub="señal (dBm)"
+        />
+        <StatCard
+          title="MAC aleatoria"
+          value={s.randomized_macs ?? "—"}
+          sub="dispositivos con privacidad MAC"
+        />
+        <StatCard
+          title="Vendores"
+          value={s.known_vendors ?? "—"}
+          sub={`${s.snapshots_last_hour ?? 0} snapshots última hora`}
+        />
+        <StatCard
+          title="Snapshots"
+          value={s.total_snapshots ?? "—"}
+          sub={`${s.snapshots_last_day ?? 0} en 24h`}
+        />
       </div>
 
       <DashboardCharts
-        devices={allDevices}
-        networks={allNetworks}
+        devices={allDevs}
+        networks={allNets}
         sensors={allSensors}
       />
 
-      <DeviceTable devices={allDevices} />
+      <RssiTimelineChart points={points} />
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <ActivityTimelineChart points={points} />
+        <DeviceClassChart devices={detailed} />
+      </div>
+
+      <LiveFeed />
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <DeviceTable devices={allDevs} />
+        <NetworkTable networks={allNets} />
+      </div>
     </div>
   );
 }
