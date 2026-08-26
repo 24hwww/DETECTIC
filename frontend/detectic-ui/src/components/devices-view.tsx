@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { DeviceTable } from "@/components/device-table";
 import { PageHeader } from "@/components/page-header";
 import { useRealtime } from "@/lib/realtime";
@@ -8,6 +9,7 @@ import { fetchDevices, type Device } from "@/lib/api";
 
 export function DevicesView() {
   const live = useRealtime();
+  const navigate = useNavigate();
   const { data, isLoading, error } = useQuery<Device[]>({
     queryKey: ["devices"],
     queryFn: fetchDevices,
@@ -27,7 +29,10 @@ export function DevicesView() {
         title="Devices"
         description="Dispositivos Wi-Fi observados"
       />
-      <DeviceTable devices={liveDevices} />
+      <DeviceTable
+        devices={liveDevices}
+        onRowClick={(d) => navigate({ to: `/devices/${d.device_id}` })}
+      />
     </div>
   );
 }

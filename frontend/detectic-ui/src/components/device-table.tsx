@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { Device } from "@/lib/api";
 
 function timeAgo(ms?: number) {
@@ -79,7 +80,13 @@ const columns = [
   }),
 ];
 
-export function DeviceTable({ devices }: { devices: Device[] }) {
+export function DeviceTable({
+  devices,
+  onRowClick,
+}: {
+  devices: Device[];
+  onRowClick?: (d: Device) => void;
+}) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
 
@@ -137,7 +144,14 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
             </thead>
             <tbody>
               {table.getRowModel().rows.map((row) => (
-                <tr key={row.id} className="border-b border-border last:border-0">
+                <tr
+                  key={row.id}
+                  className={cn(
+                    "border-b border-border last:border-0",
+                    onRowClick && "cursor-pointer hover:bg-muted/50"
+                  )}
+                  onClick={() => onRowClick?.(row.original)}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="p-3">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
