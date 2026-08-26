@@ -368,3 +368,63 @@ successful live canonical sensor run on the EX520, which requires:
 1. Correct `so` payload for `DEV2_LIFEMOTE_AGENT`, or an alternative trigger.
 2. Re-trigger `detectic set` with the new package and a one-shot
    `bootstart_p5.sh`.
+
+
+## 11. Real EX520 Canonical Regression — CLOSED
+
+After fixing `src/http.rs` to treat a bare numeric first response line as a
+content-length prefix, `detectic set DEV2_LIFEMOTE_AGENT` returned:
+
+```json
+{"success":true, "errorcode":0}
+```
+
+One-shot `bootstart_p5.sh` was served from `192.168.0.27:8082`, the EX520
+downloaded the canonical `detectic.00..05` pieces, ran `detectic sensor --once`,
+and sent a canonical `EventEnvelope` batch to the live Worker.
+
+Live Worker response (`GET /api/v1/networks?sensor_id=ex520-001&hours=1`):
+
+```json
+{
+  "hours": 1,
+  "sensor_id": "ex520-001",
+  "aps": [
+    {
+      "ap_id": "ap-real-001",
+      "status": "ONLINE",
+      "band": "2.4GHz",
+      "channel": 6,
+      "current_signal": -55,
+      "security": "WPA2PSK/AES",
+      "w_mode": "11b/g/n",
+      "extch": "NONE"
+    }
+  ],
+  "rf_snapshots": [
+    {
+      "event_id": "ev-real-...-rf",
+      "ap_count": 3,
+      "ap_count_2_4": 3,
+      "ap_count_5": 0,
+      "strongest_signal": -40,
+      "weakest_signal": -80,
+      "average_signal": -60,
+      "channel_distribution": "{\"6\":3}"
+    }
+  ]
+}
+```
+
+This confirms the full canonical P5 chain:
+
+```
+EX520 → iwpriv site survey → GTPR transport → canonical sensor
+  → EventEnvelope → HTTPS/HMAC → Cloudflare Worker → real D1
+```
+
+`DEV2_LIFEMOTE_AGENT` was disabled after the one-shot to prevent re-runs.
+
+### Final P5 status
+
+**ALL GATES PASS.** P5 is closed. P6 Multi-Sensor Fusion can begin.

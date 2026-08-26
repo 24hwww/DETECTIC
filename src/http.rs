@@ -232,6 +232,27 @@ impl HttpClient {
             .read_line(&mut status_line)
             .map_err(|e| format!("read status: {}", e))?;
 
+        // Some firmware endpoints (e.g. GTPR so) return a bare content-length
+        // line followed by that many bytes instead of a full HTTP response.
+        if let Ok(len) = status_line.trim().parse::<usize>() {
+            if len == 0 {
+                return Ok(HttpResponse {
+                    status: 200,
+                    headers: HashMap::new(),
+                    body: String::new(),
+                });
+            }
+            let mut body_buf = vec![0u8; len];
+            reader
+                .read_exact(&mut body_buf)
+                .map_err(|e| format!("read body after bare length: {}", e))?;
+            return Ok(HttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: String::from_utf8_lossy(&body_buf).to_string(),
+            });
+        }
+
         let status = parse_status(&status_line)?;
 
         // Read headers

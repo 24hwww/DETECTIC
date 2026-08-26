@@ -112,6 +112,8 @@ enum Command {
     Op {
         /// Action OID (e.g. ACT_REBOOT).
         oid: String,
+        /// Optional JSON data object (e.g. '{"enable":1,"URL":"..."}').
+        data: Option<String>,
     },
     /// Print driver capability matrix (M11-A): which driver backends are
     /// usable on the stock EX520V without firmware modification.
@@ -530,14 +532,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let result = transport.cgi(&oid, &data).map_err(|e| e.to_string())?;
             println!("{}", result);
         }
-        Command::Op { oid } => {
+        Command::Op { oid, data } => {
             if password.is_empty() {
                 return Err("router password is required (set DETECTIC_PASSWORD)".into());
             }
             let mut transport =
                 GtprClient::with_dialect(&cli.url, &cli.user, &password, cli.dialect.into());
             transport.connect().map_err(|e| e.to_string())?;
-            let result = transport.op(&oid).map_err(|e| e.to_string())?;
+            let result = if let Some(d) = data {
+                transport.op_with_data(&oid, &d).map_err(|e| e.to_string())?
+            } else {
+                transport.op(&oid).map_err(|e| e.to_string())?
+            };
             println!("{}", result);
         }
     Command::Driver => {
