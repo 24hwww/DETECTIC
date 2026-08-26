@@ -40,8 +40,8 @@ rm -rf "$BUILD_DIR"/*
 
 # --- Split binary for misc_rw ---
 echo "[1/5] Splitting binary for misc_rw..."
-SPLIT_SIZE=$((600 * 1024))  # 600KB per part (misc_rw is limited)
-split -b $SPLIT_SIZE -d "$DETECTIC_BIN" "$BUILD_DIR/detectic."
+SPLIT_SIZE=$((1500 * 1024))  # 1.5MB per part (binary ~2.3MB => two parts)
+split -b $SPLIT_SIZE "$DETECTIC_BIN" "$BUILD_DIR/detectic."
 ls -la "$BUILD_DIR"/detectic.*
 echo ""
 
