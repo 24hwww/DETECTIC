@@ -476,7 +476,12 @@ export class RealtimeHub extends DurableObject {
           console.error('updateDevice error:', e?.message || e);
         }
       }
-      this.broadcastToFrontends(sensorId, msg, { observed_at: msg.observed_at });
+      const eventPayload = msg.payload || {};
+      const observedAt =
+        typeof eventPayload.observed_at === 'number'
+          ? eventPayload.observed_at
+          : msg.observed_at;
+      this.broadcastToFrontends(sensorId, eventPayload, { observed_at: observedAt });
       await this.maybePushForEvent(sensorId, msg);
       const ack = JSON.stringify({
         type: 'event_ack',

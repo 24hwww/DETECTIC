@@ -60,6 +60,7 @@ export function extractDevice(event: any): Device | null {
 
   const deviceId = String(
     outer.device_id ||
+      inner.device_id ||
       inner.pseudonym ||
       outer.pseudonym ||
       event?.payload?.device_id ||
@@ -126,6 +127,7 @@ export function extractPoint(event: any): TimelinePoint | null {
   return {
     pseudonym: String(
       outer.device_id ||
+        inner.device_id ||
         inner.pseudonym ||
         outer.pseudonym ||
         event?.payload?.device_id ||

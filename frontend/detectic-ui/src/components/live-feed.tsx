@@ -42,6 +42,7 @@ export function LiveFeed() {
       const id = String(
         outer.device_id ||
           outer.ap_id ||
+          inner.device_id ||
           inner.pseudonym ||
           inner.ap_id ||
           inner.bssid_pseudonym ||
