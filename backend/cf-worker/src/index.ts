@@ -2080,9 +2080,13 @@ export default {
           });
         }
         // Dashboard / Map UI — served from the shadcn/React build in src/frontend-dist
+        // Note: the assets binding serves index.html at "/"; requesting "/index.html"
+        // directly triggers a redirect to "/", which would cause an infinite loop.
+        // For non-root SPA paths we fetch the root asset so the browser stays on the
+        // requested route and React Router can render the correct view.
         else if (path === "/" || path === "/dashboard" || path === "/map" || path === "/index.html") {
-          const indexUrl = new URL("/index.html", request.url);
-          response = await env.ASSETS.fetch(new Request(indexUrl, request));
+          const targetUrl = path === "/" ? new URL(request.url) : new URL("/", request.url);
+          response = await env.ASSETS.fetch(new Request(targetUrl, request));
         } else if (path === "/api/v1/healthz") response = await handleHealthz(request, env);
         else if (path === "/api/v1/readyz") response = await handleReadyz(request, env);
         else if (path === "/api/v1/devices") response = await handleDevices(request, env);
