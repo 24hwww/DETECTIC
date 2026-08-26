@@ -33,16 +33,18 @@ pub fn aes128_cbc_encrypt(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Vec<u8> {
 }
 
 /// AES-128-CBC decrypt `ciphertext` with `key`/`iv` (16 bytes each),
-/// removing PKCS#7 padding.
-pub fn aes128_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Vec<u8> {
-    assert_eq!(key.len(), 16);
-    assert_eq!(iv.len(), 16);
-    let dec = Decryptor::<Aes128>::new_from_slices(key, iv).expect("valid key/iv");
+/// removing PKCS#7 padding.  Returns an error instead of panicking so callers
+/// can fall back to treating the response as plaintext.
+pub fn aes128_cbc_decrypt(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    if key.len() != 16 || iv.len() != 16 {
+        return Err("key/iv must be 16 bytes".into());
+    }
+    let dec = Decryptor::<Aes128>::new_from_slices(key, iv).map_err(|e| format!("key/iv: {e}"))?;
     let mut buf = vec![0u8; ciphertext.len() + 16];
     let pt = dec
         .decrypt_padded_b2b_mut::<Pkcs7>(ciphertext, &mut buf)
-        .expect("decrypt (bad padding? wrong key/iv)");
-    pt.to_vec()
+        .map_err(|_| "AES-CBC decrypt failed (wrong key/iv or bad padding)".to_string())?;
+    Ok(pt.to_vec())
 }
 
 /// MD5 of `user` + `password`, returned as a lowercase hex string.
@@ -182,17 +184,21 @@ pub fn build_body(sign_b64: &str, data_b64: &str) -> String {
 
 /// Decode a (possibly chunked) base64 response: concatenate all base64 text
 /// (ignoring whitespace/newlines), decode, and AES-CBC decrypt with session
-/// key/iv.
+/// key/iv.  Some `so`/`cgi` replies are plaintext (e.g. `$.ret=0;`); if
+/// decryption fails, return the original text so the caller can inspect it.
 pub fn decode_response(key: &[u8], iv: &[u8], base64_chunks: &str) -> Result<String, String> {
     let compact: String = base64_chunks
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(compact.as_bytes())
-        .map_err(|e| format!("base64 decode: {}", e))?;
-    let pt = aes128_cbc_decrypt(key, iv, &raw);
-    Ok(String::from_utf8_lossy(&pt).to_string())
+    let raw = match base64::engine::general_purpose::STANDARD.decode(compact.as_bytes()) {
+        Ok(r) => r,
+        Err(_) => return Ok(base64_chunks.to_string()),
+    };
+    match aes128_cbc_decrypt(key, iv, &raw) {
+        Ok(pt) => Ok(String::from_utf8_lossy(&pt).to_string()),
+        Err(_) => Ok(base64_chunks.to_string()),
+    }
 }
 
 /// Encode an operation body and return its base64 (used both for login and for
@@ -242,7 +248,7 @@ mod tests {
         let plain = "hello detectic protocol";
         let ct = aes128_cbc_encrypt(&key, &iv, plain.as_bytes());
         assert_ne!(ct, plain.as_bytes());
-        let pt = aes128_cbc_decrypt(&key, &iv, &ct);
+        let pt = aes128_cbc_decrypt(&key, &iv, &ct).unwrap();
         assert_eq!(pt, plain.as_bytes());
     }
 
