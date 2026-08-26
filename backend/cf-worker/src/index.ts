@@ -1651,6 +1651,17 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   const connectedCount = connected.length;
   const offCount = outOfRange.length;
 
+  connected.sort((a: any, b: any) => {
+    const nameA = deviceNameFrom({ ...(identityMap.get(a.device_id) || {}), ...a }, a.device_id.slice(0, 16));
+    const nameB = deviceNameFrom({ ...(identityMap.get(b.device_id) || {}), ...b }, b.device_id.slice(0, 16));
+    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+  });
+  outOfRange.sort((a: any, b: any) => {
+    const nameA = deviceNameFrom({ ...(identityMap.get(a.device_id) || {}), ...a }, a.device_id.slice(0, 16));
+    const nameB = deviceNameFrom({ ...(identityMap.get(b.device_id) || {}), ...b }, b.device_id.slice(0, 16));
+    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+  });
+
   const connectedRows = connected.map((d: any) => {
     const id = { ...(identityMap.get(d.device_id) || {}), ...d };
     const name = deviceNameFrom(id, d.device_id.slice(0, 16));
@@ -1684,6 +1695,12 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
   const sensorId = (networks[0]?.sensor_id as string) ||
     (data.devices?.[0]?.sensor_id as string) ||
     'desconocido';
+
+  networks.sort((a: any, b: any) => {
+    const labelA = String(a.ssid || a.ap_id || '').toLowerCase();
+    const labelB = String(b.ssid || b.ap_id || '').toLowerCase();
+    return labelA.localeCompare(labelB, undefined, { sensitivity: 'base' });
+  });
 
   const STALE_MS = 10 * 60 * 1000;
 
