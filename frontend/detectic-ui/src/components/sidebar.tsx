@@ -92,8 +92,8 @@ export function Sidebar() {
         </Section>
 
         <Section title="System">
-          <NavItem to="/" icon={Monitor} label="Reports" />
-          <NavItem to="/" icon={Settings} label="Settings" />
+          <NavItem to="/reports" icon={Monitor} label="Reports" />
+          <NavItem to="/settings" icon={Settings} label="Settings" />
         </Section>
       </nav>
     </aside>
