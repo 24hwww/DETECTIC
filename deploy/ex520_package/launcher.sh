@@ -52,8 +52,8 @@ ensure_bin() {
     [ -x "$BIN" ] && return 0
     $BB rm -f "$BIN" 2>/dev/null
     $BB mkdir -p "$TMPDIR" 2>/dev/null
-    if [ -s "$DIR/detectic.aa" ] && [ -s "$BAKDIR/detectic.ab" ]; then
-        $BB cat "$DIR/detectic.aa" "$BAKDIR/detectic.ab" > "$BIN" 2>/dev/null
+    if [ -s "$TMPDIR/detectic.aa" ] && [ -s "$TMPDIR/detectic.ab" ]; then
+        $BB cat "$TMPDIR/detectic.aa" "$TMPDIR/detectic.ab" > "$BIN" 2>/dev/null
         $BB chmod +x "$BIN"
     fi
     [ -x "$BIN" ]

@@ -584,7 +584,7 @@ impl DetecticService {
 
     fn build_backend(&self) -> Box<dyn BackendTransport> {
         if let Some(url) = &self.config.backend_url {
-            if !url.is_empty() {
+            if !url.is_empty() && !url.starts_with("wss://") && !url.starts_with("ws://") {
                 return Box::new(crate::backend::HttpBackend::new(&self.config));
             }
         }
