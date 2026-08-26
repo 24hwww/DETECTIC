@@ -6,15 +6,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(feature = "persist")]
 use detectic::publisher::{
-    append_bounded, drain_buffer, upload_with_retry, UploadPayload, UPLOAD_TIMEOUT,
+    append_bounded, drain_buffer, upload_with_retry, UploadPayload,
 };
 use detectic::transport::{Dialect, GtprClient};
 #[cfg(feature = "persist")]
 use detectic::Store;
-#[cfg(feature = "persist")]
-use std::thread::sleep;
-#[cfg(feature = "persist")]
-use std::time::Duration;
 
 // Re-export for `super::*` in tests (backward compat).
 #[allow(unused_imports)]
@@ -306,125 +302,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("per-sensor secret is required (set DETECTIC_SECRET)".into());
             }
 
-            #[cfg(not(feature = "persist"))]
-            {
-                let cfg = detectic::config::SensorConfig::from_env();
-                let mut svc = detectic::service::DetecticService::new(cfg);
-                if once {
-                    svc.run_once();
-                } else {
-                    svc.run();
-                }
-                return Ok(());
-            }
+            // Ensure the canonical sensor picks up the CLI/env credentials.
+            std::env::set_var("DETECTIC_PASSWORD", &password);
+            std::env::set_var("DETECTIC_SECRET", &secret_str);
 
-            #[cfg(feature = "persist")]
-            {
-                let url = std::env::var("DETECTIC_URL").unwrap_or_else(|_| cli.url.clone());
-                let user = std::env::var("DETECTIC_USER").unwrap_or_else(|_| cli.user.clone());
-                let password =
-                    std::env::var("DETECTIC_PASSWORD").unwrap_or_else(|_| password.clone());
-                let dialect = match std::env::var("DETECTIC_DIALECT").as_deref() {
-                    Ok("text") => Dialect::GdprText,
-                    _ => cli.dialect.into(),
-                };
-                let interval: u64 = std::env::var("DETECTIC_INTERVAL")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(30);
-                let upload = std::env::var("DETECTIC_UPLOAD_URL").ok();
-                let sensor_id =
-                    std::env::var("DETECTIC_SENSOR_ID").unwrap_or_else(|_| "ex520-001".into());
-                let buffer = std::env::var("DETECTIC_BUFFER")
-                    .unwrap_or_else(|_| "/var/run/misc/misc_rw/detectic/spool/detectic_buffer.jsonl".into());
-                let buf_max: u64 = std::env::var("DETECTIC_BUFFER_MAX")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(65_536);
-                let db_path = std::env::var("DETECTIC_DB").unwrap_or_else(|_| cli.db.clone());
-
-                let upload_agent = ureq::AgentBuilder::new().timeout(UPLOAD_TIMEOUT).build();
-                let mut store = Store::open(&db_path, secret)?;
-
-                println!(
-                    "[detectic] sensor started url={} dialect={:?} interval={}s upload=?{:?} buffer={} sensor={}",
-                    url, dialect, interval, upload, buffer, sensor_id
-                );
-
-                loop {
-                    if let Some(u) = &upload {
-                        drain_buffer(&buffer, |body: &[u8]| {
-                            upload_with_retry(&upload_agent, u.as_str(), &sensor_id, secret, body)
-                        });
-                    }
-                    // Transport → Collector → Diff/Events → Store → Publisher
-                    let mut transport = GtprClient::with_dialect(&url, &user, &password, dialect);
-                    let map = match transport
-                        .connect()
-                        .and_then(|_| detectic::collector::collect(&transport))
-                    {
-                        Ok(m) => m,
-                        Err(e) => {
-                            eprintln!("[detectic] map error: {}", e);
-                            if once {
-                                return Ok(());
-                            }
-                            sleep(Duration::from_secs(interval));
-                            continue;
-                        }
-                    };
-
-                    let diff = store.diff_with_previous(&map)?;
-                    let events = detectic::events::diff_to_events(&diff, map.captured_at, |id| {
-                        detectic::pseudonymize(secret, id)
-                    });
-                    let snap_id = store.save(&map)?;
-                    if !events.is_empty() {
-                        println!(
-                            "[detectic] snapshot {} events: joined={} left={} updated={}",
-                            snap_id,
-                            events
-                                .iter()
-                                .filter(|e| e.kind == detectic::events::EventKind::DeviceJoined)
-                                .count(),
-                            events
-                                .iter()
-                                .filter(|e| e.kind == detectic::events::EventKind::DeviceLeft)
-                                .count(),
-                            events
-                                .iter()
-                                .filter(|e| e.kind == detectic::events::EventKind::DeviceUpdated)
-                                .count(),
-                        );
-                    }
-                    let payload =
-                        UploadPayload::from_map_with_events(&map, &events, &sensor_id, secret);
-                    let line = match serde_json::to_string(&payload) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            if once {
-                                return Ok(());
-                            }
-                            sleep(Duration::from_secs(interval));
-                            continue;
-                        }
-                    };
-                    let sent = match &upload {
-                        Some(u) => {
-                            let body = payload.to_json_bytes();
-                            upload_with_retry(&upload_agent, u.as_str(), &sensor_id, secret, &body)
-                        }
-                        None => false,
-                    };
-                    if !sent {
-                        append_bounded(&buffer, &line, buf_max);
-                    }
-
-                    if once {
-                        return Ok(());
-                    }
-                    sleep(Duration::from_secs(interval));
-                }
+            let cfg = detectic::config::SensorConfig::from_env();
+            let mut svc = detectic::service::DetecticService::new(cfg);
+            if once {
+                svc.run_once();
+            } else {
+                svc.run();
             }
         }
         Command::Status => {

@@ -340,6 +340,9 @@ mod tests {
 
     #[test]
     fn config_file_parses() {
+        // Isolate from parallel tests that may set environment variables.
+        std::env::remove_var("DETECTIC_URL");
+        std::env::remove_var("DETECTIC_INTERVAL");
         let dir = std::env::temp_dir();
         let path = dir.join("detectic_test.cfg");
         std::fs::write(
