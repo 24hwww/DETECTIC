@@ -1175,6 +1175,106 @@ async function handleSessions(
   return jsonResponse(200, { hours, sessions: results }, origin);
 }
 
+async function handleEvents(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const origin = request.headers.get("Origin") || undefined;
+  const sensorId = url.searchParams.get("sensor_id");
+  const deviceId = url.searchParams.get("device_id");
+  const eventType = url.searchParams.get("event_type");
+  const afterEventId = url.searchParams.get("after_event_id");
+  const since = parseInt(url.searchParams.get("since") || "0");
+  const hours = parseInt(url.searchParams.get("hours") || "24");
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "100"), 1000);
+
+  const conds: string[] = [];
+  const binds: (string | number)[] = [];
+
+  const afterIdNum = async () => {
+    if (!afterEventId) return 0;
+    const row = await env.DB.prepare("SELECT id FROM events WHERE event_id = ?").bind(afterEventId).first<{ id: number }>();
+    return row?.id ?? 0;
+  };
+
+  if (afterEventId) {
+    const afterId = await afterIdNum();
+    conds.push("e.id > ?");
+    binds.push(afterId);
+  } else if (since) {
+    conds.push("e.event_timestamp >= ?");
+    binds.push(since);
+  } else {
+    const cutoff = Math.floor(Date.now() / 1000) - Math.min(hours, 720) * 3600;
+    conds.push("e.event_timestamp >= ?");
+    binds.push(cutoff);
+  }
+  if (sensorId) { conds.push("e.sensor_id = ?"); binds.push(sensorId); }
+  if (deviceId) { conds.push("e.device_id = ?"); binds.push(deviceId); }
+  if (eventType) { conds.push("e.event_type = ?"); binds.push(eventType); }
+
+  const { results } = await env.DB.prepare(
+    `SELECT e.id, e.sensor_id, e.event_id, e.event_type, e.event_timestamp,
+            e.device_id, e.payload_json, e.snapshot_json, e.sequence, e.received_at
+     FROM events e
+     WHERE ${conds.join(" AND ")}
+     ORDER BY e.id ASC
+     LIMIT ?`
+  ).bind(...binds, limit).all();
+  return jsonResponse(200, { events: results, after_event_id: afterEventId, limit }, origin);
+}
+
+async function handleDeviceEvents(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const m = path.match(/^\/api\/v1\/devices\/([^/]+)\/events$/);
+  const deviceId = m ? decodeURIComponent(m[1]) : null;
+  if (!deviceId) return jsonResponse(404, { error: "not found" });
+  const url = new URL(request.url);
+  url.searchParams.set("device_id", deviceId);
+  return handleEvents(new Request(url.toString(), { method: "GET", headers: request.headers }), env);
+}
+
+async function handleDeviceSessions(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const m = path.match(/^\/api\/v1\/devices\/([^/]+)\/sessions$/);
+  const deviceId = m ? decodeURIComponent(m[1]) : null;
+  if (!deviceId) return jsonResponse(404, { error: "not found" });
+  const url = new URL(request.url);
+  url.searchParams.set("device_id", deviceId);
+  const request2 = new Request(url.toString(), { method: "GET", headers: request.headers });
+  return handleSessions(request2, env);
+}
+
+async function handleDeviceSignals(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const m = path.match(/^\/api\/v1\/devices\/([^/]+)\/signals$/);
+  const deviceId = m ? decodeURIComponent(m[1]) : null;
+  if (!deviceId) return jsonResponse(404, { error: "not found" });
+  const url = new URL(request.url);
+  const origin = request.headers.get("Origin") || undefined;
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24"), 720);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+  const { results } = await env.DB.prepare(
+    `SELECT d.pseudonym, d.rssi, d.source, d.standard, d.radio_mac,
+            s.received_at AS ts
+     FROM detections d JOIN snapshots s ON d.snapshot_id = s.id
+     WHERE d.pseudonym = ? AND s.received_at >= ?
+     ORDER BY d.id DESC
+     LIMIT 500`
+  ).bind(deviceId, cutoff).all();
+  return jsonResponse(200, { device_id: deviceId, hours, signals: results }, origin);
+}
+
 async function handleTimeline(
   request: Request,
   env: Env
@@ -1471,6 +1571,10 @@ export default {
         else if (path === "/api/v1/fusion") response = await handleFusion(request, env);
         else if (path === "/api/v1/state") response = await handleDeviceState(request, env);
         else if (path === "/api/v1/sessions") response = await handleSessions(request, env);
+        else if (path === "/api/v1/events") response = await handleEvents(request, env);
+        else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
+        else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);
+        else if (/^\/api\/v1\/devices\/[^/]+\/signals$/.test(path)) response = await handleDeviceSignals(request, env);
       }
 
       if (!response) response = jsonResponse(404, { error: "not found" });

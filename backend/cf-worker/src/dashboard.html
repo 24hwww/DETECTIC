@@ -362,16 +362,29 @@ function timeAgo(ts) {
   return Math.floor(diff/86400) + 'd';
 }
 
-function addLiveEvent(text, ts) {
+function addLiveEvent(text, ts, eventId) {
   const list = document.getElementById('liveEvents');
   if (list.querySelector('.empty')) list.innerHTML = '';
+  if (eventId) {
+    if (seenEventIds.has(eventId)) return;
+    seenEventIds.add(eventId);
+    if (seenEventIds.size > 500) seenEventIds.clear();
+  }
   const li = document.createElement('li');
+  if (eventId) li.dataset.eventId = eventId;
   li.innerHTML = `<span class="ts">${new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}</span> · ${text}`;
   list.prepend(li);
-  while (list.children.length > 50) list.lastChild.remove();
+  while (list.children.length > 50) {
+    const last = list.lastChild;
+    if (last.dataset.eventId) seenEventIds.delete(last.dataset.eventId);
+    last.remove();
+  }
 }
 
 let ws, wsReconnectMs = 1000;
+let lastEventId = null;
+let lastEventTs = 0;
+const seenEventIds = new Set();
 function connectRealtime() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${protocol}//${location.host}/ws?role=frontend&sensor_id=*`;
@@ -384,23 +397,57 @@ function connectRealtime() {
     setStatus('en línea (WS)');
   };
 
+  function recover() {
+    if (!lastEventId) return;
+    fetch(`${API}/events?after_event_id=${encodeURIComponent(lastEventId)}&limit=100`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || !data.events || !data.events.length) return;
+        let didUpdate = false;
+        data.events.forEach(e => {
+          const p = e.payload_json ? JSON.parse(e.payload_json) : {};
+          const ts = (e.event_timestamp || Math.floor(e.received_at)) * 1000;
+          if (e.event_type === 'device.detected' && p.rssi != null) {
+            addLiveEvent(`Dispositivo detectado <b>${esc(e.device_id || '—').slice(0,16)}</b> · RSSI ${p.rssi} dBm`, ts, e.event_id);
+            didUpdate = true;
+          } else if (e.event_type === 'device.connected') {
+            addLiveEvent(`Conectado <b>${esc(e.device_id || '—').slice(0,16)}</b>`, ts, e.event_id);
+            didUpdate = true;
+          } else if (e.event_type === 'device.disconnected') {
+            addLiveEvent(`Desconectado <b>${esc(e.device_id || '—').slice(0,16)}</b>`, ts, e.event_id);
+            didUpdate = true;
+          } else {
+            addLiveEvent(`${esc(e.event_type)}`, ts, e.event_id);
+          }
+        });
+        if (didUpdate) poll();
+      })
+      .catch(err => console.error('recover error:', err));
+  }
+
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
+      if (msg.type === 'subscribe_ack') {
+        if (lastEventId) recover();
+        return;
+      }
       if (msg.type === 'broadcast') {
         const p = msg.payload || {};
         const dev = p.payload || {};
+        if (p.event_id) { lastEventId = p.event_id; lastEventTs = p.event_timestamp || msg.server_time; }
+        const ts = p.event_timestamp ? p.event_timestamp * 1000 : (msg.server_time || Date.now());
         if (p.event_type === 'device.detected' || dev.type === 'device.detected') {
-          addLiveEvent(`Dispositivo detectado <b>${esc(dev.device_id || dev.pseudonym || '—').slice(0,16)}</b> · RSSI ${dev.rssi ?? '—'} dBm`, msg.server_time || Date.now());
+          addLiveEvent(`Dispositivo detectado <b>${esc(dev.device_id || p.device_id || dev.pseudonym || '—').slice(0,16)}</b> · RSSI ${dev.rssi ?? p.rssi ?? '—'} dBm`, ts, p.event_id);
           poll();
         } else if (p.event_type === 'device.connected' || dev.type === 'device.connected') {
-          addLiveEvent(`Conectado <b>${esc(dev.device_id || dev.pseudonym || '—').slice(0,16)}</b>`, msg.server_time || Date.now());
+          addLiveEvent(`Conectado <b>${esc(dev.device_id || p.device_id || dev.pseudonym || '—').slice(0,16)}</b>`, ts, p.event_id);
           poll();
         } else if (p.event_type === 'device.disconnected' || dev.type === 'device.disconnected') {
-          addLiveEvent(`Desconectado <b>${esc(dev.device_id || dev.pseudonym || '—').slice(0,16)}</b>`, msg.server_time || Date.now());
+          addLiveEvent(`Desconectado <b>${esc(dev.device_id || p.device_id || dev.pseudonym || '—').slice(0,16)}</b>`, ts, p.event_id);
           poll();
         } else {
-          addLiveEvent(`${esc(p.event_type || p.type || 'evento')}`, msg.server_time || Date.now());
+          addLiveEvent(`${esc(p.event_type || p.type || 'evento')}`, ts, p.event_id);
         }
       }
     } catch (e) { console.error('ws message parse:', e); }
