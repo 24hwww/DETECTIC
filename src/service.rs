@@ -11,6 +11,7 @@
 //! - < 5 MB RSS
 //! - idle CPU between polls
 
+use crate::arp::ArpWatcher;
 use crate::backend::{BackendTransport, NullBackend};
 use crate::calibrate::Band;
 use crate::config::SensorConfig;
@@ -18,7 +19,9 @@ use crate::crypto;
 use crate::event_transport::{HttpEventTransport, ReliableQueue, SpoolEventTransport};
 #[cfg(feature = "wss")]
 use crate::wss_transport::WssEventTransport;
+use crate::http_server::{HttpServer, SensorState};
 use crate::logging;
+use crate::mdns::{guess_local_ipv4, MdnsResponder};
 use crate::monitor::{MediaTekMonitorProvider, MonitorProvider, NullMonitorProvider};
 use crate::presence::{PresenceEngine, PresenceObservation};
 use crate::runtime::install_signal_handlers;
@@ -26,6 +29,7 @@ use crate::runtime::should_shutdown;
 use crate::snapshot::{diff_snapshots, SensorSnapshot};
 use crate::temporal::{DeviceObs, NetworkObs, TemporalConfig, TemporalEngine};
 use crate::transport::{Dialect, GtprClient};
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -138,6 +142,8 @@ pub struct DetecticService {
     pub presence: PresenceEngine,
     pub temporal: TemporalEngine,
     pub event_queue: ReliableQueue,
+    pub state: Arc<Mutex<SensorState>>,
+    pub arp: Option<ArpWatcher>,
     #[cfg(feature = "persist")]
     pub notifier: Option<SmtpNotifier>,
 }
@@ -147,6 +153,17 @@ impl DetecticService {
         let presence_cfg = config.presence.clone();
         let temporal = TemporalEngine::new(&config.sensor_id, TemporalConfig::default());
         let event_queue = ReliableQueue::new(4096, 4096);
+        let mut state = SensorState::new();
+        state.sensor_id = config.sensor_id.clone();
+        state.version = env!("CARGO_PKG_VERSION").into();
+        state.started_at = Some(Instant::now());
+        state.healthy = true;
+        state.ready = false;
+        let arp = if config.enable_arp_fastpath {
+            Some(ArpWatcher::new(config.arp_interval))
+        } else {
+            None
+        };
         Self {
             config,
             dialect: Dialect::GdprJson,
@@ -158,8 +175,36 @@ impl DetecticService {
             presence: PresenceEngine::new(presence_cfg),
             temporal,
             event_queue,
+            state: Arc::new(Mutex::new(state)),
+            arp,
             #[cfg(feature = "persist")]
             notifier: None,
+        }
+    }
+
+    /// Spawn the HTTP control server and mDNS responder, if enabled.
+    pub fn start_control_plane(&mut self) {
+        if self.config.enable_http_server {
+            let state = self.state.lock().unwrap().clone();
+            if let Err(e) = HttpServer::spawn(state, self.config.http_port) {
+                logging::warn(&format!("http_server_start_failed err={}", e));
+            } else {
+                logging::info(&format!("http_server_started port={}", self.config.http_port));
+            }
+        }
+
+        if self.config.enable_mdns {
+            let ip = guess_local_ipv4().unwrap_or(std::net::Ipv4Addr::new(192, 168, 0, 1));
+            let txt = vec![
+                format!("version={}", env!("CARGO_PKG_VERSION")),
+                format!("sensor_id={}", self.config.sensor_id),
+                "service=detectic".into(),
+            ];
+            if let Err(e) = MdnsResponder::spawn(&self.config.mdns_hostname, ip, self.config.http_port, txt) {
+                logging::warn(&format!("mdns_start_failed err={}", e));
+            } else {
+                logging::info("mdns_started");
+            }
         }
     }
 
@@ -299,6 +344,7 @@ impl DetecticService {
     /// Run a single poll cycle and exit.
     pub fn run_once(&mut self) {
         install_signal_handlers();
+        self.start_control_plane();
         logging::set_level(self.config.log_level);
         logging::info(&format!(
             "service_once sensor={} interval={}s",
@@ -342,6 +388,7 @@ impl DetecticService {
     /// Run the service loop with watchdog semantics.
     pub fn run(&mut self) {
         install_signal_handlers();
+        self.start_control_plane();
         logging::set_level(self.config.log_level);
         logging::info(&format!(
             "service_started sensor={} interval={}s",
@@ -371,6 +418,12 @@ impl DetecticService {
                 }
                 Err(e) => {
                     self.restart_attempts += 1;
+                    {
+                        let mut state = self.state.lock().unwrap();
+                        state.gtpr_status = "error".into();
+                        state.healthy = false;
+                        state.last_gtpr_failure = Some(Instant::now());
+                    }
                     logging::error(&format!(
                         "poll_error attempt={} err={}",
                         self.restart_attempts, e
@@ -549,6 +602,38 @@ impl DetecticService {
                 crate::pseudonymize(secret, id)
             })
         };
+
+        // ARP fast-path: read once per poll for every device in the snapshot.
+        // This only accelerates already-known devices; it does not authoritatively
+        // claim Wi-Fi association and never creates a new device from ARP alone.
+        if let Some(ref mut arp) = self.arp {
+            let _entries = arp.read();
+            // Future: merge arp_last_seen into presence hints.
+        }
+
+        // Update shared sensor state for the HTTP/mDNS control plane.
+        {
+            let mut state = self.state.lock().unwrap();
+            state.last_poll = self.last_poll;
+            state.last_upload = self.last_upload;
+            state.gtpr_status = "ok".into();
+            state.device_count = snapshot.stations.len();
+            *state.snapshot.lock().unwrap() = Some(snapshot.clone());
+            state.healthy = true;
+            state.ready = true;
+            if !events.is_empty() {
+                let summary = format!(
+                    "{{\"ts\":{},\"type\":\"poll_events\",\"count\":{}}}",
+                    snapshot.timestamp,
+                    events.len()
+                );
+                let mut recent = state.recent_events.lock().unwrap();
+                recent.push(summary);
+                while recent.len() > 64 {
+                    recent.remove(0);
+                }
+            }
+        }
 
         logging::info(&format!(
             "poll_success stations={} events={}",

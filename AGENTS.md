@@ -1,5 +1,9 @@
 # Detectic — AGENTS.md
 
+> **Project status:** Production implementation — see `docs/EX520_PRODUCTION_DEPLOYMENT.md`,
+> `docs/EX520_DEPLOYMENT.md`, `docs/EX520_OPERATIONS.md`, and `docs/EX520_TEST_PLAN.md`
+> for the canonical deployment and test plan.
+
 > **Project status:** Hardware research / sensor bring-up
 > **Current target:** TP-Link EX520V
 > **Primary objective:** Turn an inexpensive consumer Wi-Fi router into a Detectic sensing node capable of observing Wi-Fi activity, performing lightweight local processing, and securely sending aggregated observations to a remote Detectic backend.
@@ -667,16 +671,18 @@ GTPR so DEV2_LIFEMOTE_AGENT {enable:1, URL:...}
 ## Path 3 — bootstart.sh resident bootstrap (PROVEN-LIVE)
 
 `phoenix.sh` is pointed at a host-served `bootstart.sh` that downloads the
-split binary (`detectic.aa` + `detectic.ab`), reassembles it in
-`/var/tmp/detectic/detectic`, persists pieces in `misc_rw`/`misc_rw_bak`, and
-starts the sensor via `launcher.sh`.
+split binary (`detectic.aa` + `detectic.ab`) to `/var/tmp/detectic/`,
+reassembles it in `/var/tmp/detectic/detectic`, persists only the small
+`launcher.sh`, `detectic.env`, and `version` files in `misc_rw`, and starts
+the sensor via `launcher.sh`.
 
 ```
 Host :8080  (package server)
   |  bootstart.sh, detectic.aa, detectic.ab, launcher.sh, detectic.env, version
   v
 EX520 phoenix -> bootstart.sh (root)
-  -> cp pieces to misc_rw (+ misc_rw_bak)
+  -> download pieces to /var/tmp/detectic/
+  -> cp launcher.sh / detectic.env / version to misc_rw
   -> cat aa+ab > /var/tmp/detectic/detectic
   -> launcher.sh start
 ```
@@ -689,23 +695,30 @@ EX520 phoenix -> bootstart.sh (root)
 
 ## Path 4 — Cold-boot watchdog autostart (PROVEN-LIVE)
 
-A host-side watchdog (`deploy/ex520_package/watchdog.py`) monitors the router
-by IPv6 ping + GTPR query. After a sustained DOWN (>= DOWN_THRESHOLD) it sends
+A host-side Edge Supervisor (`deploy/ex520_package/watchdog.py`) monitors the
+router with a state machine (UNKNOWN → ROUTER_DOWN → ROUTER_UP → GTPR_READY →
+SENSOR_STARTING → SENSOR_HEALTHY).  It uses IPv6 ping and GTPR queries for
+reachability, verifies GTPR readiness, avoids duplicate Phoenix triggers with a
+`min_boot_interval` guard, and re-triggers with exponential backoff if the
+sensor becomes unhealthy.  After a sustained DOWN (>= DOWN_THRESHOLD) it sends
 a `so DEV2_LIFEMOTE_AGENT` with the bootstart URL, re-triggering Path 3 after
 a cold boot.
 
 ```
-Host watchdog.py (poll 10s)
+Host watchdog.py / Edge Supervisor (poll 10s)
   -> ping6 / GTPR query
-  -> router DOWN >= threshold -> armed
-  -> router UP -> GTPR so DEV2_LIFEMOTE_AGENT (phoenix)
-  -> phoenix -> bootstart.sh -> launcher.sh -> detectic sensor
+  -> state machine: UNKNOWN -> ROUTER_DOWN -> ARMED -> ROUTER_UP -> GTPR_READY
+  -> GTPR so DEV2_LIFEMOTE_AGENT (phoenix)
+  -> phoenix -> bootstart.sh (SHA-256 verify, atomic reassembly) -> launcher.sh
+  -> detectic sensor
+  -> health checks via callbacks / sensor_log
 ```
 
 * DEPLOY: **PROVEN-LIVE**
 * PERSIST: **PROVEN-LIVE**
 * EXECUTE: **PROVEN-LIVE**
 * AUTOSTART: **PROVEN-LIVE** (cold boot: DOWN → UP → trigger → sensor running)
+* HEALTH: **PROVEN-FROM-SOURCE** (supervisor state machine and health checks)
 * Status: **PROVEN-LIVE** (PHASE 21 second cold-boot proof)
 
 ## Path 5 — Native firmware autostart (NOT AVAILABLE)
@@ -2902,6 +2915,96 @@ Device events:
 - Exact band/channel mapping for 6 GHz if the EX520 variant supports it (not in current target).
 - Performance of `rf_environment_snapshot` with 100+ APs (bounded by `max_tracked_networks = 512`).
 - Multi-sensor fusion behavior with overlapping coverage and randomized MACs.
+
+## 24.A. nrd event infrastructure — LIVE VALIDATION (Phase 22)
+
+Full investigation of whether DETECTIC can passively consume Wi-Fi events
+from the EX520's internal `nrd` process. See
+`docs/EX520_NRD_EVENT_ANALYSIS.md` for the complete report.
+
+### Key findings
+
+1. **nrd uses MediaTek vendor netlink (protocol 21)** for Wi-Fi events
+   (probe requests, associations, RSSI, auth failures, beacon reports).
+   The socket is `socket(AF_NETLINK, SOCK_RAW, 21)` with `nl_groups=0`
+   (unicast). Confirmed via `/proc/net/netlink`: nrd (PID 2743) is the
+   sole recipient.
+
+2. **Passive netlink consumption is NOT possible.** A static aarch64-musl
+   probe binary was deployed via Lifemote/Phoenix and created its own
+   AF_NETLINK socket on protocol 21. Result: **0 events received** in
+   30 seconds. The driver unicasts to nrd's PID only.
+
+3. **nrd's libos IPC socket at `/var/tmp/45`** only handles 2 control
+   messages (`CMSG_AI_ROAMING_INFO_RECV` and
+   `CMSG_EASYMESH_MAP_RELOAD_NRD`). No data query mechanism exists.
+
+4. **iwlist/iwpriv/iwconfig are non-functional** on this firmware. All
+   commands return empty output on all interfaces (rai0, rax0, etc.).
+   The MediaTek driver does not support standard WEXT ioctls.
+
+5. **/proc/net/wireless** shows all interfaces with link level -256
+   (no useful signal data).
+
+6. **GTPR polling of `DEV2_WIFI_APDEV_ASSOCDEV`** remains the only viable
+   Wi-Fi data source, providing associated stations with signal strength,
+   data rates, association times, and hostnames.
+
+### Verdict
+
+```
+PASSIVE_EVENT_CONSUMPTION = NOT_POSSIBLE
+NRD_IPC_QUERY             = NOT_POSSIBLE
+IWLIST/IWPRIV_POLLING     = NOT_FUNCTIONAL
+GTPR_POLLING              = VIABLE (proven, in production)
+```
+
+The existing host-based GTPR polling approach (Path 1) is the recommended
+architecture. Probe request detection (unassociated devices) requires
+either a USB monitor-mode adapter or firmware modification.
+
+## 24.B. DETECTIC persistence — FORENSIC INVESTIGATION (Phase 23)
+
+Full investigation of reboot persistence for DETECTIC on stock EX520.
+See `docs/EX520_DETECTIC_PERSISTENCE.md` for the complete report.
+
+### Key findings
+
+1. **Phoenix does NOT auto-start at boot.** Despite `rsl_initDev2LifemoteAgentObj`
+   containing code to launch `phoenix.sh` when `enable=1` and `URL` is set,
+   the function is NOT in the boot init function table. It is only called
+   when a GTPR `so DEV2_LIFEMOTE_AGENT` command is received.
+
+2. **Live reboot test confirmed.** A controlled reboot (sysrq trigger) was
+   performed with the Lifemote URL set to a detection script. The router
+   rebooted (uptime went from 903s to 355s) but no auto-start callback was
+   received. No phoenix.sh process was running after the reboot.
+
+3. **No writable boot hooks exist.** The rootfs is read-only SquashFS.
+   No rc.local, no user-writable hotplug.d, no crond, no procd. The only
+   writable persistent storage is misc_rw (UBIFS), which is mounted before
+   cos starts but has no stock mechanism to execute files from it at boot.
+
+4. **Host-side watchdog is the ONLY proven auto-start mechanism.**
+   The existing Path 4 (watchdog.py) remains the correct approach.
+
+5. **misc_rw files persist across reboot.** The detectic binary parts,
+   launcher.sh, config, and logs in `/var/run/misc/misc_rw/detectic/`
+   survive reboot. Only the reassembled binary in `/var/tmp/detectic/`
+   is lost.
+
+6. **No stock mDNS conflict.** No stock service binds UDP 5353. The
+   `igmp_max_memberships` is set to 64, and bridge-nf-call is disabled,
+   so multicast traffic passes freely.
+
+### Verdict
+
+```
+PERSISTENT_AUTOSTART = NO (without host-side watchdog)
+NATIVE_BOOT_HOOK     = NONE
+PHOENIX_AUTO_START   = NO (proven by live test)
+HOST_WATCHDOG        = REQUIRED (proven mechanism)
+```
 
 ## 25. Explicit NO-GO list
 

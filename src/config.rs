@@ -104,6 +104,14 @@ pub struct SensorConfig {
     pub max_response_body: usize,
     pub max_poll_retries: usize,
     pub max_upload_retries: usize,
+
+    // --- Local control plane ---
+    pub http_port: u16,
+    pub enable_http_server: bool,
+    pub enable_mdns: bool,
+    pub mdns_hostname: String,
+    pub arp_interval: Duration,
+    pub enable_arp_fastpath: bool,
 }
 
 impl Default for SensorConfig {
@@ -132,6 +140,12 @@ impl Default for SensorConfig {
             max_response_body: MAX_RESPONSE_BODY,
             max_poll_retries: MAX_POLL_RETRIES,
             max_upload_retries: MAX_UPLOAD_RETRIES,
+            http_port: 8787,
+            enable_http_server: true,
+            enable_mdns: true,
+            mdns_hostname: "detectic".into(),
+            arp_interval: Duration::from_secs(10),
+            enable_arp_fastpath: true,
         }
     }
 }
@@ -208,6 +222,34 @@ impl SensorConfig {
         if let Ok(v) = std::env::var("DETECTIC_LOG_MACS") {
             cfg.log_macs = v == "1" || v.eq_ignore_ascii_case("true");
         }
+        if let Ok(v) = std::env::var("DETECTIC_HTTP_PORT") {
+            if let Ok(p) = v.parse::<u16>() {
+                if p > 0 {
+                    cfg.http_port = p;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("DETECTIC_HTTP_SERVER") {
+            cfg.enable_http_server = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = std::env::var("DETECTIC_MDNS") {
+            cfg.enable_mdns = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = std::env::var("DETECTIC_MDNS_HOSTNAME") {
+            if !v.is_empty() {
+                cfg.mdns_hostname = v;
+            }
+        }
+        if let Ok(v) = std::env::var("DETECTIC_ARP") {
+            cfg.enable_arp_fastpath = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = std::env::var("DETECTIC_ARP_INTERVAL") {
+            if let Ok(secs) = v.parse::<u64>() {
+                if secs > 0 {
+                    cfg.arp_interval = Duration::from_secs(secs);
+                }
+            }
+        }
 
         cfg
     }
@@ -255,6 +297,30 @@ impl SensorConfig {
                         "log_level" => cfg.log_level = LogLevel::from_str(val),
                         "log_macs" => {
                             cfg.log_macs = val == "1" || val.eq_ignore_ascii_case("true");
+                        }
+                        "http_port" => {
+                            if let Ok(p) = val.parse::<u16>() {
+                                cfg.http_port = p;
+                            }
+                        }
+                        "enable_http_server" => {
+                            cfg.enable_http_server = val == "1" || val.eq_ignore_ascii_case("true");
+                        }
+                        "enable_mdns" => {
+                            cfg.enable_mdns = val == "1" || val.eq_ignore_ascii_case("true");
+                        }
+                        "mdns_hostname" => {
+                            if !val.is_empty() {
+                                cfg.mdns_hostname = val.into();
+                            }
+                        }
+                        "enable_arp_fastpath" => {
+                            cfg.enable_arp_fastpath = val == "1" || val.eq_ignore_ascii_case("true");
+                        }
+                        "arp_interval" => {
+                            if let Ok(secs) = val.parse::<u64>() {
+                                cfg.arp_interval = Duration::from_secs(secs);
+                            }
                         }
                         _ => {}
                     }

@@ -31,6 +31,10 @@ deploy/ex520_package/sensor_log.txt
 # Split firmware/binary deployment artifacts (large, regenerable)
 deploy/ex520_package/*.aa
 deploy/ex520_package/*.ab
+deploy/ex520_package/*.sha256
+deploy/ex520_package/manifest.json
+deploy/ex520_package/version
+deploy/ex520_package/done_log.txt
 
 # --- Databases ---
 *.db

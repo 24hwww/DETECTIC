@@ -1,15 +1,22 @@
 #!/bin/sh
-# Detectic launcher for EX520V (BusyBox-safe, phoenix-safe)
+# Detectic hardened launcher for EX520V (BusyBox-safe, phoenix-safe).
 # Location: /var/run/misc/misc_rw/detectic/launcher.sh
+#
+# Responsibilities:
+#   - Ensure detectic.env is owner-only readable (chmod 600).
+#   - Redact secrets from any diagnostics/log output.
+#   - Start/stop/restart/status the sensor.
+#   - Avoid duplicate instances by verifying /proc/<pid>/exe.
+#   - Maintain a bounded detectic.log.
+#   - Report health via best-effort callbacks.
 
-# survive SIGHUP after bootstart/phoenix exits
+# Survive SIGHUP after bootstart/phoenix exits.
 trap '' 1
 
 export PATH=$PATH:/bin:/usr/bin:/sbin:/usr/sbin
 BB=/bin/busybox
 
 DIR="/var/run/misc/misc_rw/detectic"
-BAKDIR="/var/run/misc/misc_rw_bak"
 TMPDIR="/var/tmp/detectic"
 BIN="$TMPDIR/detectic"
 LOG="$DIR/detectic.log"
@@ -20,9 +27,29 @@ MAX_RESTART=5
 
 up() { read u _ < /proc/uptime; echo "$u"; }
 
+# Redact a single value for logging (secrets / sensitive IDs).
+redact_value() {
+    _v="$1"
+    _len="${#_v}"
+    if [ "$_len" -le 8 ]; then
+        echo "***"
+    else
+        printf "%s***%s\n" "${_v%????????}" "${_v#????????}"
+    fi
+}
+
+# Log only non-secret variables.  Secrets are masked.
 log() {
-    echo "[$(up)] $*" >> "$LOG" 2>/dev/null
-    # keep last 50KB
+    # Mask anything that looks like a secret token / password value in the text.
+    _msg="$*"
+    # Simple busybox-safe redaction: KEY=value or KEY"value".
+    _msg="$(printf '%s' "$_msg" | $BB sed \
+        -e 's/\(password\|passwd\|pwd\|secret\|token\|key\|api_key\|auth\)=[^ ]*/\1=***/g' \
+        -e 's/\(Password\|password\|token\|secret\|key\)"[^"]*"/\1"***"/g' \
+        2>/dev/null)"
+    echo "[$(up)] $_msg" >> "$LOG" 2>/dev/null
+
+    # Keep last 50KB.
     if [ -f "$LOG" ]; then
         $BB tail -c 51200 "$LOG" > "$LOG.tmp" 2>/dev/null
         $BB mv "$LOG.tmp" "$LOG" 2>/dev/null
@@ -32,8 +59,6 @@ log() {
 get_pid() {
     if [ -f "$PIDF" ]; then
         p=$($BB cat "$PIDF" 2>/dev/null)
-        # Verify PID exists AND its executable is the actual Detectic binary,
-        # not a stale PID that has been reused by a shell or another process.
         if [ -n "$p" ] && [ -d "/proc/$p" ] && \
            [ "$($BB readlink "/proc/$p/exe" 2>/dev/null)" = "$BIN" ]; then
             echo "$p"
@@ -48,18 +73,34 @@ is_running() { get_pid >/dev/null 2>&1; }
 gcount() { [ -f "$RFILE" ] && $BB cat "$RFILE" 2>/dev/null || echo 0; }
 scount() { echo "$1" > "$RFILE" 2>/dev/null; }
 
+# Ensure the env file has the right permissions when launcher runs.
+secure_env() {
+    if [ -f "$ENVF" ]; then
+        $BB chmod 600 "$ENVF" 2>/dev/null || log "chmod 600 $ENVF failed"
+    fi
+    if [ -f "/var/tmp/detectic/detectic.env" ]; then
+        $BB chmod 600 "/var/tmp/detectic/detectic.env" 2>/dev/null || true
+    fi
+}
+
 ensure_bin() {
     [ -x "$BIN" ] && return 0
     $BB rm -f "$BIN" 2>/dev/null
     $BB mkdir -p "$TMPDIR" 2>/dev/null
     if [ -s "$TMPDIR/detectic.aa" ] && [ -s "$TMPDIR/detectic.ab" ]; then
-        $BB cat "$TMPDIR/detectic.aa" "$TMPDIR/detectic.ab" > "$BIN" 2>/dev/null
-        $BB chmod +x "$BIN"
+        # The binary should already have been verified by bootstart.sh.
+        # We use a temporary target and then atomically move it.
+        $BB rm -f "$BIN.tmp" 2>/dev/null
+        $BB cat "$TMPDIR/detectic.aa" "$TMPDIR/detectic.ab" > "$BIN.tmp" 2>/dev/null
+        $BB chmod +x "$BIN.tmp" 2>/dev/null
+        $BB mv -f "$BIN.tmp" "$BIN" 2>/dev/null
     fi
     [ -x "$BIN" ]
 }
 
 do_start() {
+    secure_env
+
     if is_running; then
         pid=$(get_pid)
         log "already running PID=$pid"
@@ -68,7 +109,7 @@ do_start() {
     fi
 
     if ! ensure_bin; then
-        log "FAIL: binary missing or decompression failed"
+        log "FAIL: binary missing or reassembly failed"
         echo "FAIL: binary missing"
         return 1
     fi
@@ -76,7 +117,7 @@ do_start() {
     scount 0
     log "Starting Detectic"
 
-    # Source env: prefer /var/tmp copy (may have newer config), then misc_rw
+    # Prefer /var/tmp copy (fresher) then misc_rw persisted copy.
     if [ -f "/var/tmp/detectic/detectic.env" ]; then
         set -a
         . "/var/tmp/detectic/detectic.env" 2>/dev/null
@@ -88,8 +129,16 @@ do_start() {
         set +a
         export DETECTIC_ENV_FILE="$ENVF"
     fi
-    # Observability: confirm the backend upload URL is visible to the sensor.
-    log "env_check upload_url=${DETECTIC_UPLOAD_URL:-UNSET} backend_url=${DETECTIC_BACKEND_URL:-UNSET} interval=${DETECTIC_INTERVAL:-UNSET}"
+
+    # Observability: confirm backend upload URL is set, but redact any secret.
+    _upload_url="${DETECTIC_UPLOAD_URL:-UNSET}"
+    _backend_url="${DETECTIC_BACKEND_URL:-UNSET}"
+    _interval="${DETECTIC_INTERVAL:-UNSET}"
+    _sensor_id="${DETECTIC_SENSOR_ID:-UNSET}"
+    if [ "$_sensor_id" != "UNSET" ]; then
+        _sensor_id="$(redact_value "$_sensor_id")"
+    fi
+    log "env_check upload_url=$_upload_url backend_url=$_backend_url interval=$_interval sensor_id=$_sensor_id"
 
     ( trap '' 1; exec "$BIN" sensor >> "$LOG" 2>&1 ) &
     new_pid=$!
@@ -100,20 +149,21 @@ do_start() {
         log "started PID=$new_pid"
         echo "started PID=$new_pid"
         vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
-        CALLBACK_BASE="${DETECTIC_CALLBACK_BASE:-https://detectic.24hwww.workers.dev}"
+        CALLBACK_BASE="${DETECTIC_CALLBACK_BASE:-${DETECTIC_PACKAGE_URL:-http://192.168.0.27:8080}}"
         $BB wget -q -T 5 -O /dev/null "${CALLBACK_BASE}/done?t=launcher&status=running&pid=$new_pid&version=$vers" 2>/dev/null || true
 
-        # best-effort, non-blocking email notifications
+        # Best-effort, non-blocking email notifications.
         EMAILD=${DETECTIC_EMAILD:-${DETECTIC_CALLBACK_BASE:-https://detectic.24hwww.workers.dev}/email}
         EMAIL_INTERVAL=${DETECTIC_EMAIL_INTERVAL:-300}
 
-        # Export the variables the reporter subshell and get_pid need.
+        # Export the variables the reporter subshell needs.
         export BB BIN DIR LOG PIDF EMAILD EMAIL_INTERVAL
 
-        # startup email (do not block if emaild is unavailable)
-        ( $BB wget -q -T 10 -O /dev/null "${EMAILD}?type=startup&up=$(up)&version=$vers&pid=$new_pid&status=running" 2>/dev/null || true ) &
+        # Startup email.
+        ( $BB wget -q -T 10 -O /dev/null \
+            "${EMAILD}?type=startup&up=$(up)&version=$vers&pid=$new_pid&status=running" 2>/dev/null || true ) &
 
-        # 5-minute report loop (best-effort; stops if Detectic disappears)
+        # Report loop.
         ( while :; do
             $BB sleep "$EMAIL_INTERVAL"
             p=$(get_pid 2>/dev/null || echo 0)
@@ -121,10 +171,10 @@ do_start() {
             u=$(up)
             v=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
             devs=$($BB tail -n 200 "$LOG" 2>/dev/null | $BB grep -c 'nearby_observations' || echo 0)
-            $BB wget -q -T 10 -O /dev/null "${EMAILD}?type=report&up=$u&version=$v&pid=$p&devices=$devs&interval=$EMAIL_INTERVAL" 2>/dev/null || true
+            $BB wget -q -T 10 -O /dev/null \
+                "${EMAILD}?type=report&up=$u&version=$v&pid=$p&devices=$devs&interval=$EMAIL_INTERVAL" 2>/dev/null || true
         done ) &
 
-        # Keep launcher alive so the background report loop survives
         wait
     fi
 

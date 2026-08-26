@@ -4,6 +4,7 @@
 //! SQLite store; embedding code should do the same.
 
 pub mod analytics;
+pub mod arp;
 pub mod backend;
 pub mod calibrate;
 pub mod collector;
@@ -15,8 +16,10 @@ pub mod events;
 pub mod fusion;
 pub mod gtpr;
 pub mod http;
+pub mod http_server;
 pub mod led;
 pub mod launcher;
+pub mod mdns;
 pub mod logging;
 pub mod model;
 pub mod monitor;
