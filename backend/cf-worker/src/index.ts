@@ -1537,9 +1537,11 @@ function msToDuration(ms: number): string {
 }
 
 function fmtDateTime(ts: number): string {
-  return new Date(ts).toLocaleString('es-CL', {
-    dateStyle: 'short',
-    timeStyle: 'medium',
+  return new Date(ts).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZoneName: 'short',
   });
 }
 
@@ -1574,11 +1576,6 @@ function deviceNameFrom(row: any, fallback: string): string {
   const parts = [row?.manufacturer, row?.brand, row?.model_guess, row?.device_class].filter(Boolean);
   if (parts.length) return parts.join(' ');
   return fallback;
-}
-
-function reportSensorName(sensorId: string): string {
-  if (sensorId.includes('ex520') || sensorId.includes('EX520')) return `TP-Link EX520V · ${sensorId}`;
-  return sensorId;
 }
 
 async function handleEmailReport(request: Request, env: Env): Promise<Response> {
@@ -1669,7 +1666,7 @@ h3{font-size:15px;color:#24292f;margin:18px 0 8px}
 <body>
 <div class="card">
   <h2>🛰️ DETECTIC — Informe de Observación Autónoma</h2>
-  <div class="meta"><b>Sensor:</b> ${escHtml(reportSensorName(sensorId))} (solo lectura)</div>
+  <div class="meta"><b>Sensor:</b> ${escHtml(sensorId)}</div>
   <div class="meta"><b>Programado:</b> ${fmtDateTime(scheduled.getTime())}</div>
   <div class="meta"><b>Captura:</b> ${fmtDateTime(captureStart.getTime())} → ${fmtDateTime(captureEnd.getTime())}</div>
   <br>
@@ -1708,7 +1705,7 @@ h3{font-size:15px;color:#24292f;margin:18px 0 8px}
   <h3>🖥️ Redes Observadas</h3>
   <div class="meta">📡 Bandas detectadas: ${Array.from(bands).join(', ') || '—'}</div>
   <div class="meta">📟 Protocolos: ${Array.from(standards).join(', ') || '—'}</div>
-  <div class="meta">🔌 Sensor: TP-Link EX520V — solo lectura, sin modificaciones</div>
+  <div class="meta">🔌 Sensor: ${escHtml(sensorId)}</div>
   <div class="meta">🔒 Privacidad: identificadores pseudónimos HMAC-SHA256. Sin direcciones MAC reales. Router sin modificaciones.</div>
   <div class="meta">ID: ${reportId}</div>
 </div>
