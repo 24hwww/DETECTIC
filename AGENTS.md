@@ -3023,4 +3023,88 @@ HOST_WATCHDOG        = REQUIRED (proven mechanism)
 - Access remote APs without user authorization and a known protocol.
 - Claim precise positioning from RSSI without calibration.
 
+---
 
+# 55. Production Build & Deploy — Critical Requirements (2026-08-26)
+
+## TLS feature is REQUIRED for HTTPS backend upload
+
+The `ureq` HTTP client is configured with `default-features = false` in `Cargo.toml`.
+Without the `tls` feature, the sensor **cannot make HTTPS requests** to the Cloudflare
+Worker backend. Events will be generated and spooled but never delivered.
+
+**Correct build command:**
+```bash
+docker run --rm -v "$PWD:/home/rust/src" messense/rust-musl-cross:aarch64-musl \
+  cargo build --release --features tls
+```
+
+Then copy the binary:
+```bash
+cp target/aarch64-unknown-linux-musl/release/detectic dist/detectic-aarch64-musl
+```
+
+**Wrong (events will not upload):**
+```bash
+cargo build --release  # missing --features tls
+```
+
+## GTPR URL must be 192.168.0.1, NOT 127.0.0.1
+
+The EX520V's web server returns HTTP 406 (Not Acceptable) for GTPR requests
+sent to `http://127.0.0.1`. The sensor must use `http://192.168.0.1` (the
+router's own LAN IP) for GTPR polling when running on-router.
+
+**Correct env:**
+```
+DETECTIC_URL=http://192.168.0.1
+```
+
+**Wrong (GTPR poll fails with 406):**
+```
+DETECTIC_URL=http://127.0.0.1
+```
+
+## HTTP server must bind [::] for IPv6 dual-stack
+
+The EX520 is managed via IPv6 link-local. The sensor's HTTP control plane
+must bind to `[::]:8787` (IPv6 dual-stack) instead of `0.0.0.0:8787` (IPv4
+only). This is handled in `src/http_server.rs`.
+
+## launcher.sh must unset stale env vars
+
+The `phoenix.sh` parent process may carry stale `DETECTIC_BACKEND_URL` from
+a previous deployment. The launcher.sh must `unset DETECTIC_BACKEND_URL
+DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN` before sourcing the env file
+to prevent stale values from overriding the new configuration.
+
+## bootstart.sh must copy env to /var/tmp/detectic/
+
+The `launcher.sh` prefers `/var/tmp/detectic/detectic.env` over
+`/var/run/misc/misc_rw/detectic/detectic.env`. The `bootstart.sh` must
+copy the downloaded env file to BOTH locations, and remove stale copies
+first with `rm -f`.
+
+## mDNS must be disabled on-router
+
+`DETECTIC_MDNS=0` in the env file. The mDNS responder fails on loopback
+IPs and is not needed for health monitoring. The HTTP control plane on
+port 8787 is sufficient.
+
+## Verified end-to-end flow (2026-08-26)
+
+```
+EX520 bootstart.sh
+  -> downloads split binary + env + launcher
+  -> reassembles detectic binary in /var/tmp/detectic/
+  -> launcher.sh starts sensor
+  -> sensor polls GTPR at http://192.168.0.1
+  -> iwpriv get_site_survey -> 52 nearby observations
+  -> temporal engine generates device/RF events
+  -> HTTPS POST to https://detectic.24hwww.workers.dev/api/v1/events
+  -> 63 events received by Cloudflare Worker in 10 minutes
+  -> HTTP control plane on [::]:8787 (firewall blocks external access)
+```
+
+Status: **PRODUCTION-LIVE** — sensor polling, generating events, and
+uploading to backend via HTTPS with HMAC-SHA256 authentication.

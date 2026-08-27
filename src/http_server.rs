@@ -63,13 +63,17 @@ impl SensorState {
 }
 
 pub struct HttpServer {
-    state: SensorState,
+    state: Arc<Mutex<SensorState>>,
     port: u16,
 }
 
 impl HttpServer {
-    pub fn spawn(state: SensorState, port: u16) -> Result<(), String> {
-        let addr = format!("0.0.0.0:{port}");
+    pub fn spawn(state: Arc<Mutex<SensorState>>, port: u16) -> Result<(), String> {
+        // Bind to `[::]:port` for dual-stack (IPv4 + IPv6) support.
+        // On Linux this accepts both IPv4 and IPv6 connections by default
+        // (IPV6_V6ONLY=0).  This is essential on the EX520V where the host
+        // can only reach the router via IPv6 link-local.
+        let addr = format!("[::]:{port}");
         let listener = TcpListener::bind(&addr)
             .map_err(|e| format!("http_server bind error on {addr}: {e}"))?;
 
@@ -150,64 +154,69 @@ impl HttpServer {
     }
 
     fn root_page(&self) -> (u16, &'static str, String) {
+        let state = self.state.lock().unwrap();
         let body = format!(
             "<!DOCTYPE html><html><head><title>DETECTIC</title></head><body>\
-<h1>DETECTIC</h1>\
-<p>sensor_id: {}</p>\
-<p>version: {}</p>\
-<p>uptime: {}s</p>\
-<p>healthy: {}</p>\
-<p>ready: {}</p>\
-<p>devices: {}</p>\
-<p>gtpr: {}</p>\
-<p>backend: {}</p>\
-<p>mdns: {}</p>\
-<p>last_poll: {}</p>\
-<p>last_upload: {}</p>\
-</body></html>\n",
-            self.state.sensor_id,
-            self.state.version,
-            self.state.uptime_secs(),
-            self.state.healthy,
-            self.state.ready,
-            self.state.device_count,
-            self.state.gtpr_status,
-            self.state.backend_status,
-            self.state.mdns_status,
-            fmt_since(self.state.last_poll),
-            fmt_since(self.state.last_upload),
+|<h1>DETECTIC</h1>\
+|<p>sensor_id: {}</p>\
+|<p>version: {}</p>\
+|<p>uptime: {}s</p>\
+|<p>healthy: {}</p>\
+|<p>ready: {}</p>\
+|<p>devices: {}</p>\
+|<p>gtpr: {}</p>\
+|<p>backend: {}</p>\
+|<p>mdns: {}</p>\
+|<p>last_poll: {}</p>\
+|<p>last_upload: {}</p>\
+|</body></html>\n",
+            state.sensor_id,
+            state.version,
+            state.uptime_secs(),
+            state.healthy,
+            state.ready,
+            state.device_count,
+            state.gtpr_status,
+            state.backend_status,
+            state.mdns_status,
+            fmt_since(state.last_poll),
+            fmt_since(state.last_upload),
         );
         (200, "text/html", body)
     }
 
     fn health_json(&self) -> (u16, &'static str, String) {
+        let state = self.state.lock().unwrap();
         let mut map: HashMap<&str, String> = HashMap::new();
-        map.insert("status", if self.state.healthy { "healthy".into() } else { "unhealthy".into() });
-        map.insert("sensor_id", self.state.sensor_id.clone());
-        map.insert("version", self.state.version.clone());
-        map.insert("uptime", self.state.uptime_secs().to_string());
-        map.insert("gtpr", self.state.gtpr_status.clone());
-        map.insert("backend", self.state.backend_status.clone());
-        map.insert("mdns", self.state.mdns_status.clone());
-        map.insert("devices", self.state.device_count.to_string());
-        map.insert("ready", self.state.ready.to_string());
+        map.insert("status", if state.healthy { "healthy".into() } else { "unhealthy".into() });
+        map.insert("sensor_id", state.sensor_id.clone());
+        map.insert("version", state.version.clone());
+        map.insert("uptime", state.uptime_secs().to_string());
+        map.insert("gtpr", state.gtpr_status.clone());
+        map.insert("backend", state.backend_status.clone());
+        map.insert("mdns", state.mdns_status.clone());
+        map.insert("devices", state.device_count.to_string());
+        map.insert("ready", state.ready.to_string());
         map.insert("port", self.port.to_string());
         (200, "application/json", json_obj(map))
     }
 
     fn ready_json(&self) -> (u16, &'static str, String) {
+        let state = self.state.lock().unwrap();
         let mut map: HashMap<&str, String> = HashMap::new();
-        map.insert("ready", self.state.ready.to_string());
-        map.insert("gtpr", self.state.gtpr_status.clone());
+        map.insert("ready", state.ready.to_string());
+        map.insert("gtpr", state.gtpr_status.clone());
         (200, "application/json", json_obj(map))
     }
 
     fn version_text(&self) -> (u16, &'static str, String) {
-        (200, "text/plain", format!("{}\n", self.state.version))
+        let state = self.state.lock().unwrap();
+        (200, "text/plain", format!("{}\n", state.version))
     }
 
     fn devices_json(&self) -> (u16, &'static str, String) {
-        let guard = self.state.snapshot.lock().unwrap();
+        let state = self.state.lock().unwrap();
+        let guard = state.snapshot.lock().unwrap();
         let devices = guard
             .as_ref()
             .map(|s| s.stations.clone())
@@ -216,7 +225,8 @@ impl HttpServer {
     }
 
     fn device_detail_json(&self, id: &str) -> (u16, &'static str, String) {
-        let guard = self.state.snapshot.lock().unwrap();
+        let state = self.state.lock().unwrap();
+        let guard = state.snapshot.lock().unwrap();
         if let Some(snap) = guard.as_ref() {
             if let Some(dev) = snap.stations.iter().find(|d| d.identity() == id) {
                 return (
@@ -230,20 +240,22 @@ impl HttpServer {
     }
 
     fn events_json(&self) -> (u16, &'static str, String) {
-        let guard = self.state.recent_events.lock().unwrap();
+        let state = self.state.lock().unwrap();
+        let guard = state.recent_events.lock().unwrap();
         let events: Vec<String> = guard.iter().cloned().collect();
         (200, "application/json", serde_json::to_string(&events).unwrap_or_default())
     }
 
     fn metrics_json(&self) -> (u16, &'static str, String) {
+        let state = self.state.lock().unwrap();
         let mut map: HashMap<&str, String> = HashMap::new();
-        map.insert("uptime_seconds", self.state.uptime_secs().to_string());
-        map.insert("device_count", self.state.device_count.to_string());
-        map.insert("last_poll_ago", fmt_since(self.state.last_poll));
-        map.insert("last_upload_ago", fmt_since(self.state.last_upload));
-        map.insert("gtpr_status", self.state.gtpr_status.clone());
-        map.insert("backend_status", self.state.backend_status.clone());
-        map.insert("mdns_status", self.state.mdns_status.clone());
+        map.insert("uptime_seconds", state.uptime_secs().to_string());
+        map.insert("device_count", state.device_count.to_string());
+        map.insert("last_poll_ago", fmt_since(state.last_poll));
+        map.insert("last_upload_ago", fmt_since(state.last_upload));
+        map.insert("gtpr_status", state.gtpr_status.clone());
+        map.insert("backend_status", state.backend_status.clone());
+        map.insert("mdns_status", state.mdns_status.clone());
         (200, "application/json", json_obj(map))
     }
 }
@@ -278,7 +290,7 @@ fn json_obj(map: HashMap<&str, String>) -> String {
     for (k, v) in map {
         parts.push(format!("\"{}\":\"{}\"", escape_json(k), escape_json(&v)));
     }
-    format!("{{ {} }}", parts.join(", "))
+    format!("{{ {}}}", parts.join(", "))
 }
 
 fn escape_json(s: &str) -> String {

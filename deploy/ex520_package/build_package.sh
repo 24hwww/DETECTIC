@@ -44,7 +44,8 @@ echo ""
 # --- Verify prerequisites ---
 if [ ! -f "$DETECTIC_BIN" ]; then
     echo "ERROR: Detectic binary not found: $DETECTIC_BIN"
-    echo "  Build with: make router"
+    echo "  Build with: docker run --rm -v \"\$PWD:/home/rust/src\" messense/rust-musl-cross:aarch64-musl cargo build --release --features tls"
+    echo "  Then: cp target/aarch64-unknown-linux-musl/release/detectic dist/detectic-aarch64-musl"
     exit 1
 fi
 
@@ -55,7 +56,7 @@ echo "Detectic binary: $DETECTIC_BIN ($(ls -la "$DETECTIC_BIN" | awk '{print $5}
 
 # --- Split binary ---
 echo "[1/4] Splitting binary..."
-SPLIT_SIZE=$((1024 * 1024))  # 1 MiB per part; produces detectic.aa + detectic.ab
+SPLIT_SIZE=$((1024 * 1024))  # 1 MiB per part; produces detectic.aa, .ab, .ac, ...
 split -b "$SPLIT_SIZE" "$DETECTIC_BIN" "$BUILD_DIR/detectic."
 ls -la "$BUILD_DIR"/detectic.*
 echo ""
@@ -77,29 +78,49 @@ echo ""
 # --- Generate SHA-256 checksums ---
 echo "[3/4] Generating SHA-256 checksums..."
 cd "$BUILD_DIR"
-sha256sum -b detectic.aa   | awk '{print $1}' > detectic.aa.sha256
-sha256sum -b detectic.ab   | awk '{print $1}' > detectic.ab.sha256
-# Reassemble to compute the full binary checksum.
-cat detectic.aa detectic.ab > .detectic.full.tmp
+
+# Compute per-part checksums for every detectic.* file that is a data part.
+for part in detectic.*; do
+    if [[ "$part" == *.sha256 ]] || [[ "$part" == manifest.json ]] || [ ! -f "$part" ]; then
+        continue
+    fi
+    sha256sum -b "$part" | awk '{print $1}' > "$part.sha256"
+done
+
+# Reassemble all split parts (detectic.aa, .ab, .ac, ...) in sorted order to
+# compute the full binary checksum.  detectic.env is configuration, not a part.
+SORTED_PARTS=($(ls -1 detectic.* | grep -E '^detectic\.[a-z]{2}$' | sort))
+cat "${SORTED_PARTS[@]}" > .detectic.full.tmp
 sha256sum -b .detectic.full.tmp | awk '{print $1}' > detectic.sha256
 rm -f .detectic.full.tmp
 
 VERSION="$(cat version)"
-cat > manifest.json <<EOF
-{
-  "version": "$VERSION",
-  "files": {
-    "detectic.aa": "$(cat detectic.aa.sha256)",
-    "detectic.ab": "$(cat detectic.ab.sha256)",
-    "detectic": "$(cat detectic.sha256)"
-  },
-  "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOF
 
-echo "  detectic.aa: $(cat detectic.aa.sha256)"
-echo "  detectic.ab: $(cat detectic.ab.sha256)"
-echo "  detectic:    $(cat detectic.sha256)"
+# Build the manifest files object dynamically, one real newline per entry.
+{
+    echo "{"
+    echo '  "version": "'"$VERSION"'",'
+    echo '  "files": {'
+    _first=1
+    for part in "${SORTED_PARTS[@]}"; do
+        hash="$(cat "$part.sha256")"
+        [ "$_first" -eq 1 ] || echo ","
+        printf '    "%s": "%s"' "$part" "$hash"
+        _first=0
+    done
+    hash="$(cat detectic.sha256)"
+    [ "$_first" -eq 1 ] || echo ","
+    printf '    "detectic": "%s"' "$hash"
+    echo ""
+    echo "  },"
+    echo '  "generated_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"'
+    echo "}"
+} > manifest.json
+
+echo "  $(cat detectic.sha256)  detectic (full)"
+for part in "${SORTED_PARTS[@]}"; do
+    echo "  $(cat "$part.sha256")  $part"
+done
 echo ""
 
 # --- Package archive ---

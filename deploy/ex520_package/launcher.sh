@@ -87,11 +87,13 @@ ensure_bin() {
     [ -x "$BIN" ] && return 0
     $BB rm -f "$BIN" 2>/dev/null
     $BB mkdir -p "$TMPDIR" 2>/dev/null
-    if [ -s "$TMPDIR/detectic.aa" ] && [ -s "$TMPDIR/detectic.ab" ]; then
-        # The binary should already have been verified by bootstart.sh.
-        # We use a temporary target and then atomically move it.
+    # Reassemble all split parts that exist (aa, ab, ac, ad, ...).
+    PARTS="$($BB ls -1 "$TMPDIR"/detectic.* 2>/dev/null | $BB grep -E '^/var/tmp/detectic/detectic\.[a-z]{2}$' | $BB sed 's|.*/||' | sort)"
+    if [ -n "$PARTS" ]; then
         $BB rm -f "$BIN.tmp" 2>/dev/null
-        $BB cat "$TMPDIR/detectic.aa" "$TMPDIR/detectic.ab" > "$BIN.tmp" 2>/dev/null
+        for _p in $PARTS; do
+            $BB cat "$TMPDIR/$_p" >> "$BIN.tmp" 2>/dev/null || log "reassemble_failed $_p"
+        done
         $BB chmod +x "$BIN.tmp" 2>/dev/null
         $BB mv -f "$BIN.tmp" "$BIN" 2>/dev/null
     fi
@@ -118,6 +120,9 @@ do_start() {
     log "Starting Detectic"
 
     # Prefer /var/tmp copy (fresher) then misc_rw persisted copy.
+    # Unset key vars first to clear any stale values inherited from the
+    # parent process (phoenix.sh / cos may carry env from a previous deploy).
+    unset DETECTIC_BACKEND_URL DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN
     if [ -f "/var/tmp/detectic/detectic.env" ]; then
         set -a
         . "/var/tmp/detectic/detectic.env" 2>/dev/null
@@ -139,6 +144,15 @@ do_start() {
         _sensor_id="$(redact_value "$_sensor_id")"
     fi
     log "env_check upload_url=$_upload_url backend_url=$_backend_url interval=$_interval sensor_id=$_sensor_id"
+
+    # Diagnostic: send backend_url to package server via GET callback.
+    _cb="${DETECTIC_CALLBACK_BASE:-${DETECTIC_PACKAGE_URL:-http://192.168.0.27:8080}}"
+    _enc="$(echo "$_backend_url" | $BB tr ' ' '_')"
+    $BB wget -q -T 3 -O /dev/null "${_cb}/env_line?n=50&d=launcher_backend_url=${_enc}" 2>/dev/null || true
+    # Check if env file was actually sourced
+    _envf="${DETECTIC_ENV_FILE:-none}"
+    _enc="$(echo "$_envf" | $BB tr ' ' '_')"
+    $BB wget -q -T 3 -O /dev/null "${_cb}/env_line?n=49&d=launcher_env_file=${_enc}" 2>/dev/null || true
 
     ( trap '' 1; exec "$BIN" sensor >> "$LOG" 2>&1 ) &
     new_pid=$!
@@ -186,6 +200,15 @@ do_start() {
 do_stop() {
     pid=$(get_pid 2>/dev/null)
     if [ -z "$pid" ]; then
+        # Fallback: find any running detectic binary by /proc scan.
+        for _proc in /proc/[0-9]*; do
+            if [ "$($BB readlink "$_proc/exe" 2>/dev/null)" = "$BIN" ]; then
+                pid="$($BB basename "$_proc")"
+                break
+            fi
+        done
+    fi
+    if [ -z "$pid" ]; then
         echo "not running"
         return 0
     fi
@@ -202,6 +225,7 @@ do_stop() {
     done
     $BB kill -9 "$pid" 2>/dev/null
     $BB rm -f "$PIDF"
+    $BB sleep 1
     return 0
 }
 

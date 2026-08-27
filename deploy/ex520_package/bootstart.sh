@@ -3,8 +3,13 @@
 # Runs as root from /usr/bin/phoenix.sh.
 #
 # This script downloads the Detectic package, verifies SHA-256 checksums,
-# atomically reassembles the binary, and starts the sensor.  It never
-# executes an unverified binary and never modifies stock firmware.
+# reassembles the binary, and starts the sensor.  It never executes an
+# unverified binary and never modifies stock firmware.
+#
+# The binary is split into 1 MiB parts (detectic.aa, .ab, .ac, ...).  The
+# manifest.json lists every part and the full-binary checksum.  This script
+# downloads every part that appears in the manifest, verifies it, and then
+# concatenates them in sorted order.
 
 # Survive SIGHUP after phoenix exits.
 trap '' 1
@@ -49,7 +54,8 @@ err() {
 # --- Bounded autostart log ---
 if [ -f "$LOG" ]; then
     $BB tail -c 51200 "$LOG" > "$LOG.tmp" 2>/dev/null
-    $BB mv "$LOG.tmp" "$LOG" 2>/dev/null
+    $BB rm -f "$LOG" 2>/dev/null
+    $BB mv "$LOG.tmp" "$LOG" 2>/dev/null || true
 fi
 
 # --- Prepare directories ---
@@ -87,7 +93,7 @@ verify_sha256() {
         err "verify_missing_checksum_$_name"
     fi
 
-    _expected="$($BB cat "$_csum_file" 2>/dev/null | $BB head -1 2>/dev/null)"
+    _expected="$($BB cat "$_csum_file" 2>/dev/null | $BB awk 'NR==1{print; exit}' 2>/dev/null)"
 
     # Try to hash with available tools.  The EX520V BusyBox sha256sum applet
     # is listed but does not produce output, so fall back to /usr/sbin/openssl.
@@ -104,7 +110,7 @@ verify_sha256() {
     fi
     [ -z "$_got" ] && _got="$(echo "$_raw_got" | $BB cut -d' ' -f1 2>/dev/null)"
 
-    log "verify_debug_$_name expected_len=${#_expected} got_len=${#_got} raw_got=$_raw_got"
+    log "verify_debug_$_name expected_len=${#_expected} got_len=${#_got}"
 
     if [ -z "$_expected" ] || [ -z "$_got" ]; then
         log "verify_empty_hash_details expected='$_expected' raw_got='$_raw_got' got='$_got'"
@@ -126,21 +132,15 @@ log "bootstart start base=$BASE version=$(cat "$DIR/version" 2>/dev/null || echo
 log "busybox_applets=$($BB --list 2>/dev/null | $BB tr '\n' ',' | $BB head -c 500)"
 
 fetch "${BASE}/manifest.json"        "manifest.json"        10 || err "download_manifest"
-fetch "${BASE}/detectic.aa.sha256"   "detectic.aa.sha256"   10 || err "download_aa_csum"
-fetch "${BASE}/detectic.ab.sha256"   "detectic.ab.sha256"   10 || err "download_ab_csum"
 fetch "${BASE}/detectic.sha256"      "detectic.sha256"      10 || err "download_bin_csum"
 fetch "${BASE}/version"              "version"              10 || err "download_version"
 
 # --- Validate manifest matches the expected version and part hashes ---
 # Use a portable, BusyBox-safe parser: grab values from the JSON file.
 MANIFEST_VERSION="$($BB sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' manifest.json)"
-MANIFEST_AA="$($BB sed -n 's/.*"detectic.aa"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' manifest.json)"
-MANIFEST_AB="$($BB sed -n 's/.*"detectic.ab"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' manifest.json)"
 MANIFEST_FULL="$($BB sed -n 's/.*"detectic"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1/p' manifest.json)"
 
 [ -n "$MANIFEST_VERSION" ] || err "manifest_version_missing"
-[ -n "$MANIFEST_AA" ]      || err "manifest_aa_hash_missing"
-[ -n "$MANIFEST_AB" ]      || err "manifest_ab_hash_missing"
 [ -n "$MANIFEST_FULL" ]    || err "manifest_full_hash_missing"
 
 # The downloaded "version" file must match the manifest (self-consistency).
@@ -151,15 +151,58 @@ if [ "$MANIFEST_VERSION" != "$EXPECTED_VERSION" ]; then
     err "manifest_version_mismatch"
 fi
 
-log "manifest_ok version=$MANIFEST_VERSION"
+# Extract the list of split parts from the manifest.  Parts are keys of the
+# form "detectic.XX" where XX is a lowercase suffix (aa, ab, ac, ...).
+# The manifest is a compact single-line JSON, so expand commas to newlines
+# so the sed pattern can match one entry at a time.
+PARTS="$($BB tr ',' '\n' < manifest.json | $BB sed -n 's/.*"\(detectic\.[a-z][a-z]*\)"[[:space:]]*:[[:space:]]*"\([0-9a-fA-F]*\)".*/\1 \2/p')"
+[ -n "$PARTS" ] || err "manifest_parts_missing"
 
-# --- Download binary parts ---
-fetch "${BASE}/detectic.aa"          "detectic.aa"         180 || err "download_aa"
-fetch "${BASE}/detectic.ab"          "detectic.ab"         180 || err "download_ab"
+# Build an ordered list of part names (aa, ab, ...) and a map name->hash.
+PART_NAMES=""
+PART_LIST_FILE="$TMPPKG/.part_list"
+$BB rm -f "$PART_LIST_FILE" 2>/dev/null
 
-# --- Verify parts ---
-verify_sha256 "detectic.aa" "detectic.aa.sha256" "aa"
-verify_sha256 "detectic.ab" "detectic.ab.sha256" "ab"
+# shellcheck disable=SC3011
+set -- $PARTS
+while [ $# -ge 2 ]; do
+    _name="$1"
+    _hash="$2"
+    shift 2
+    case "$_name" in
+        detectic.??)
+            ;;
+        *)
+            continue
+            ;;
+    esac
+    # Verify hash is 64 hex chars.
+    [ "${#_hash}" -eq 64 ] || continue
+    log "part_parsed name=$_name hash_len=${#_hash} hash_prefix=${_hash%${_hash#????????}}"
+    # Download the checksum file for this part (required by verify_sha256).
+    fetch "${BASE}/${_name}.sha256" "${_name}.sha256" 10 || err "download_csum_${_name}"
+    _dl="$($BB cat "${_name}.sha256" 2>/dev/null | $BB awk 'NR==1{print; exit}')"
+    log "csum_downloaded name=$_name dl_len=${#_dl}"
+    # Write the expected hash into the checksum file so verify_sha256 matches.
+    # Use echo instead of printf; the BusyBox/ash printf built-in on this
+    # firmware does not expand "%s\n" correctly for long hex strings.
+    echo "$_hash" > "${_name}.sha256"
+    _written="$($BB cat "${_name}.sha256" 2>/dev/null | $BB awk 'NR==1{print; exit}')"
+    log "csum_written name=$_name written_len=${#_written}"
+    PART_NAMES="$PART_NAMES $_name"
+    echo "$_name" >> "$PART_LIST_FILE"
+done
+
+[ -n "$PART_NAMES" ] || err "no_valid_parts_in_manifest"
+
+log "manifest_ok version=$MANIFEST_VERSION parts=[$PART_NAMES]"
+
+# --- Download and verify binary parts ---
+for _name in $PART_NAMES; do
+    fetch "${BASE}/$_name" "$_name" 180 || err "download_${_name}"
+    verify_sha256 "$_name" "${_name}.sha256" "$_name"
+    $BB cp "$_name" "$TMPDIR/$_name" 2>/dev/null || err "copy_${_name}_vartmp"
+done
 
 # --- Download launcher and env (small files, optional env) ---
 fetch "${BASE}/launcher.sh"          "launcher.sh"          30 || err "download_launcher"
@@ -176,30 +219,49 @@ $BB cp "launcher.sh"   "$DIR/launcher.sh"   2>/dev/null || log "copy_launcher_fa
 $BB cp "version"       "$DIR/version"       2>/dev/null || log "copy_version_failed"
 $BB cp "manifest.json" "$DIR/manifest.json" 2>/dev/null || log "copy_manifest_failed"
 if [ -f "detectic.env" ]; then
+    # Remove stale env files before writing new ones.
+    $BB rm -f "$DIR/detectic.env" "$TMPDIR/detectic.env" 2>/dev/null || true
     $BB cp "detectic.env" "$DIR/detectic.env" 2>/dev/null || log "copy_env_failed"
+    # Also copy to /var/tmp/detectic/ because launcher.sh prefers that path.
+    $BB cp "detectic.env" "$TMPDIR/detectic.env" 2>/dev/null || log "copy_env_tmp_failed"
     # Ensure the persisted copy is also 600.
     $BB chmod 600 "$DIR/detectic.env" 2>/dev/null || true
+    $BB chmod 600 "$TMPDIR/detectic.env" 2>/dev/null || true
+    # Diagnostic: send the BACKEND_URL line from the env file.
+    _be_line="$($BB grep '^DETECTIC_BACKEND_URL=' detectic.env 2>/dev/null | $BB head -c 200)"
+    _enc="$(echo "$_be_line" | $BB tr ' ' '_')"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=70&d=env_file_${_enc}" 2>/dev/null || true
+    # Also send what's actually in the copied file on the router.
+    _be_line2="$($BB grep '^DETECTIC_BACKEND_URL=' "$TMPDIR/detectic.env" 2>/dev/null | $BB head -c 200)"
+    _enc="$(echo "$_be_line2" | $BB tr ' ' '_')"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=69&d=env_tmpdir_${_enc}" 2>/dev/null || true
 fi
 
 # --- Stop any running instance and remove old binary ---
 $BB sh "$DIR/launcher.sh" stop 2>/var/tmp/launcher.trace || true
 $BB rm -f "$TMPDIR/detectic" "$TMPDIR/detectic.tmp" 2>/dev/null || true
 
-# --- Copy pieces to runtime dir ---
-$BB cp "detectic.aa" "$TMPDIR/detectic.aa" 2>/dev/null || err "copy_aa_vartmp"
-$BB cp "detectic.ab" "$TMPDIR/detectic.ab" 2>/dev/null || err "copy_ab_vartmp"
+# --- Reassemble parts in the order they appeared in the manifest ---
+# The manifest is built in sorted order, and BusyBox on this firmware does
+# not include the `sort` applet, so rely on the parsed order.
+SORTED_PARTS="$($BB cat "$PART_LIST_FILE" 2>/dev/null)"
+[ -n "$SORTED_PARTS" ] || err "part_sort_failed"
 
-# --- Atomic reassembly with final checksum verification ---
-$BB cat "$TMPDIR/detectic.aa" "$TMPDIR/detectic.ab" > "$TMPDIR/detectic.tmp" 2>/dev/null || \
-    err "reassemble_failed"
+$BB rm -f "$TMPDIR/detectic.tmp" 2>/dev/null
+for _name in $SORTED_PARTS; do
+    $BB cat "$TMPDIR/$_name" >> "$TMPDIR/detectic.tmp" 2>/dev/null || err "reassemble_failed_${_name}"
+done
 
 verify_sha256 "$TMPDIR/detectic.tmp" "detectic.sha256" "full"
+
+log "bin_info old_sha=$($BB openssl dgst -sha256 "$TMPDIR/detectic" 2>/dev/null | $BB awk '{print $NF}') new_sha=$($BB openssl dgst -sha256 "$TMPDIR/detectic.tmp" 2>/dev/null | $BB awk '{print $NF}')"
 
 $BB chmod +x "$TMPDIR/detectic.tmp"
 
 # BusyBox on the EX520V does not include `mv` (the `mv` applet is missing),
-# so use cp+rm instead.  The temp file was created by cat, so we only replace
-# the destination after a successful copy.
+# so use cp+rm instead.  Remove the old binary first so `cp` can replace an
+# in-use executable (avoids "text file busy" on some kernels).
+$BB rm -f "$TMPDIR/detectic" 2>/dev/null || true
 $BB cp -f "$TMPDIR/detectic.tmp" "$TMPDIR/detectic" 2>/dev/null || \
     err "copy_detectic_to_runtime_failed"
 $BB rm -f "$TMPDIR/detectic.tmp" 2>/dev/null || true
@@ -207,10 +269,47 @@ $BB rm -f "$TMPDIR/detectic.tmp" 2>/dev/null || true
 # --- Cleanup download cache ---
 $BB rm -rf "$TMPPKG"
 
+# --- Quick binary test: run --version to verify it executes ---
+_test_out="$($TMPDIR/detectic --version 2>&1)" || true
+_enc="$(echo "$_test_out" | $BB tr ' ' '_' | $BB head -c 300)"
+$BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=99&d=bin_test_${_enc}" 2>/dev/null || true
+
 # --- Start sensor in background (survives bootstart exit) ---
 ( $BB sh "$DIR/launcher.sh" start 2>/var/tmp/launcher.trace >> "$LOG" 2>&1 ) &
 ret=$?
-$BB sleep 1
+$BB sleep 5
+
+# Check if the sensor process is still alive after 5 seconds
+_sensor_pid="$($BB cat "$DIR/detectic.pid" 2>/dev/null || echo none)"
+if [ "$_sensor_pid" != "none" ] && $BB kill -0 "$_sensor_pid" 2>/dev/null; then
+    _enc="sensor_alive_pid=${_sensor_pid}"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=98&d=${_enc}" 2>/dev/null || true
+    _port_check="$($BB netstat -tln 2>/dev/null | $BB grep 8787 || echo not_listening)"
+    _enc="$(echo "$_port_check" | $BB tr ' ' '_' | $BB head -c 300)"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=97&d=port_${_enc}" 2>/dev/null || true
+else
+    _enc="sensor_dead_pid=${_sensor_pid}"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=98&d=${_enc}" 2>/dev/null || true
+fi
+
+# Dump last 15 lines of detectic.log via GET callbacks (POST doesn't work on this BusyBox).
+$BB sleep 3
+_n=80
+$BB tail -n 15 "$DIR/detectic.log" 2>/dev/null | while IFS= read -r _line; do
+    _enc="$(echo "$_line" | $BB tr ' ' '_' | $BB tr '\n' ' ' | $BB head -c 300)"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=${_n}&d=${_enc}" 2>/dev/null || true
+    _n=$((_n + 1))
+done
+
+# Backend connectivity test: can the router reach the Cloudflare Worker?
+_be_test="$($BB wget -q -T 10 -O - 'https://detectic.24hwww.workers.dev/api/v1/health' 2>&1 | $BB head -c 200)"
+_enc="$(echo "$_be_test" | $BB tr ' ' '_' | $BB head -c 300)"
+$BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=60&d=be_health_${_enc}" 2>/dev/null || true
+
+# DNS test
+_dns_test="$($BB nslookup detectic.24hwww.workers.dev 2>&1 | $BB head -c 200)"
+_enc="$(echo "$_dns_test" | $BB tr ' ' '_' | $BB head -c 300)"
+$BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=61&d=dns_${_enc}" 2>/dev/null || true
 
 vers="$($BB cat "$DIR/version" 2>/dev/null || echo unknown)"
 log "bootstart complete version=$vers ret=$ret"

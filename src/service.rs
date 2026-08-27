@@ -185,25 +185,49 @@ impl DetecticService {
     /// Spawn the HTTP control server and mDNS responder, if enabled.
     pub fn start_control_plane(&mut self) {
         if self.config.enable_http_server {
-            let state = self.state.lock().unwrap().clone();
-            if let Err(e) = HttpServer::spawn(state, self.config.http_port) {
-                logging::warn(&format!("http_server_start_failed err={}", e));
-            } else {
-                logging::info(&format!("http_server_started port={}", self.config.http_port));
+            let state = Arc::clone(&self.state);
+            // Retry the HTTP bind a few times — on the EX520V the network
+            // stack may not be fully ready when phoenix launches the sensor
+            // very early in the boot sequence.
+            let mut bound = false;
+            for attempt in 1..=5u32 {
+                match HttpServer::spawn(Arc::clone(&state), self.config.http_port) {
+                    Ok(()) => {
+                        logging::info(&format!("http_server_started port={} attempt={}", self.config.http_port, attempt));
+                        bound = true;
+                        break;
+                    }
+                    Err(e) => {
+                        logging::warn(&format!("http_server_bind_failed attempt={} err={}", attempt, e));
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                }
+            }
+            if !bound {
+                logging::warn("http_server_disabled_after_retries");
             }
         }
 
+        // mDNS is disabled on-router: the EX520V firmware may not support
+        // multicast group join on 127.0.0.1 (which is what guess_local_ipv4
+        // returns when DETECTIC_URL=http://127.0.0.1).  The HTTP control
+        // plane is sufficient for health monitoring.
         if self.config.enable_mdns {
             let ip = guess_local_ipv4().unwrap_or(std::net::Ipv4Addr::new(192, 168, 0, 1));
-            let txt = vec![
-                format!("version={}", env!("CARGO_PKG_VERSION")),
-                format!("sensor_id={}", self.config.sensor_id),
-                "service=detectic".into(),
-            ];
-            if let Err(e) = MdnsResponder::spawn(&self.config.mdns_hostname, ip, self.config.http_port, txt) {
-                logging::warn(&format!("mdns_start_failed err={}", e));
+            // Skip mDNS if the resolved IP is loopback — it will always fail.
+            if ip.is_loopback() {
+                logging::info("mdns_skipped_loopback");
             } else {
-                logging::info("mdns_started");
+                let txt = vec![
+                    format!("version={}", env!("CARGO_PKG_VERSION")),
+                    format!("sensor_id={}", self.config.sensor_id),
+                    "service=detectic".into(),
+                ];
+                if let Err(e) = MdnsResponder::spawn(&self.config.mdns_hostname, ip, self.config.http_port, txt) {
+                    logging::warn(&format!("mdns_start_failed err={}", e));
+                } else {
+                    logging::info("mdns_started");
+                }
             }
         }
     }

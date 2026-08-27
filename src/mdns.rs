@@ -46,8 +46,10 @@ impl MdnsResponder {
         let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT);
         let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("mdns bind error: {e}"))?;
 
-        // Join the mDNS multicast group on all interfaces we can.
-        if let Err(e) = socket.join_multicast_v4(&MDNS_ADDR, &Ipv4Addr::UNSPECIFIED) {
+        // Join the mDNS multicast group on the interface that owns the
+        // advertised IPv4 address.  Using UNSPECIFIED can select the WAN/default
+        // route on the EX520V and cause LAN clients to miss the responder.
+        if let Err(e) = socket.join_multicast_v4(&MDNS_ADDR, &ip) {
             return Err(format!("mdns join_multicast_v4 error: {e}"));
         }
 
