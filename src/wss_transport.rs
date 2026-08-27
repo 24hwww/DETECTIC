@@ -75,13 +75,16 @@ impl WssEventTransport {
                         self.connected = true;
                         self.last_ok = Instant::now();
                         self.backoff = Duration::from_secs(1);
+                        crate::logging::info("wss_connected");
                         return true;
                     }
                 }
                 let _ = ws.close(None);
+                crate::logging::warn("wss_handshake_failed");
                 false
             }
-            Err(_) => {
+            Err(e) => {
+                crate::logging::warn(&format!("wss_connect_error err={} url={}", e, self.base_url));
                 self.backoff = (self.backoff * 2).min(Duration::from_secs(60));
                 false
             }

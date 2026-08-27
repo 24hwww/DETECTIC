@@ -3,6 +3,7 @@ import { generateVapidKeys, serializeVapidKeys, deserializeVapidKeys, sendPushNo
 
 export interface Env {
   REALTIME_HUB: DurableObjectNamespace<RealtimeHub>;
+  DB: D1Database;
 }
 
 interface PushSubscription {
@@ -48,9 +49,11 @@ export class RealtimeHub extends DurableObject {
   private pushSubs: PushSubscription[] = [];
   private pushSubsLoaded = false;
   private vapidKeys: CryptoKeyPair | null = null;
+  private d1: D1Database | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.d1 = env.DB || null;
   }
 
   private async loadDevices() {
@@ -476,6 +479,14 @@ export class RealtimeHub extends DurableObject {
           console.error('updateDevice error:', e?.message || e);
         }
       }
+
+      // Persist event to D1 so historical queries work for the dashboard.
+      try {
+        await this.persistEventToD1(sensorId, msg);
+      } catch (e: any) {
+        console.error('D1 persist error:', e?.message || e);
+      }
+
       const eventPayload = msg.payload || {};
       const observedAt =
         typeof eventPayload.observed_at === 'number'
@@ -520,5 +531,50 @@ export class RealtimeHub extends DurableObject {
     for (const e of events) {
       this.broadcastToFrontends(sensorId, e, { via: 'http_ingest', persisted: true });
     }
+  }
+
+  /**
+   * Persist a WSS event to D1 so historical dashboard queries work.
+   * Uses INSERT OR IGNORE to handle duplicates (event_id is UNIQUE).
+   */
+  private async persistEventToD1(sensorId: string, msg: any): Promise<void> {
+    if (!this.d1) return;
+
+    const p = msg.payload || {};
+    const eventId = msg.event_id || '';
+    if (!eventId) return;
+
+    const eventType = String(p.type || p.event_type || '');
+    const ts = typeof p.timestamp === 'number'
+      ? p.timestamp
+      : typeof p.event_timestamp === 'number'
+        ? p.event_timestamp
+        : Math.floor(Date.now() / 1000);
+    const deviceId = p.device_id ?? null;
+    const payloadJson = JSON.stringify(p);
+    const seq = typeof p.sequence === 'number' ? p.sequence : null;
+    const now = Math.floor(Date.now() / 1000);
+
+    await this.d1.prepare(
+      "INSERT OR IGNORE INTO events (sensor_id, event_id, event_type, event_timestamp, device_id, snapshot_json, payload_json, sequence, schema_version, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+      .bind(
+        sensorId,
+        eventId,
+        eventType,
+        ts,
+        deviceId,
+        null,
+        payloadJson,
+        seq,
+        '3.0',
+        now
+      )
+      .run();
+
+    // Update sensor last_seen
+    await this.d1.prepare(
+      "UPDATE sensors SET last_seen = ? WHERE id = ?"
+    ).bind(now, sensorId).run();
   }
 }

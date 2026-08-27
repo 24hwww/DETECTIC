@@ -226,6 +226,16 @@ do_stop() {
     $BB kill -9 "$pid" 2>/dev/null
     $BB rm -f "$PIDF"
     $BB sleep 1
+    # Aggressive fallback: kill ANY detectic sensor process still alive.
+    for _proc in /proc/[0-9]*/cmdline; do
+        if $BB grep -ql detectic "$_proc" 2>/dev/null; then
+            _spid="$($BB echo "$_proc" | $BB sed 's|/proc/||;s|/cmdline||')"
+            if [ "$_spid" != "$$" ]; then
+                $BB kill -9 "$_spid" 2>/dev/null || true
+            fi
+        fi
+    done
+    $BB sleep 1
     return 0
 }
 

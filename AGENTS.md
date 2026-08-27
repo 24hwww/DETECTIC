@@ -2538,16 +2538,62 @@ The sensor uses `ReliableQueue` + `SpoolEventTransport` + `HttpEventTransport`:
 - `SpoolEventTransport` writes undelivered events to a bounded JSONL spool (`detectic_events.jsonl`) and drains it before each flush.
 - Observation continues when Cloudflare is offline.
 
-## WebSocket: NO-GO for EX520 stock
+## WebSocket (WSS): PROVEN-LIVE for EX520 → Cloudflare (2026-08-26)
 
-A direct persistent WebSocket from the EX520 to Cloudflare is **not viable** with the current runtime:
+A direct WebSocket Secure (WSS) connection from the EX520 to the Cloudflare
+Durable Object is **PROVEN-LIVE** and is the preferred transport for real-time
+event delivery.
 
-- The sensor is synchronous, single-threaded `ureq`-based; no async runtime or `tokio`.
-- The binary must stay <3 MB and C-free for `aarch64-unknown-linux-musl`.
-- Persistent TCP/WebSocket libraries would add size, C dependencies or async complexity.
-- Router memory/CPU budgets make a long-lived connection risky and a poor use of resources.
+### Implementation
 
-**Decision:** WebSocket EX520 → Cloudflare is classified as `HARDWARE/ENVIRONMENT LIMITATION`. Realtime fan-out to frontends will be implemented in Cloudflare (Durable Objects / WebSocket) using the HTTPS event feed from the sensor. The sensor remains HTTPS + spool.
+- `src/wss_transport.rs` uses `tungstenite` (pure Rust, no C deps, no async
+  runtime) with the `wss` cargo feature.
+- The sensor connects to `wss://detectic.24hwww.workers.dev/ws?role=sensor&sensor_id=ex520-001`.
+- The Durable Object (`RealtimeHub` in `backend/cf-worker/src/realtime.ts`)
+  accepts the WSS connection, receives `event` messages, and:
+  1. Updates in-memory device/network state for real-time fan-out
+  2. **Persists each event to D1** via `persistEventToD1()` (INSERT OR IGNORE)
+  3. Broadcasts to subscribed frontend WebSocket clients
+  4. Sends push notifications if configured
+- No authentication is required on the WSS endpoint (sensor_id is passed as
+  a query parameter).
+
+### Build requirements
+
+The `wss` and `tls` features are REQUIRED for the router build:
+
+```bash
+make router
+# => cargo build --release --target aarch64-unknown-linux-musl \
+#    --no-default-features --features wss,tls
+```
+
+Binary size: ~2.38 MB (statically linked, stripped, aarch64-musl).
+
+### Environment configuration
+
+```
+DETECTIC_BACKEND_URL=wss://detectic.24hwww.workers.dev/ws
+DETECTIC_MDNS=1
+DETECTIC_URL=http://192.168.0.1
+```
+
+### Verified metrics (2026-08-26)
+
+- `INFO_wss_connected` on every poll cycle
+- `events_flush_sent=59_kept=0_dropped=0` (all events delivered, none spooled)
+- 405+ events in D1, last received <30s ago
+- Event types: `network.detected`, `rf.environment_snapshot`,
+  `device.connected`, `device.signal_changed`
+- Dashboard: 8 devices, 72 APs, 10 distinct devices
+
+### Previous assessment (superseded)
+
+The earlier assessment that WebSocket was "NO-GO" was based on the assumption
+that a WebSocket library would add too much size or C dependencies. The
+`tungstenite` crate proved to be pure-Rust, lightweight (~2.38 MB total
+binary), and compatible with the musl static build. The synchronous
+(non-async) API fits the sensor's single-threaded poll loop.
 
 ## Proximity
 
@@ -3027,16 +3073,24 @@ HOST_WATCHDOG        = REQUIRED (proven mechanism)
 
 # 55. Production Build & Deploy — Critical Requirements (2026-08-26)
 
-## TLS feature is REQUIRED for HTTPS backend upload
+## TLS + WSS features are REQUIRED for backend upload
 
 The `ureq` HTTP client is configured with `default-features = false` in `Cargo.toml`.
 Without the `tls` feature, the sensor **cannot make HTTPS requests** to the Cloudflare
-Worker backend. Events will be generated and spooled but never delivered.
+Worker backend. Without the `wss` feature, the sensor **cannot establish WebSocket
+Secure connections** for real-time event delivery to the Durable Object.
 
-**Correct build command:**
+**Correct build command (use `make router`):**
+```bash
+make router
+# => cargo build --release --target aarch64-unknown-linux-musl \
+#    --no-default-features --features wss,tls
+```
+
+Or with Docker:
 ```bash
 docker run --rm -v "$PWD:/home/rust/src" messense/rust-musl-cross:aarch64-musl \
-  cargo build --release --features tls
+  cargo build --release --no-default-features --features wss,tls
 ```
 
 Then copy the binary:
@@ -3046,7 +3100,7 @@ cp target/aarch64-unknown-linux-musl/release/detectic dist/detectic-aarch64-musl
 
 **Wrong (events will not upload):**
 ```bash
-cargo build --release  # missing --features tls
+cargo build --release  # missing --features wss,tls
 ```
 
 ## GTPR URL must be 192.168.0.1, NOT 127.0.0.1

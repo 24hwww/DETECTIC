@@ -18,9 +18,11 @@ build:
 	cargo build --release
 
 # On-router sensor: pure Rust, static, no SQLite (persist feature off).
+# wss = WebSocket transport to Cloudflare Durable Object (realtime dashboard)
+# tls = HTTPS support for ureq (fallback upload + spool drain)
 router:
 	RUSTFLAGS="-C link-self-contained=yes -C linker=$(RUST_LLD)" \
-		cargo build --release --target $(TARGET) --no-default-features
+		cargo build --release --target $(TARGET) --no-default-features --features wss,tls
 
 test:
 	cargo test

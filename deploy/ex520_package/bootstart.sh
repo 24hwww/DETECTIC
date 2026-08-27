@@ -238,6 +238,14 @@ if [ -f "detectic.env" ]; then
 fi
 
 # --- Stop any running instance and remove old binary ---
+# First, aggressively kill ANY detectic process (old launcher may lack aggressive kill).
+for _proc in /proc/[0-9]*/cmdline; do
+    if $BB grep -ql detectic "$_proc" 2>/dev/null; then
+        _spid="$($BB echo "$_proc" | $BB sed 's|/proc/||;s|/cmdline||')"
+        $BB kill -9 "$_spid" 2>/dev/null || true
+    fi
+done
+$BB sleep 1
 $BB sh "$DIR/launcher.sh" stop 2>/var/tmp/launcher.trace || true
 $BB rm -f "$TMPDIR/detectic" "$TMPDIR/detectic.tmp" 2>/dev/null || true
 
@@ -300,6 +308,18 @@ $BB tail -n 15 "$DIR/detectic.log" 2>/dev/null | while IFS= read -r _line; do
     $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=${_n}&d=${_enc}" 2>/dev/null || true
     _n=$((_n + 1))
 done
+
+# mDNS diagnostic: grep for mdns lines in detectic.log
+_n=40
+$BB grep -i mdns "$DIR/detectic.log" 2>/dev/null | $BB tail -n 5 | while IFS= read -r _line; do
+    _enc="$(echo "$_line" | $BB tr ' ' '_' | $BB tr '\n' ' ' | $BB head -c 300)"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=${_n}&d=${_enc}" 2>/dev/null || true
+    _n=$((_n + 1))
+done
+# Also check if UDP 5353 is bound
+_5353="$($BB netstat -lun 2>/dev/null | $BB grep 5353)"
+_enc="$(echo "$_5353" | $BB tr ' ' '_' | $BB head -c 200)"
+$BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=45&d=mdns_port_${_enc}" 2>/dev/null || true
 
 # Backend connectivity test: can the router reach the Cloudflare Worker?
 _be_test="$($BB wget -q -T 10 -O - 'https://detectic.24hwww.workers.dev/api/v1/health' 2>&1 | $BB head -c 200)"
