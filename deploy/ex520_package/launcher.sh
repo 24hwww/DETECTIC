@@ -1,20 +1,13 @@
 #!/bin/sh
-# Detectic hardened launcher for EX520V (BusyBox-safe, phoenix-safe).
+# Detectic launcher for EX520V (BusyBox-safe, phoenix-safe)
 # Location: /var/run/misc/misc_rw/detectic/launcher.sh
-#
-# Responsibilities:
-#   - Ensure detectic.env is owner-only readable (chmod 600).
-#   - Redact secrets from any diagnostics/log output.
-#   - Start/stop/restart/status the sensor.
-#   - Avoid duplicate instances by verifying /proc/<pid>/exe.
-#   - Maintain a bounded detectic.log.
-#   - Report health via best-effort callbacks.
-
-# Survive SIGHUP after bootstart/phoenix exits.
-trap '' 1
+# Target: /var/tmp/detectic/detectic (downloaded & reassembled by bootstart.sh)
 
 export PATH=$PATH:/bin:/usr/bin:/sbin:/usr/sbin
 BB=/bin/busybox
+
+# Remove stale environment that a previous phoenix/launcher may have inherited.
+unset DETECTIC_BACKEND_URL DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN 2>/dev/null
 
 DIR="/var/run/misc/misc_rw/detectic"
 TMPDIR="/var/tmp/detectic"
@@ -25,46 +18,44 @@ PIDF="$DIR/detectic.pid"
 RFILE="$DIR/restart_count"
 MAX_RESTART=5
 
+# Package/heartbeat server (same host:port where bootstart.sh was downloaded)
+PACKAGE_URL="${DETECTIC_PACKAGE_URL:-http://192.168.0.27:8080}"
+HEARTBEAT_INTERVAL=30
+
 up() { read u _ < /proc/uptime; echo "$u"; }
 
-# Redact a single value for logging (secrets / sensitive IDs).
-redact_value() {
-    _v="$1"
-    _len="${#_v}"
-    if [ "$_len" -le 8 ]; then
-        echo "***"
-    else
-        printf "%s***%s\n" "${_v%????????}" "${_v#????????}"
-    fi
-}
-
-# Log only non-secret variables.  Secrets are masked.
 log() {
-    # Mask anything that looks like a secret token / password value in the text.
-    _msg="$*"
-    # Simple busybox-safe redaction: KEY=value or KEY"value".
-    _msg="$(printf '%s' "$_msg" | $BB sed \
-        -e 's/\(password\|passwd\|pwd\|secret\|token\|key\|api_key\|auth\)=[^ ]*/\1=***/g' \
-        -e 's/\(Password\|password\|token\|secret\|key\)"[^"]*"/\1"***"/g' \
-        2>/dev/null)"
-    echo "[$(up)] $_msg" >> "$LOG" 2>/dev/null
-
-    # Keep last 50KB.
+    echo "[$(up)] $*" >> "$LOG" 2>/dev/null
     if [ -f "$LOG" ]; then
         $BB tail -c 51200 "$LOG" > "$LOG.tmp" 2>/dev/null
-        $BB mv "$LOG.tmp" "$LOG" 2>/dev/null
+        $BB cp "$LOG.tmp" "$LOG" 2>/dev/null
+        $BB rm -f "$LOG.tmp" 2>/dev/null
     fi
 }
 
 get_pid() {
     if [ -f "$PIDF" ]; then
         p=$($BB cat "$PIDF" 2>/dev/null)
-        if [ -n "$p" ] && [ -d "/proc/$p" ] && \
-           [ "$($BB readlink "/proc/$p/exe" 2>/dev/null)" = "$BIN" ]; then
-            echo "$p"
-            return 0
+        if [ -n "$p" ] && $BB kill -0 "$p" 2>/dev/null; then
+            _cmd="$($BB tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
+            case "$_cmd" in
+                *"detectic"*"sensor"*) echo "$p"; return 0 ;;
+            esac
         fi
     fi
+    for _cmdline in /proc/[0-9]*/cmdline; do
+        [ -f "$_cmdline" ] || continue
+        _cmd="$($BB tr '\0' ' ' < "$_cmdline" 2>/dev/null)"
+        case "$_cmd" in
+            *"detectic"*"sensor"*)
+                p=$($BB echo "$_cmdline" | $BB sed 's|/proc/||;s|/cmdline||')
+                if [ -n "$p" ] && $BB kill -0 "$p" 2>/dev/null; then
+                    echo "$p"
+                    return 0
+                fi
+                ;;
+        esac
+    done
     return 1
 }
 
@@ -73,88 +64,82 @@ is_running() { get_pid >/dev/null 2>&1; }
 gcount() { [ -f "$RFILE" ] && $BB cat "$RFILE" 2>/dev/null || echo 0; }
 scount() { echo "$1" > "$RFILE" 2>/dev/null; }
 
-# Ensure the env file has the right permissions when launcher runs.
-secure_env() {
-    if [ -f "$ENVF" ]; then
-        $BB chmod 600 "$ENVF" 2>/dev/null || log "chmod 600 $ENVF failed"
-    fi
-    if [ -f "/var/tmp/detectic/detectic.env" ]; then
-        $BB chmod 600 "/var/tmp/detectic/detectic.env" 2>/dev/null || true
-    fi
+# Best-effort heartbeat callback to the package server.
+# Does not block or fail the launcher if the server is down.
+heartbeat() {
+    _pid="${1:-}"
+    _status="${2:-running}"
+    _up=$(up)
+    _vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
+    /usr/sbin/curl -m 5 -s -o /dev/null \
+        "${PACKAGE_URL}/heartbeat?t=launcher&status=${_status}&pid=${_pid}&up=${_up}&version=${_vers}" 2>/dev/null || true
 }
 
-ensure_bin() {
-    [ -x "$BIN" ] && return 0
-    $BB rm -f "$BIN" 2>/dev/null
-    $BB mkdir -p "$TMPDIR" 2>/dev/null
-    # Reassemble all split parts that exist (aa, ab, ac, ad, ...).
-    PARTS="$($BB ls -1 "$TMPDIR"/detectic.* 2>/dev/null | $BB grep -E '^/var/tmp/detectic/detectic\.[a-z]{2}$' | $BB sed 's|.*/||' | sort)"
-    if [ -n "$PARTS" ]; then
-        $BB rm -f "$BIN.tmp" 2>/dev/null
-        for _p in $PARTS; do
-            $BB cat "$TMPDIR/$_p" >> "$BIN.tmp" 2>/dev/null || log "reassemble_failed $_p"
-        done
-        $BB chmod +x "$BIN.tmp" 2>/dev/null
-        $BB mv -f "$BIN.tmp" "$BIN" 2>/dev/null
+do_probe() {
+    if [ ! -x "$BIN" ]; then
+        echo "FAIL: binary not found or not executable at $BIN"
+        return 1
     fi
-    [ -x "$BIN" ]
+    sz=$($BB ls -la "$BIN" 2>/dev/null | $BB awk '{print $5}')
+    echo "OK: binary $BIN, size=$sz, executable"
+    return 0
+}
+
+monitor_loop() {
+    _mpid="$1"
+    ( trap '' 1 2 15
+      while :; do
+          $BB sleep "$HEARTBEAT_INTERVAL"
+          if $BB kill -0 "$_mpid" 2>/dev/null; then
+              heartbeat "$_mpid" "running"
+          else
+              break
+          fi
+      done ) &
 }
 
 do_start() {
-    secure_env
-
     if is_running; then
         pid=$(get_pid)
         log "already running PID=$pid"
         echo "already running PID=$pid"
+        vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
+        heartbeat "$pid" "running"
+        monitor_loop "$pid"
         return 0
     fi
 
-    if ! ensure_bin; then
-        log "FAIL: binary missing or reassembly failed"
+    scount 0
+
+    if [ ! -x "$BIN" ]; then
+        log "FAIL: binary missing or not executable: $BIN"
         echo "FAIL: binary missing"
         return 1
     fi
 
-    scount 0
+    # Source env: prefer the volatile copy (may be newer), then the persisted copy.
+    # Use `set -a` so every assignment is exported to the Detectic child process.
+    set -a
+    if [ -f "$TMPDIR/.env" ]; then
+        . "$TMPDIR/.env" 2>/dev/null
+    elif [ -f "$TMPDIR/detectic.env" ]; then
+        . "$TMPDIR/detectic.env" 2>/dev/null
+    elif [ -f "$DIR/.env" ]; then
+        . "$DIR/.env" 2>/dev/null
+    elif [ -f "$ENVF" ]; then
+        . "$ENVF" 2>/dev/null
+    fi
+    set +a
+
+    # Unset stale backend tokens in case dotenv did not catch them.
+    unset DETECTIC_BACKEND_URL DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN 2>/dev/null
+    set -a; [ -f "$DIR/.env" ] && . "$DIR/.env" 2>/dev/null; set +a
+
     log "Starting Detectic"
 
-    # Prefer /var/tmp copy (fresher) then misc_rw persisted copy.
-    # Unset key vars first to clear any stale values inherited from the
-    # parent process (phoenix.sh / cos may carry env from a previous deploy).
-    unset DETECTIC_BACKEND_URL DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN
-    if [ -f "/var/tmp/detectic/detectic.env" ]; then
-        set -a
-        . "/var/tmp/detectic/detectic.env" 2>/dev/null
-        set +a
-        export DETECTIC_ENV_FILE="/var/tmp/detectic/detectic.env"
-    elif [ -f "$ENVF" ]; then
-        set -a
-        . "$ENVF" 2>/dev/null
-        set +a
-        export DETECTIC_ENV_FILE="$ENVF"
-    fi
-
-    # Observability: confirm backend upload URL is set, but redact any secret.
-    _upload_url="${DETECTIC_UPLOAD_URL:-UNSET}"
-    _backend_url="${DETECTIC_BACKEND_URL:-UNSET}"
-    _interval="${DETECTIC_INTERVAL:-UNSET}"
-    _sensor_id="${DETECTIC_SENSOR_ID:-UNSET}"
-    if [ "$_sensor_id" != "UNSET" ]; then
-        _sensor_id="$(redact_value "$_sensor_id")"
-    fi
-    log "env_check upload_url=$_upload_url backend_url=$_backend_url interval=$_interval sensor_id=$_sensor_id"
-
-    # Diagnostic: send backend_url to package server via GET callback.
-    _cb="${DETECTIC_CALLBACK_BASE:-${DETECTIC_PACKAGE_URL:-http://192.168.0.27:8080}}"
-    _enc="$(echo "$_backend_url" | $BB tr ' ' '_')"
-    $BB wget -q -T 3 -O /dev/null "${_cb}/env_line?n=50&d=launcher_backend_url=${_enc}" 2>/dev/null || true
-    # Check if env file was actually sourced
-    _envf="${DETECTIC_ENV_FILE:-none}"
-    _enc="$(echo "$_envf" | $BB tr ' ' '_')"
-    $BB wget -q -T 3 -O /dev/null "${_cb}/env_line?n=49&d=launcher_env_file=${_enc}" 2>/dev/null || true
-
-    ( trap '' 1; exec "$BIN" sensor >> "$LOG" 2>&1 ) &
+    # Start in background; run from $DIR so dotenv/config files are found.
+    # stdout/stderr go to log.
+    ( trap '' 1; cd "$DIR" && exec "$BIN" sensor >> "$LOG" 2>&1 ) &
     new_pid=$!
     echo "$new_pid" > "$PIDF" 2>/dev/null
 
@@ -163,33 +148,9 @@ do_start() {
         log "started PID=$new_pid"
         echo "started PID=$new_pid"
         vers=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
-        CALLBACK_BASE="${DETECTIC_CALLBACK_BASE:-${DETECTIC_PACKAGE_URL:-http://192.168.0.27:8080}}"
-        $BB wget -q -T 5 -O /dev/null "${CALLBACK_BASE}/done?t=launcher&status=running&pid=$new_pid&version=$vers" 2>/dev/null || true
-
-        # Best-effort, non-blocking email notifications.
-        EMAILD=${DETECTIC_EMAILD:-${DETECTIC_CALLBACK_BASE:-https://detectic.24hwww.workers.dev}/email}
-        EMAIL_INTERVAL=${DETECTIC_EMAIL_INTERVAL:-300}
-
-        # Export the variables the reporter subshell needs.
-        export BB BIN DIR LOG PIDF EMAILD EMAIL_INTERVAL
-
-        # Startup email.
-        ( $BB wget -q -T 10 -O /dev/null \
-            "${EMAILD}?type=startup&up=$(up)&version=$vers&pid=$new_pid&status=running" 2>/dev/null || true ) &
-
-        # Report loop.
-        ( while :; do
-            $BB sleep "$EMAIL_INTERVAL"
-            p=$(get_pid 2>/dev/null || echo 0)
-            [ "$p" = "0" ] && break
-            u=$(up)
-            v=$($BB cat "$DIR/version" 2>/dev/null || echo unknown)
-            devs=$($BB tail -n 200 "$LOG" 2>/dev/null | $BB grep -c 'nearby_observations' || echo 0)
-            $BB wget -q -T 10 -O /dev/null \
-                "${EMAILD}?type=report&up=$u&version=$v&pid=$p&devices=$devs&interval=$EMAIL_INTERVAL" 2>/dev/null || true
-        done ) &
-
-        wait
+        heartbeat "$new_pid" "running"
+        monitor_loop "$new_pid"
+        return 0
     fi
 
     log "failed to start"
@@ -200,15 +161,6 @@ do_start() {
 do_stop() {
     pid=$(get_pid 2>/dev/null)
     if [ -z "$pid" ]; then
-        # Fallback: find any running detectic binary by /proc scan.
-        for _proc in /proc/[0-9]*; do
-            if [ "$($BB readlink "$_proc/exe" 2>/dev/null)" = "$BIN" ]; then
-                pid="$($BB basename "$_proc")"
-                break
-            fi
-        done
-    fi
-    if [ -z "$pid" ]; then
         echo "not running"
         return 0
     fi
@@ -218,6 +170,7 @@ do_stop() {
     while [ $i -lt 5 ]; do
         if ! $BB kill -0 "$pid" 2>/dev/null; then
             $BB rm -f "$PIDF"
+            heartbeat "$pid" "stopped"
             return 0
         fi
         $BB sleep 1
@@ -225,17 +178,7 @@ do_stop() {
     done
     $BB kill -9 "$pid" 2>/dev/null
     $BB rm -f "$PIDF"
-    $BB sleep 1
-    # Aggressive fallback: kill ANY detectic sensor process still alive.
-    for _proc in /proc/[0-9]*/cmdline; do
-        if $BB grep -ql detectic "$_proc" 2>/dev/null; then
-            _spid="$($BB echo "$_proc" | $BB sed 's|/proc/||;s|/cmdline||')"
-            if [ "$_spid" != "$$" ]; then
-                $BB kill -9 "$_spid" 2>/dev/null || true
-            fi
-        fi
-    done
-    $BB sleep 1
+    heartbeat "$pid" "killed"
     return 0
 }
 
@@ -266,5 +209,6 @@ case "${1:-status}" in
     stop)    do_stop ;;
     restart) do_restart ;;
     status)  do_status ;;
-    *)       echo "usage: $0 {start|stop|restart|status}"; exit 1 ;;
+    probe)   do_probe ;;
+    *)       echo "usage: $0 {start|stop|restart|status|probe}"; exit 1 ;;
 esac

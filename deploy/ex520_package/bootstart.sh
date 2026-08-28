@@ -11,11 +11,14 @@
 # downloads every part that appears in the manifest, verifies it, and then
 # concatenates them in sorted order.
 
-# Survive SIGHUP after phoenix exits.
-trap '' 1
+# Survive SIGHUP + SIGTERM after phoenix/cos exits.
+trap '' 1 15
 
 export PATH=$PATH:/bin:/usr/bin:/sbin:/usr/sbin
 BB=/bin/busybox
+
+# Remove stale backend environment inherited from a previous phoenix run.
+unset DETECTIC_BACKEND_URL DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN 2>/dev/null
 
 # Base URL and directories.
 BASE="${DETECTIC_PACKAGE_URL:-http://192.168.0.27:8080}"
@@ -55,7 +58,8 @@ err() {
 if [ -f "$LOG" ]; then
     $BB tail -c 51200 "$LOG" > "$LOG.tmp" 2>/dev/null
     $BB rm -f "$LOG" 2>/dev/null
-    $BB mv "$LOG.tmp" "$LOG" 2>/dev/null || true
+    $BB cp "$LOG.tmp" "$LOG" 2>/dev/null || true
+    $BB rm -f "$LOG.tmp" 2>/dev/null || true
 fi
 
 # --- Prepare directories ---
@@ -220,13 +224,15 @@ $BB cp "version"       "$DIR/version"       2>/dev/null || log "copy_version_fai
 $BB cp "manifest.json" "$DIR/manifest.json" 2>/dev/null || log "copy_manifest_failed"
 if [ -f "detectic.env" ]; then
     # Remove stale env files before writing new ones.
-    $BB rm -f "$DIR/detectic.env" "$TMPDIR/detectic.env" 2>/dev/null || true
+    $BB rm -f "$DIR/detectic.env" "$TMPDIR/detectic.env" "$DIR/.env" "$TMPDIR/.env" 2>/dev/null || true
     $BB cp "detectic.env" "$DIR/detectic.env" 2>/dev/null || log "copy_env_failed"
+    $BB cp "detectic.env" "$DIR/.env" 2>/dev/null || log "copy_dotenv_failed"
     # Also copy to /var/tmp/detectic/ because launcher.sh prefers that path.
     $BB cp "detectic.env" "$TMPDIR/detectic.env" 2>/dev/null || log "copy_env_tmp_failed"
+    $BB cp "detectic.env" "$TMPDIR/.env" 2>/dev/null || log "copy_dotenv_tmp_failed"
     # Ensure the persisted copy is also 600.
-    $BB chmod 600 "$DIR/detectic.env" 2>/dev/null || true
-    $BB chmod 600 "$TMPDIR/detectic.env" 2>/dev/null || true
+    $BB chmod 600 "$DIR/detectic.env" "$DIR/.env" 2>/dev/null || true
+    $BB chmod 600 "$TMPDIR/detectic.env" "$TMPDIR/.env" 2>/dev/null || true
     # Diagnostic: send the BACKEND_URL line from the env file.
     _be_line="$($BB grep '^DETECTIC_BACKEND_URL=' detectic.env 2>/dev/null | $BB head -c 200)"
     _enc="$(echo "$_be_line" | $BB tr ' ' '_')"
@@ -277,13 +283,13 @@ $BB rm -f "$TMPDIR/detectic.tmp" 2>/dev/null || true
 # --- Cleanup download cache ---
 $BB rm -rf "$TMPPKG"
 
-# --- Quick binary test: run --version to verify it executes ---
-_test_out="$($TMPDIR/detectic --version 2>&1)" || true
+# --- Quick binary test: run the `version` subcommand to verify it executes ---
+_test_out="$($TMPDIR/detectic version 2>&1)" || true
 _enc="$(echo "$_test_out" | $BB tr ' ' '_' | $BB head -c 300)"
 $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=99&d=bin_test_${_enc}" 2>/dev/null || true
 
 # --- Start sensor in background (survives bootstart exit) ---
-( $BB sh "$DIR/launcher.sh" start 2>/var/tmp/launcher.trace >> "$LOG" 2>&1 ) &
+( trap '' 1 2 15; $BB sh "$DIR/launcher.sh" start 2>/var/tmp/launcher.trace >> "$LOG" 2>&1 ) &
 ret=$?
 $BB sleep 5
 
@@ -304,6 +310,18 @@ fi
 $BB sleep 3
 _n=80
 $BB tail -n 15 "$DIR/detectic.log" 2>/dev/null | while IFS= read -r _line; do
+    _enc="$(echo "$_line" | $BB tr ' ' '_' | $BB tr '\n' ' ' | $BB head -c 300)"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=${_n}&d=${_enc}" 2>/dev/null || true
+    _n=$((_n + 1))
+done
+
+# Targeted grep for the sensor LIFECYCLE markers (start, server bind, exit,
+# restart, panic). These are the lines that tell us whether the sensor ran,
+# bound :8787, and whether the launcher restart loop is working.
+# detectic.log persists across reboots, so match the current boot's uptime range
+# (we only need the newest occurrences). n=120+ is collision-free.
+_n=120
+$BB grep -aE 'http_server_started|http_server_bind_failed|sensor_exited|restarted PID|restart_failed|launcher_exited|started PID|panic|Starting Detectic|service_started|service_stopped|watchdog_failed' "$DIR/detectic.log" 2>/dev/null | $BB tail -n 12 | while IFS= read -r _line; do
     _enc="$(echo "$_line" | $BB tr ' ' '_' | $BB tr '\n' ' ' | $BB head -c 300)"
     $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=${_n}&d=${_enc}" 2>/dev/null || true
     _n=$((_n + 1))
