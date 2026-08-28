@@ -5,6 +5,7 @@
 //! (`config.log_macs`).
 
 use crate::config::LogLevel;
+use chrono::{SecondsFormat, Utc};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
@@ -26,28 +27,44 @@ fn current_level() -> LogLevel {
 /// Log an info-level message.
 pub fn info(msg: &str) {
     if current_level() >= LogLevel::Info {
-        eprintln!("INFO {}", msg);
+        eprintln!(
+            "{} INFO {}",
+            Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
+            msg
+        );
     }
 }
 
 /// Log a warn-level message.
 pub fn warn(msg: &str) {
     if current_level() >= LogLevel::Warn {
-        eprintln!("WARN {}", msg);
+        eprintln!(
+            "{} WARN {}",
+            Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
+            msg
+        );
     }
 }
 
 /// Log an error-level message.
 pub fn error(msg: &str) {
     if current_level() >= LogLevel::Error {
-        eprintln!("ERROR {}", msg);
+        eprintln!(
+            "{} ERROR {}",
+            Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
+            msg
+        );
     }
 }
 
 /// Log a debug-level message.
 pub fn debug(msg: &str) {
     if current_level() >= LogLevel::Debug {
-        eprintln!("DEBUG {}", msg);
+        eprintln!(
+            "{} DEBUG {}",
+            Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
+            msg
+        );
     }
 }
 

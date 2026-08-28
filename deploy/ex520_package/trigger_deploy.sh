@@ -2,13 +2,21 @@
 # ============================================================================
 # Trigger EX520 deployment via GTPR
 # Sets DEV2_LIFEMOTE_AGENT to download and execute bootstart.sh
+#
+# Credentials come from the environment (DETECTIC_PASSWORD). NEVER hardcode.
+#   DETECTIC_PASSWORD=... ./trigger_deploy.sh
 # ============================================================================
 set -euo pipefail
 
-EX520_URL="http://[fe80::3e6a:d2ff:fe5f:abc1%enp2s0]"
-USER="user"
-PASSWORD="Vida@2013"
-PACKAGE_URL="http://192.168.0.27:8080"
+EX520_URL="${DETECTIC_URL:-http://[fe80::3e6a:d2ff:fe5f:abc1%enp2s0]}"
+USER="${DETECTIC_USER:-user}"
+PASSWORD="${DETECTIC_PASSWORD:-}"
+PACKAGE_URL="${PACKAGE_URL:-http://192.168.0.27:8080}"
+
+if [ -z "$PASSWORD" ]; then
+    echo "ERROR: set DETECTIC_PASSWORD" >&2
+    exit 1
+fi
 
 echo "=== Triggering EX520 deployment ==="
 echo "EX520: $EX520_URL"

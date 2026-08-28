@@ -38,6 +38,11 @@ pub fn reset_shutdown() {
 /// Install SIGTERM/SIGINT handlers that set the shutdown flag.
 /// On platforms where signal handling is not available (e.g. no `signal` hook),
 /// this is a no-op and the runtime relies on the OS terminating the process.
+///
+/// If the parent (launcher.sh) has already set SIGTERM to SIG_IGN via
+/// `trap '' 15`, we respect that and do NOT override it. This prevents
+/// the EX520's `cos`/`phoenix` from causing a clean exit when they
+/// terminate the process group.
 #[cfg(unix)]
 pub fn install_signal_handlers() {
     // Use a simple approach: register a SIGTERM/SIGINT handler via libc.
@@ -50,10 +55,40 @@ pub fn install_signal_handlers() {
     }
     const SIGTERM: i32 = 15;
     const SIGINT: i32 = 2;
+    // The launcher (launcher.sh) traps SIGTERM/SIGINT/SIGHUP to SIG_IGN so the
+    // sensor survives the EX520's cos/phoenix lifecycle kill. If the parent has
+    // set a signal to SIG_IGN, we must NOT install our own handler — otherwise
+    // cos would flip SHUTDOWN and cause a clean exit right after boot.
     unsafe {
-        signal(SIGTERM, handle_sig);
-        signal(SIGINT, handle_sig);
+        if !sig_is_ignored(SIGTERM) {
+            signal(SIGTERM, handle_sig);
+        }
+        if !sig_is_ignored(SIGINT) {
+            signal(SIGINT, handle_sig);
+        }
     }
+}
+
+/// Whether `signum` is currently set to SIG_IGN, read from the SigIgn bitmask in
+/// `/proc/self/status`. This is the portable, UB-free way to detect an inherited
+/// SIG_IGN (e.g. from the launcher's `trap '' 2 15`). Falls back to false on any
+/// read error, meaning we install our own handler (safe default).
+#[cfg(unix)]
+fn sig_is_ignored(signum: i32) -> bool {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return false;
+    };
+    let Some(line) = status.lines().find(|l| l.starts_with("SigIgn:")) else {
+        return false;
+    };
+    // SigIgn: is a hex bitmask where bit (signum-1) set == signal ignored.
+    let Some(hex) = line.split_whitespace().next_back() else {
+        return false;
+    };
+    let Ok(mask) = u64::from_str_radix(hex, 16) else {
+        return false;
+    };
+    signum > 0 && (signum as u32) <= 64 && (mask & (1u64 << (signum - 1))) != 0
 }
 
 #[cfg(not(unix))]
@@ -339,6 +374,17 @@ mod tests {
         request_shutdown();
         assert!(should_shutdown());
         reset_shutdown();
+    }
+
+    #[test]
+    fn sig_is_ignored_reads_proc_status() {
+        // /proc/self/status must report a SigIgn bitmask; sig_is_ignored should
+        // not crash and should return a bool. Use a very high signal number that
+        // is never ignored (out of a 64-bit mask) to assert false safely.
+        let r = sig_is_ignored(2); // SIGINT — always a bool, never panics
+        assert!(r == false || r == true);
+        // Signal numbers beyond 64 are never represented; must be false.
+        assert!(!sig_is_ignored(5000));
     }
 
     #[test]

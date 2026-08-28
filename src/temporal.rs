@@ -541,7 +541,42 @@ impl TemporalEngine {
 
             match entry.state {
                 TemporalState::Connected => {
-                    entry.state = TemporalState::SuspectedAbsence;
+                    if entry.missing_polls >= missing_threshold {
+                        // Threshold already met on first miss (e.g. threshold=1):
+                        // go straight to Disconnected.
+                        entry.state = TemporalState::Disconnected;
+                        if let Some(mut session) = entry.current_session.take() {
+                            session.close(ts);
+                            session.band = session.band.or_else(|| entry.last_band.clone());
+                            entry.summary.current_connection_started = None;
+                            entry.summary.last_connection_started = Some(session.started_at);
+                            entry.summary.last_connection_ended = session.ended_at;
+                            entry.summary.last_connection_duration = session.duration_seconds;
+                            if let Some(dur) = session.duration_seconds {
+                                entry.summary.total_connected_time += dur;
+                            }
+                            out.push(make_event(
+                                &mut self.seq,
+                                &self.sensor_id,
+                                ts,
+                                EventType::DeviceDisconnected,
+                                Some(session.device_id.clone()),
+                                serde_json::json!({
+                                    "session_id": session.session_id,
+                                    "started_at": session.started_at,
+                                    "ended_at": session.ended_at,
+                                    "duration_seconds": session.duration_seconds,
+                                    "last_signal": session.last_signal,
+                                    "last_noise": session.last_noise,
+                                    "band": session.band,
+                                    "hostname": entry.hostname,
+                                    "missing_polls": entry.missing_polls,
+                                }),
+                            ));
+                        }
+                    } else {
+                        entry.state = TemporalState::SuspectedAbsence;
+                    }
                 }
                 TemporalState::SuspectedAbsence => {
                     if entry.missing_polls >= missing_threshold {
@@ -1034,6 +1069,116 @@ mod tests {
         let ec = a.process_associated(2000, &[obs("BB", Some(-50))]);
         assert_eq!(ec.len(), 1);
         assert_ne!(ea[0].event_id, ec[0].event_id);
+    }
+
+    // --- STEP 2 tests: active filtering in temporal engine ---
+
+    fn engine_threshold_1() -> TemporalEngine {
+        TemporalEngine::new(
+            "ex520-001",
+            TemporalConfig {
+                missing_polls_to_disconnect: 1,
+                polls_to_absent: 4,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Simulates the EX520 behavior: device stays in the table with active=0.
+    /// Currently service.rs builds device_obs from ALL stations (no active filter),
+    /// so the temporal engine sees the device as "observed" even when active=0.
+    /// This test documents that the temporal engine itself works correctly
+    /// when the device is removed from the observed list (which is what
+    /// the fix in service.rs will do).
+    #[test]
+    fn step2_temporal_active_1_to_0_with_filtering() {
+        let mut e = engine_threshold_1();
+
+        // Poll 1: device active=1 → in observed list
+        let e1 = e.process_associated(1000, &[obs("AA", Some(-50))]);
+        assert_eq!(kinds(&e1), vec![EventType::DeviceConnected]);
+        assert_eq!(e.state_of("AA"), TemporalState::Connected);
+
+        // Poll 2: device active=0 → NOT in observed list (after fix)
+        let e2 = e.process_associated(1001, &[]);
+        // With threshold=1, first miss should disconnect immediately
+        assert_eq!(
+            kinds(&e2),
+            vec![EventType::DeviceDisconnected],
+            "active=1→0 should produce DeviceDisconnected"
+        );
+        assert_eq!(e.state_of("AA"), TemporalState::Disconnected);
+    }
+
+    #[test]
+    fn step2_temporal_active_0_to_1_reconnect() {
+        let mut e = engine_threshold_1();
+
+        // Device connects
+        e.process_associated(1000, &[obs("AA", Some(-50))]);
+        // Device disconnects (active=0, filtered out)
+        e.process_associated(1001, &[]);
+        assert_eq!(e.state_of("AA"), TemporalState::Disconnected);
+
+        // Device reconnects (active=1, back in observed list)
+        let e3 = e.process_associated(1002, &[obs("AA", Some(-55))]);
+        assert_eq!(
+            kinds(&e3),
+            vec![EventType::DeviceConnected],
+            "active=0→1 should produce DeviceConnected"
+        );
+    }
+
+    #[test]
+    fn step2_temporal_active_0_stays_disconnected() {
+        let mut e = engine_threshold_1();
+
+        // Device connects then disconnects
+        e.process_associated(1000, &[obs("AA", Some(-50))]);
+        e.process_associated(1001, &[]);
+        assert_eq!(e.state_of("AA"), TemporalState::Disconnected);
+
+        // Still absent (active=0) → no new events
+        let e3 = e.process_associated(1002, &[]);
+        assert!(e3.is_empty(), "active=0→0 should produce 0 events");
+        assert_eq!(e.state_of("AA"), TemporalState::Disconnected);
+    }
+
+    /// STEP 4: Verify device identity is preserved across active=0/1 transitions.
+    /// The same device (identity "AA") must be treated as ONE device across:
+    ///   Snapshot 1: active=1 (connected)
+    ///   Snapshot 2: active=0 (disconnected)
+    ///   Snapshot 3: active=1 (reconnected)
+    #[test]
+    fn step4_identity_preserved_across_active_transitions() {
+        let mut e = engine_threshold_1();
+
+        // Snapshot 1: active=1 → DeviceConnected
+        let e1 = e.process_associated(1000, &[obs("AA", Some(-50))]);
+        assert_eq!(kinds(&e1), vec![EventType::DeviceConnected]);
+        let pseudo_1 = e1[0].device_id.clone().unwrap();
+
+        // Snapshot 2: active=0 → DeviceDisconnected (same device_id)
+        let e2 = e.process_associated(1001, &[]);
+        assert_eq!(kinds(&e2), vec![EventType::DeviceDisconnected]);
+        let pseudo_2 = e2[0].device_id.clone().unwrap();
+        assert_eq!(
+            pseudo_1, pseudo_2,
+            "device_id must be the same across active=1→0"
+        );
+
+        // Snapshot 3: active=1 → DeviceConnected (same device_id)
+        let e3 = e.process_associated(1002, &[obs("AA", Some(-55))]);
+        assert_eq!(kinds(&e3), vec![EventType::DeviceConnected]);
+        let pseudo_3 = e3[0].device_id.clone().unwrap();
+        assert_eq!(
+            pseudo_2, pseudo_3,
+            "device_id must be the same across active=0→1"
+        );
+
+        // Connection count should be 2 (two separate connection sessions)
+        let summary = e.summary_of("AA").unwrap();
+        assert_eq!(summary.connection_count, 2);
     }
 
     #[test]

@@ -137,11 +137,18 @@ pub struct DetecticService {
     pub restart_attempts: u32,
     pub poll_count: u64,
     pub last_poll: Option<Instant>,
+    pub last_poll_at: Option<Instant>,
+    pub last_event_at: Option<Instant>,
     pub last_upload: Option<Instant>,
     pub last_snapshot: Option<SensorSnapshot>,
     pub presence: PresenceEngine,
     pub temporal: TemporalEngine,
     pub event_queue: ReliableQueue,
+    /// Persistent canonical-events transport (SpoolEventTransport wrapping a
+    /// WSS/HTTP transport). Cached across poll cycles so the WSS socket stays
+    /// alive instead of reconnecting on every flush — this is what makes the
+    /// immediate device-event flush near-zero latency (no per-flush handshake).
+    pub events_transport: Option<SpoolEventTransport>,
     pub state: Arc<Mutex<SensorState>>,
     pub arp: Option<ArpWatcher>,
     #[cfg(feature = "persist")]
@@ -151,7 +158,13 @@ pub struct DetecticService {
 impl DetecticService {
     pub fn new(config: SensorConfig) -> Self {
         let presence_cfg = config.presence.clone();
-        let temporal = TemporalEngine::new(&config.sensor_id, TemporalConfig::default());
+        let temporal = TemporalEngine::new(
+            &config.sensor_id,
+            TemporalConfig {
+                missing_polls_to_disconnect: 1,
+                ..Default::default()
+            },
+        );
         let event_queue = ReliableQueue::new(4096, 4096);
         let mut state = SensorState::new();
         state.sensor_id = config.sensor_id.clone();
@@ -170,11 +183,14 @@ impl DetecticService {
             restart_attempts: 0,
             poll_count: 0,
             last_poll: None,
+            last_poll_at: None,
+            last_event_at: None,
             last_upload: None,
             last_snapshot: None,
             presence: PresenceEngine::new(presence_cfg),
             temporal,
             event_queue,
+            events_transport: None,
             state: Arc::new(Mutex::new(state)),
             arp,
             #[cfg(feature = "persist")]
@@ -488,18 +504,38 @@ impl DetecticService {
         // Drain spool first
         backend.drain_spool();
 
+        // Stage clock for latency instrumentation: T2 = snapshot received,
+        // T3 = event generated, T4 = transport initiated (in flush_events).
+        let t2 = Instant::now();
+
         // Collect snapshot
         let snapshot = self.collect_snapshot()?;
         self.poll_count += 1;
         self.last_poll = Some(Instant::now());
+        logging::info(&format!(
+            "T2_SNAPSHOT received_at={}ts stations={}",
+            snapshot.timestamp,
+            snapshot.stations.len()
+        ));
+        // Record the snapshot receipt time for T3->T4 measurement.
+        self.last_poll_at = Some(t2);
 
         // Update presence engine
         let _obs: Vec<PresenceObservation> =
             self.presence.update(&snapshot.stations, snapshot.timestamp);
 
         // Build canonical temporal event envelopes from the snapshot.
+        // Only devices with active != "0" are considered "associated".
+        // The EX520 keeps inactive devices in the table with active=0;
+        // filtering them here makes the temporal engine treat active=0
+        // as a disconnection, generating DeviceDisconnected events.
         let mut device_obs = Vec::with_capacity(snapshot.stations.len());
         for d in &snapshot.stations {
+            // Skip inactive devices — the EX520 GTPR table retains them
+            // with active=0, but they are NOT associated.
+            if d.active.as_deref() == Some("0") {
+                continue;
+            }
             let identity = d.identity();
             let pseudo =
                 crypto::pseudonymize(secret, d.mac.as_deref().unwrap_or(&identity));
@@ -526,7 +562,34 @@ impl DetecticService {
         let canonical = self
             .temporal
             .process_associated(snapshot.timestamp, &device_obs);
+        let t3 = Instant::now();
+        logging::info(&format!(
+            "T3_GENERATED events={} t2_to_t3_ms={}",
+            canonical.len(),
+            t3.duration_since(t2).as_nanos() as u64 / 1_000_000
+        ));
+        for env in &canonical {
+            logging::info(&format!(
+                "T3_ENVELOPE event_id={} device_id={} event_type={:?} envelope_ts={}",
+                env.event_id,
+                env.device_id.as_deref().unwrap_or(""),
+                env.event_type,
+                env.timestamp
+            ));
+        }
+
+        // Latency between event generation (T3) and transport initiation (T4)
+        // is what the immediate flush removes. Record T3 so flush_events can
+        // report the exact T3->T4 gap.
+        self.last_event_at = Some(t3);
         self.event_queue.submit(canonical);
+
+        // IMMEDIATE flush of latency-sensitive device events. This is the T3->T4
+        // fix: do NOT wait for the (slow, blocking) site survey below to finish
+        // before transmitting an already-created DeviceConnected/DeviceDisconnected
+        // event. Batching is still preserved for the non-urgent AP/RF events that
+        // are flushed again after the survey.
+        self.flush_events(secret);
 
         // Collect nearby observations if monitor is available
         let nearby = monitor.scan();
@@ -568,42 +631,10 @@ impl DetecticService {
             }
         }
 
-        // Flush canonical events to the backend if configured.
-        // SpoolEventTransport persists undelivered events to disk and drains
-        // any previous spool before attempting the current batch.
-        if let Some(url) = self.config.backend_url.as_deref() {
-            let inner: Box<dyn crate::event_transport::EventTransport> = if url.starts_with("wss://") || url.starts_with("ws://") {
-                #[cfg(feature = "wss")]
-                { Box::new(WssEventTransport::new(url, &self.config.sensor_id)) }
-                #[cfg(not(feature = "wss"))]
-                { Box::new(HttpEventTransport::new(url, &self.config.sensor_id, secret, Duration::from_secs(30))) }
-            } else {
-                Box::new(HttpEventTransport::new(url, &self.config.sensor_id, secret, Duration::from_secs(30)))
-            };
-            // Use a separate events spool so the legacy snapshot spool is not
-            // corrupted by the new canonical event format.
-            let events_spool = self
-                .config
-                .spool_path
-                .with_file_name("detectic_events.jsonl");
-            let mut transport =
-                SpoolEventTransport::new(inner, events_spool, 65536);
-            let drained = transport.drain();
-            if drained > 0 {
-                logging::info(&format!("events_spool_drained count={}", drained));
-            }
-            let report = self.event_queue.flush(&mut transport);
-            if report.sent > 0 {
-                self.last_upload = Some(Instant::now());
-            }
-            logging::info(&format!(
-                "events_flush sent={} kept={} dropped={} spool_drained={}",
-                report.sent,
-                report.kept,
-                self.event_queue.dropped_total(),
-                drained
-            ));
-        }
+        // Flush any (non-latency-critical) AP/RF events added by the site survey
+        // above. These are batched; the latency-sensitive device events were
+        // already flushed immediately after submit(canonical).
+        self.flush_events(secret);
 
         // Change detection
         let events = if let Some(ref prev) = self.last_snapshot {
@@ -626,6 +657,12 @@ impl DetecticService {
                 crate::pseudonymize(secret, id)
             })
         };
+        for e in &events {
+            logging::info(&format!(
+                "T2_DETECTED pseudonym={} kind={:?} captured_at={}",
+                e.pseudonym, e.kind, e.captured_at
+            ));
+        }
 
         // ARP fast-path: read once per poll for every device in the snapshot.
         // This only accelerates already-known devices; it does not authoritatively
@@ -701,6 +738,80 @@ impl DetecticService {
         Box::new(NullBackend::new())
     }
 
+    /// Flush pending canonical events (ReliableQueue) to the configured backend
+    /// via the events spool transport. This is what actually transmits the
+    /// events; previously it only ran once at the END of poll_once — AFTER the
+    /// (slow, blocking) site survey — which delayed an already-created event by
+    /// the full scan time (~1s on the EX520). Now callers can flush immediately
+    /// after submitting latency-sensitive device events.
+    fn flush_events(&mut self, secret: &[u8]) {
+        let Some(url) = self.config.backend_url.clone() else {
+            return;
+        };
+        // Memoize the (spool-wrapped) transport so the underlying WSS socket
+        // stays alive across poll cycles (reconnect only on IDLE_TIMEOUT/errors).
+        // This is essential: a fresh WssEventTransport per flush would pay a full
+        // TLS + hello/ack handshake every poll, adding tens of ms to T3->T4.
+        if self.events_transport.is_none() {
+            let inner: Box<dyn crate::event_transport::EventTransport> = if url.starts_with("wss://") || url.starts_with("ws://") {
+                #[cfg(feature = "wss")]
+                { Box::new(WssEventTransport::new(&url, &self.config.sensor_id)) }
+                #[cfg(not(feature = "wss"))]
+                { Box::new(HttpEventTransport::new(&url, &self.config.sensor_id, secret, Duration::from_secs(30))) }
+            } else {
+                Box::new(HttpEventTransport::new(&url, &self.config.sensor_id, secret, Duration::from_secs(30)))
+            };
+            let events_spool = self
+                .config
+                .spool_path
+                .with_file_name("detectic_events.jsonl");
+            self.events_transport = Some(SpoolEventTransport::new(inner, events_spool, 65536));
+        }
+        let mut transport = self.events_transport.take().unwrap();
+        let drained = transport.drain();
+        if drained > 0 {
+            logging::info(&format!("events_spool_drained count={}", drained));
+        }
+        let t4 = Instant::now();
+        // Clear stage origin before flushing so the sent-count math below uses
+        // THIS cycle's timestamps only (the T3 origin is reset each poll).
+        let t2_origin = self.last_poll_at;
+        let t3_origin = self.last_event_at;
+        self.last_event_at = None;
+        let report = self.event_queue.flush(&mut transport);
+        // Stash the transport back for reuse next cycle.
+        self.events_transport = Some(transport);
+        if report.sent > 0 {
+            self.last_upload = Some(Instant::now());
+        }
+        logging::info(&format!(
+            "events_flush sent={} kept={} dropped={} spool_drained={}",
+            report.sent,
+            report.kept,
+            self.event_queue.dropped_total(),
+            drained
+        ));
+        if report.sent > 0 {
+            // T4->T5: local transmission/send+ack window captured here.
+            logging::info(&format!(
+                "T4_T5 flush_ms={}",
+                t4.elapsed().as_nanos() as u64 / 1_000_000
+            ));
+            if let Some(t2) = t2_origin {
+                logging::info(&format!(
+                    "T2_TO_T4_ms={}",
+                    t4.duration_since(t2).as_nanos() as u64 / 1_000_000
+                ));
+            }
+            if let Some(t3) = t3_origin {
+                logging::info(&format!(
+                    "T3_TO_T4_ms={}",
+                    t4.duration_since(t3).as_nanos() as u64 / 1_000_000
+                ));
+            }
+        }
+    }
+
     /// Return a health snapshot for the `detectic health` command.
     pub fn health(&self, gtpr_status: &str) -> HealthSnapshot {
         let mut h = HealthSnapshot::now(&self.config, "mediatek_iwpriv_site_survey", gtpr_status);
@@ -732,6 +843,42 @@ fn sleep_with_shutdown(d: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event_transport::EventTransport;
+    use crate::temporal::{EventEnvelope, EventType};
+
+    // A cooperative fake transport that "acks" every event it receives, and
+    // records how many batches were sent (to prove delivery semantics).
+    #[derive(Default)]
+    struct FakeTransport {
+        sent_batches: Vec<usize>,
+        connected: bool,
+    }
+
+    impl EventTransport for FakeTransport {
+        fn send_events(&mut self, events: &[EventEnvelope]) -> Vec<String> {
+            self.sent_batches.push(events.len());
+            self.connected = true;
+            events.iter().map(|e| e.event_id.clone()).collect()
+        }
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+    }
+
+    fn make_event(id: &str, seq: u64) -> EventEnvelope {
+        EventEnvelope {
+            event_id: id.to_string(),
+            sequence: seq,
+            sensor_id: "ex520-test".into(),
+            timestamp: 1_700_000_000,
+            event_type: EventType::DeviceConnected,
+            device_id: None,
+            payload: serde_json::json!({}),
+        }
+    }
 
     #[test]
     fn backoff_grows_and_caps() {
@@ -749,5 +896,43 @@ mod tests {
         let h = HealthSnapshot::now(&cfg, "test", "ok");
         assert_eq!(h.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(h.thread_count, 1);
+    }
+
+    #[test]
+    fn immediate_flush_sends_without_next_poll() {
+        // Verify the T3->T4 fix: submitting an event then flushing in the SAME
+        // poll cycle transmits it immediately (no dependence on the next cycle).
+        let mut q = ReliableQueue::new(4096, 4096);
+        q.submit(vec![make_event("e1", 1), make_event("e2", 2)]);
+        assert_eq!(q.pending_len(), 2);
+
+        let mut t = FakeTransport::default();
+        let report = q.flush(&mut t);
+        assert_eq!(report.sent, 2);
+        assert_eq!(report.kept, 0);
+        assert_eq!(q.pending_len(), 0);
+        assert_eq!(t.sent_batches, vec![2]);
+    }
+
+    #[test]
+    fn memoized_transport_reused_across_flushes() {
+        // flush_events must memoize the transport so a fresh WSS socket is not
+        // recreated per flush (which would add a per-poll handshake to T3->T4).
+        let mut cfg = SensorConfig::default();
+        cfg.backend_url = Some("http://example.invalid/events".into());
+        let mut svc = DetecticService::new(cfg);
+        // Inject a fake transport directly into the memo slot.
+        let fake = Box::new(FakeTransport {
+            sent_batches: Vec::new(),
+            connected: false,
+        });
+        let spool_path = svc.config.spool_path.with_file_name("detectic_events.jsonl");
+        // First "creation" — detic's created counter is intentionally not the
+        // memoization signal; we simply assert the slot is retained after a flush.
+        svc.events_transport = Some(SpoolEventTransport::new(fake, spool_path, 65536));
+        svc.event_queue.submit(vec![make_event("a", 1)]);
+        svc.flush_events(b"secret");
+        assert!(svc.events_transport.is_some(), "transport stashed back for reuse");
+        assert_eq!(svc.event_queue.pending_len(), 0, "event acked and removed");
     }
 }

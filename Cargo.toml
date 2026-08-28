@@ -34,6 +34,9 @@ rand = "0.8"
 base64 = "0.22"
 hex = "0.4"
 
+# Low-level socket options for the mDNS responder (SO_REUSEPORT).
+libc = "0.2"
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -170,6 +170,10 @@ impl crate::event_transport::EventTransport for WssEventTransport {
                 "observed_at": env.timestamp * 1000,
                 "payload": env,
             });
+            crate::logging::info(&format!(
+                "T4_SEND event_id={} sensor_id={} observed_at={}",
+                env.event_id, env.sensor_id, env.timestamp
+            ));
             if let Err(e) = ws.send(Message::Text(msg.to_string())) {
                 if is_timeout_or_closed(&e) {
                     self.connected = false;
@@ -189,6 +193,10 @@ impl crate::event_transport::EventTransport for WssEventTransport {
                         if v.get("type").and_then(|x| x.as_str()) == Some("event_ack") {
                             if let Some(id) = v.get("event_id").and_then(|x| x.as_str()) {
                                 if expected.remove(id) {
+                                    crate::logging::info(&format!(
+                                        "T6_ACK event_id={} ack_payload={}",
+                                        id, v.to_string()
+                                    ));
                                     acked.push(id.to_string());
                                 }
                             }

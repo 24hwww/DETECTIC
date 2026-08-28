@@ -299,6 +299,7 @@ dependencies = [
  "clap",
  "hex",
  "hmac",
+ "libc",
  "md-5",
  "num-bigint",
  "rand",

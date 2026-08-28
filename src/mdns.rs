@@ -8,6 +8,7 @@
 //! on-router aarch64-musl build.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::os::unix::io::FromRawFd;
 use std::thread;
 use std::time::Duration;
 
@@ -43,8 +44,46 @@ impl MdnsResponder {
         txt: Vec<String>,
     ) -> Result<(), String> {
         let hostname = hostname.into();
-        let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT);
-        let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("mdns bind error: {e}"))?;
+        // Bind 5353 with SO_REUSEADDR/SO_REUSEPORT so we can co-exist with any
+        // other mDNS responder already on the host (avahi, browser, resolved).
+        let fd = unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+            if fd < 0 {
+                return Err(format!("mdns socket error: {}", std::io::Error::last_os_error()));
+            }
+            let one: libc::c_int = 1;
+            let _ = libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &one as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            let _ = libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEPORT,
+                &one as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            let addr: libc::sockaddr_in = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: MDNS_PORT.to_be(),
+                sin_addr: libc::in_addr { s_addr: libc::INADDR_ANY },
+                sin_zero: [0; 8],
+            };
+            if libc::bind(
+                fd,
+                &addr as *const libc::sockaddr_in as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            ) < 0
+            {
+                libc::close(fd);
+                return Err(format!("mdns bind error: {}", std::io::Error::last_os_error()));
+            }
+            fd
+        };
+        let socket = unsafe { UdpSocket::from_raw_fd(fd) };
 
         // Join the mDNS multicast group on the interface that owns the
         // advertised IPv4 address.  Using UNSPECIFIED can select the WAN/default

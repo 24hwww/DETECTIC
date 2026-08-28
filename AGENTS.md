@@ -772,6 +772,73 @@ python/detectic_client.py             # Path 1 external client (reference)
 src/transport.rs                      # Rust GTPR client (GtprClient)
 ```
 
+## Agent fast-path: build + deploy in one command (2026-08-27)
+
+Any agent should be able to build and deploy from these two commands, no manual
+file plumbing. All credentials come from `deploy/ex520_package/detectic.env`
+(secrets) or the environment — never hardcode.
+
+```bash
+make package               # build aarch64-musl + split + flat manifest into deploy/ex520_package/
+DETECTIC_PASSWORD=... ./deploy/ex520_package/deploy.sh   # reboot -> trigger -> wait -> verify
+```
+
+### What `make package` does
+1. `make router-docker` — cross-compiles the on-router sensor via
+   `messense/rust-musl-cross:aarch64-musl` with `--features wss,tls` (no C deps).
+2. `build_package.sh` — copies the binary to `dist/`, splits into 1 MiB parts
+   (`detectic.aa/.ab/.ac`), writes SHA-256 per part + full-binary hash, and emits
+   a **FLAT** `manifest.json`, all directly into the served dir
+   (`deploy/ex520_package/`).
+
+### The manifest contract (critical)
+`bootstart.sh` parses a **flat** manifest with flat `"detectic.XX":"<hash>"`
+keys and a top-level `"detectic":"<full_hash>"`, matching `version`. It does NOT
+support nested `{"files": {...}}`. `build_package.sh` now emits the correct flat
+format; if you hand-write a manifest, keep it flat or the boot fails with
+`manifest_full_hash_missing`.
+- `sha256sum -b` is used (BusyBox `sha256sum` applet is non-functional on the
+  EX520; bootstart.sh falls back to `/usr/sbin/openssl dgst -sha256`).
+
+### What `deploy.sh` does (idempotent)
+`ensure server -> reboot (ACT_REBOOT) -> wait for real down->up cycle ->
+stability grace (cos init) -> GTPR so DEV2_LIFEMOTE_AGENT -> wait for sensor ->
+verify stability past the phoenix lifecycle kill`. Success = post-reboot
+autonomous verification, NOT merely "deploy finished". Flags:
+`--package` (rebuild), `--no-reboot`, `--verify`.
+
+### Gotchas any agent MUST know
+- **`ACT_REBOOT` is async.** Granting the `so()` before the router finishes its
+  down->up cycle loses the trigger. `deploy.sh` waits for a real down->up
+  transition + grace before granting.
+- **Two bootscripts:** a stale `boot_detectic.sh` may persist in the EX520
+  `misc_rw` data model. It is now a no-op skip (returns immediately), so it can't
+  start a competing bootstrap that kills the new sensor. Leave it a no-op.
+- **`setsid`/`nohup`/`printf` are NOT reliable on this BusyBox build** (applet
+  list stops at `ping6`; `printf` errors "not found" and aborts the launcher).
+  `launcher.sh` uses only `echo`/ash builtins and the proven
+  `( trap '' 1; exec "$BIN" sensor ... ) &` pattern; the sensor's restart loop
+  is the real guard against the phoenix lifecycle kill.
+- **On-router sensor uses `DETECTIC_URL=http://192.168.0.1`** (NOT 127.0.0.1,
+  which the web server answers with HTTP 406), and the HTTP control plane binds
+  `[::]:8787` (dual-stack), reachable from the host at `192.168.0.1:8787`.
+- **TLS + WSS features are REQUIRED for upload.** `cargo build --release`
+  alone produces a sensor that cannot reach HTTPS/WSS. Always build with
+  `--no-default-features --features wss,tls` (via `make router-docker`).
+
+### Key files
+```
+Makefile                          # build, router-docker, package targets
+deploy/ex520_package/build_package.sh   # split + flat manifest + version (bash)
+deploy/ex520_package/deploy.sh          # idempotent reboot+trigger+verify (bash)
+deploy/ex520_package/run_package_server.sh  # start/stop/status package server
+deploy/ex520_package/launcher.sh         # sensor launch + restart loop (ash)
+deploy/ex520_package/bootstart.sh        # bootstrap (ash, flat-manifest parser)
+deploy/ex520_package/package_server.py   # serves :8080 + /done + /env_line + /version
+deploy/ex520_package/trigger_deploy.sh   # bare so() trigger (credentials from env)
+src/runtime.rs                           # SIG_IGN-aware signal handlers (survive cos kill)
+```
+
 
 
 The following operation has been successfully executed against the REAL EX520:
@@ -3162,3 +3229,160 @@ EX520 bootstart.sh
 
 Status: **PRODUCTION-LIVE** — sensor polling, generating events, and
 uploading to backend via HTTPS with HMAC-SHA256 authentication.
+
+## Firmware Real-Time Forensics (2026-08-27)
+
+Full firmware forensic analysis completed. See
+`docs/EX520_FIRMWARE_REALTIME_FORENSICS.md` for the complete report.
+
+### Key Finding: Answer B — Real-time event path EXISTS
+
+The EX520 firmware contains a **real-time Wi-Fi event path** via
+**NETLINK_ROUTE** (standard rtnetlink), which was NOT tested in Phase 22.
+
+Phase 22 tested **NETLINK protocol 21** (band steering) and correctly
+concluded it doesn't work for passive event consumption. However, the
+firmware analysis proves that:
+
+1. `mt_wifi.ko` calls `wireless_send_event()` — the standard kernel
+   function for delivering wireless events to user-space via NETLINK_ROUTE
+2. `libplatform_api.so` receives these events via
+   `driver_wext_event_rtm_newlink()` and `driver_wext_event_wireless()`
+3. `apsd` receives disassociation events via `__isDisassociateEvent()`
+4. `wlNetlinkTool` receives WPS/WLAN switch events via the same channel
+
+### Event Path Architecture
+
+```
+mt_wifi.ko (driver)
+  → wireless_send_event()
+  → NETLINK_ROUTE (RTM_NEWLINK + IFLA_WIRELESS)
+  → User-space listeners (apsd, wlNetlinkTool, libplatform_api)
+```
+
+This is SEPARATE from the band steering netlink (protocol 21) that nrd uses.
+
+### Candidate Real-Time Paths
+
+| Path | Confidence | Latency | Status |
+|------|-----------|---------|--------|
+| A: Custom NETLINK_ROUTE listener | PROBABLE | <100ms | Test binary built, needs live deploy |
+| B: Rapid GTPR polling (2-3s) | CONFIRMED | 2-3s | Tested live, works |
+| C: libos IPC tap | POSSIBLE | <100ms | Needs RE work |
+| D: NETLINK protocol 21 | DISPROVEN | — | Phase 22 + firmware analysis |
+
+### GTPR Event Objects
+
+- `DEV2_WIFI_DE_ASSOC_EVENT` / `DEV2_WIFI_DE_DISASSOC_EVENT`: exist but
+  return 0 instances (EasyMesh DE not active)
+- `DEV2_WIFI_APDEV_ASSOCDEV`: returns 5 live instances with MAC, hostname,
+  RSSI, active status, association time — **pollable at 2s intervals**
+
+### Test Binary
+
+`firmware_forensics/netlink_test/wifi_event_listen.c` — a static C binary
+that binds to NETLINK_ROUTE and listens for wireless events. Cross-compiled
+for aarch64-musl. Needs to be deployed to the EX520 via phoenix.sh and
+tested with a real device connect/disconnect.
+
+### Firmware Artifacts
+
+- `firmware_forensics/firmware_manifest.json`
+- `firmware_forensics/firmware_event_candidates.json`
+- `firmware_forensics/firmware_netlink_map.json`
+- `firmware_forensics/firmware_ipc_map.json`
+- `firmware_forensics/firmware_strings_wifi.txt`
+
+## Active-Status Event Generation Fix (2026-08-27)
+
+### Problem
+
+The EX520 GTPR `DEV2_WIFI_APDEV_ASSOCDEV` table keeps **disconnected** devices
+in the list with `active="0"` instead of removing them. Detectic's temporal
+engine was treating every device in the table as "associated", so
+`DeviceDisconnected` was never generated on `active=1 -> active=0` transitions.
+
+### Fix
+
+1. `src/service.rs` now filters `active="0"` devices out of `device_obs` before
+   passing them to the temporal engine.
+2. `src/temporal.rs` now checks `missing_polls >= missing_threshold` even on the
+   `Connected -> SuspectedAbsence` transition, allowing 1-poll disconnect when
+   `missing_polls_to_disconnect: 1`.
+3. `DetecticService::new` initializes the temporal engine with
+   `missing_polls_to_disconnect: 1`.
+
+### Verified Behavior
+
+- Unit tests in `events.rs` and `temporal.rs` cover `active=1->0`, `0->1`,
+  `0->0`, and `1->1` transitions.
+- Real EX520 test with a Moto G42:
+  - `active=1` -> `DeviceConnected` generated
+  - user disconnects -> `active=0` -> `DeviceDisconnected` generated
+  - user reconnects -> `active=1` -> `DeviceConnected` generated
+- Device identity (pseudonym) is preserved across `active=0/1` flips.
+
+### Implementation References
+
+- `src/service.rs` (lines ~500-565): filters `active="0"` from `device_obs`
+- `src/temporal.rs` (lines ~540-580): threshold check in `Connected` state
+- `src/temporal.rs` (tests): `step2_temporal_active_*`, `step4_identity_preserved_*`
+
+## GTPR `so DEV2_LIFEMOTE_AGENT` Payload (2026-08-27)
+
+### Required Payload
+
+The EX520 rejects `so` calls that omit `stack`/`pstack` or send `enable` as a
+numeric. Use this exact shape:
+
+```python
+{
+    "enable": "1",
+    "URL": "http://192.168.0.27:8080/run_probe.sh",
+    "stack": "0,0,0,0,0,0",
+    "pstack": "0,0,0,0,0,0"
+}
+```
+
+The `URL` may be `bootstart.sh` (normal sensor deploy) or `run_probe.sh`
+(bootstart + lifecycle probe).
+
+### Operational Notes
+
+- The router responded `40` (connection aborted) when the payload was malformed.
+- This is **not** a login lockout; the same session could still perform `gl()`
+  immediately. The `40` was the firmware's `so()` parser rejecting the request.
+- Canonical trigger script: `deploy/ex520_package/trigger_deploy.sh`
+
+## Measured Latencies (2026-08-27, interval=2s)
+
+| Segment | Typical Value |
+|---|---|
+| T1 -> T3 (GTPR captured -> event envelope) | 600-850 ms |
+| T3 -> T4 (event generated -> transport start) | ~1.3 s (event queue flush) |
+| T4 -> T5 (send -> Cloudflare received) | ~80 ms |
+| T4 -> T6 (send -> ACK round-trip) | ~300 ms |
+| **T1 -> T6 (end-to-end)** | **~2.3 s** |
+
+T1 is the `captured_at` timestamp in the GTPR `DEV2_WIFI_APDEV_ASSOCDEV`
+response. T3 is the `T3_ENVELOPE` log wall time. T4 is `T4_SEND`. T5 is the
+Cloudflare `received_at` field. T6 is the `T6_ACK` wall time.
+
+## Local Host Sensor
+
+For development, validation, and comparison with the on-router sensor, the
+release binary can run locally against the EX520 via IPv6 link-local:
+
+```bash
+cd /home/soporte24hwww/Documentos/Repositorios/detectic
+set -a; source .env; set +a
+DETECTIC_INTERVAL=2 DETECTIC_BACKEND_URL=wss://detectic.24hwww.workers.dev/ws \
+  DETECTIC_MDNS=0 ./target/release/detectic sensor
+```
+
+Health and snapshots are available on `http://127.0.0.1:8787` (`/health`,
+`/devices`, `/ready`).
+
+Caution: only one sensor should use `sensor_id=ex520-001` at a time against the
+same backend, or events will be attributed twice. For parallel testing, override
+`DETECTIC_SENSOR_ID`.
