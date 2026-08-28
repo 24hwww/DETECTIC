@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DETECTIC Sensor</title>
+<style>
+:root { color-scheme: dark; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #0f1115;
+  color: #e6e6e6;
+  margin: 0;
+  padding: 1.5rem;
+  line-height: 1.5;
+}
+h1 {
+  font-size: 1.6rem;
+  margin: 0 0 0.5rem 0;
+  color: #fff;
+}
+h2 {
+  font-size: 1.1rem;
+  color: #9aa5b1;
+  border-bottom: 1px solid #2a2f36;
+  padding-bottom: 0.3rem;
+  margin: 1.5rem 0 0.75rem 0;
+}
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+.card {
+  background: #1a1d23;
+  border: 1px solid #2a2f36;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+.card .label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #7d8590;
+  letter-spacing: 0.03em;
+}
+.card .value {
+  font-size: 1.05rem;
+  font-weight: 500;
+  color: #fff;
+  word-break: break-word;
+}
+.ok { color: #3fb950; }
+.err { color: #f85149; }
+.neutral { color: #9aa5b1; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #1a1d23;
+  border: 1px solid #2a2f36;
+  border-radius: 8px;
+  overflow: hidden;
+}
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #2a2f36;
+  font-size: 0.9rem;
+}
+th {
+  background: #16181d;
+  color: #9aa5b1;
+  font-weight: 500;
+}
+tr:last-child td { border-bottom: none; }
+.mono {
+  font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+}
+#events {
+  background: #1a1d23;
+  border: 1px solid #2a2f36;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+#events:empty::before {
+  content: "No events yet";
+  color: #7d8590;
+}
+#refresh-hint {
+  font-size: 0.8rem;
+  color: #7d8590;
+  margin-top: 0.25rem;
+}
+</style>
+</head>
+<body>
+<h1>DETECTIC Sensor</h1>
+<p id="refresh-hint">Auto-refresh every 2s</p>
+
+<h2>Status</h2>
+<div class="status-grid" id="status-grid">
+  <div class="card"><div class="label">Sensor ID</div><div class="value">__SENSOR_ID__</div></div>
+  <div class="card"><div class="label">Version</div><div class="value">__VERSION__</div></div>
+  <div class="card"><div class="label">Uptime</div><div class="value">__UPTIME__s</div></div>
+  <div class="card"><div class="label">Healthy</div><div class="value __HEALTHY_CLASS__">__HEALTHY_TEXT__</div></div>
+  <div class="card"><div class="label">Ready</div><div class="value __READY_CLASS__">__READY_TEXT__</div></div>
+  <div class="card"><div class="label">Devices</div><div class="value" id="device-count">__DEVICE_COUNT__</div></div>
+  <div class="card"><div class="label">GTPR</div><div class="value" id="gtpr-status">__GTPR_STATUS__</div></div>
+  <div class="card"><div class="label">Backend</div><div class="value" id="backend-status">__BACKEND_STATUS__</div></div>
+  <div class="card"><div class="label">mDNS</div><div class="value" id="mdns-status">__MDNS_STATUS__</div></div>
+  <div class="card"><div class="label">Last Poll</div><div class="value" id="last-poll">__LAST_POLL__</div></div>
+  <div class="card"><div class="label">Last Upload</div><div class="value" id="last-upload">__LAST_UPLOAD__</div></div>
+</div>
+
+<h2>Devices</h2>
+<table>
+  <thead>
+    <tr><th>MAC / Identity</th><th>Hostname</th><th>IP</th><th>Active</th><th>RSSI</th><th>Std</th></tr>
+  </thead>
+  <tbody id="devices-body">
+  </tbody>
+</table>
+
+<h2>Recent Events</h2>
+<div id="events"></div>
+
+<script>
+const initialDevices = __DEVICES_JSON__;
+const initialEvents = __EVENTS_JSON__;
+
+function renderDevices(devices) {
+  const tbody = document.getElementById('devices-body');
+  if (!devices || devices.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#7d8590">No devices seen yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = devices.map(d => {
+    const id = d.mac || d.ip || d.hostname || 'unknown';
+    const activeClass = d.active === '1' ? 'ok' : (d.active === '0' ? 'err' : 'neutral');
+    const activeText = d.active === '1' ? 'yes' : (d.active === '0' ? 'no' : '-');
+    return `<tr>
+      <td class="mono">${id}</td>
+      <td>${d.hostname || '-'}</td>
+      <td>${d.ip || '-'}</td>
+      <td class="${activeClass}">${activeText}</td>
+      <td>${d.rssi ?? '-'}</td>
+      <td>${d.standard || '-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderEvents(events) {
+  const el = document.getElementById('events');
+  if (!events || events.length === 0) {
+    el.textContent = '';
+    return;
+  }
+  el.textContent = events.slice(0, 50).join('\n');
+  el.scrollTop = el.scrollHeight;
+}
+
+function renderHealth(h) {
+  if (h.devices !== undefined) document.getElementById('device-count').textContent = h.devices;
+  if (h.gtpr !== undefined) document.getElementById('gtpr-status').textContent = h.gtpr;
+  if (h.backend !== undefined) document.getElementById('backend-status').textContent = h.backend;
+  if (h.mdns !== undefined) document.getElementById('mdns-status').textContent = h.mdns;
+}
+
+function renderMetrics(m) {
+  if (m.last_poll_ago !== undefined) document.getElementById('last-poll').textContent = m.last_poll_ago;
+  if (m.last_upload_ago !== undefined) document.getElementById('last-upload').textContent = m.last_upload_ago;
+}
+
+async function refresh() {
+  try {
+    const [health, devices, events, metrics] = await Promise.all([
+      fetch('/health').then(r => r.json()).catch(() => ({})),
+      fetch('/devices').then(r => r.json()).catch(() => []),
+      fetch('/events').then(r => r.json()).catch(() => []),
+      fetch('/metrics').then(r => r.json()).catch(() => ({})),
+    ]);
+    renderHealth(health);
+    renderDevices(devices);
+    renderEvents(events);
+    renderMetrics(metrics);
+  } catch (e) {
+    console.error('refresh failed', e);
+  }
+}
+
+renderDevices(initialDevices);
+renderEvents(initialEvents);
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

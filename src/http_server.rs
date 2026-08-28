@@ -155,33 +155,17 @@ impl HttpServer {
 
     fn root_page(&self) -> (u16, &'static str, String) {
         let state = self.state.lock().unwrap();
-        let body = format!(
-            "<!DOCTYPE html><html><head><title>DETECTIC</title></head><body>\
-|<h1>DETECTIC</h1>\
-|<p>sensor_id: {}</p>\
-|<p>version: {}</p>\
-|<p>uptime: {}s</p>\
-|<p>healthy: {}</p>\
-|<p>ready: {}</p>\
-|<p>devices: {}</p>\
-|<p>gtpr: {}</p>\
-|<p>backend: {}</p>\
-|<p>mdns: {}</p>\
-|<p>last_poll: {}</p>\
-|<p>last_upload: {}</p>\
-|</body></html>\n",
-            state.sensor_id,
-            state.version,
-            state.uptime_secs(),
-            state.healthy,
-            state.ready,
-            state.device_count,
-            state.gtpr_status,
-            state.backend_status,
-            state.mdns_status,
-            fmt_since(state.last_poll),
-            fmt_since(state.last_upload),
-        );
+        let devices_json = {
+            let guard = state.snapshot.lock().unwrap();
+            serde_json::to_string(&guard.as_ref().map(|s| s.stations.clone()).unwrap_or_default())
+                .unwrap_or_else(|_| "[]".into())
+        };
+        let events_json = {
+            let guard = state.recent_events.lock().unwrap();
+            serde_json::to_string(&guard.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_else(|_| "[]".into())
+        };
+        let body = build_dashboard(&state, &devices_json, &events_json);
         (200, "text/html", body)
     }
 
@@ -265,6 +249,34 @@ fn fmt_since(since: Option<Instant>) -> String {
         .map(|s| format!("{}s", Instant::now().duration_since(s).as_secs()))
         .unwrap_or_else(|| "never".into())
 }
+
+/// Build the rich HTML dashboard.  The page bootstraps with the current state
+/// then polls /health, /devices and /events every 2s for a live, zero-install
+/// developer view of the sensor.
+fn build_dashboard(
+    state: &SensorState,
+    devices_json: &str,
+    events_json: &str,
+) -> String {
+    let mut page = include_str!("http_dashboard.html").to_string();
+    page = page.replacen("__SENSOR_ID__", &state.sensor_id, 1);
+    page = page.replacen("__VERSION__", &state.version, 1);
+    page = page.replacen("__UPTIME__", &state.uptime_secs().to_string(), 1);
+    page = page.replacen("__HEALTHY_CLASS__", if state.healthy { "ok" } else { "err" }, 1);
+    page = page.replacen("__HEALTHY_TEXT__", &state.healthy.to_string(), 1);
+    page = page.replacen("__READY_CLASS__", if state.ready { "ok" } else { "err" }, 1);
+    page = page.replacen("__READY_TEXT__", &state.ready.to_string(), 1);
+    page = page.replacen("__DEVICE_COUNT__", &state.device_count.to_string(), 1);
+    page = page.replacen("__GTPR_STATUS__", &state.gtpr_status, 1);
+    page = page.replacen("__BACKEND_STATUS__", &state.backend_status, 1);
+    page = page.replacen("__MDNS_STATUS__", &state.mdns_status, 1);
+    page = page.replacen("__LAST_POLL__", &fmt_since(state.last_poll), 1);
+    page = page.replacen("__LAST_UPLOAD__", &fmt_since(state.last_upload), 1);
+    page = page.replacen("__DEVICES_JSON__", devices_json, 1);
+    page = page.replacen("__EVENTS_JSON__", events_json, 1);
+    page
+}
+
 
 fn respond(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
     let reason = match status {
