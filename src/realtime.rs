@@ -537,8 +537,7 @@ mod tests {
         for event in &e {
             assert_eq!(event.kind, RealtimeEventKind::DeviceNearby);
             assert!(
-                event.identity == "p:AA:BB:CC:11:22:33"
-                    || event.identity == "p:AA:BB:CC:44:55:66",
+                event.identity == "p:AA:BB:CC:11:22:33" || event.identity == "p:AA:BB:CC:44:55:66",
                 "unexpected identity: {}",
                 event.identity
             );
@@ -562,7 +561,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
-            ..Default::default()
+                ..Default::default()
             }]
         };
 
@@ -616,7 +615,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
-            ..Default::default()
+                ..Default::default()
             },
             NearbyObservation {
                 mac: "CC:CC".into(),
@@ -628,7 +627,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
-            ..Default::default()
+                ..Default::default()
             },
         ];
         let b = ObservationBatch {
@@ -657,7 +656,7 @@ mod tests {
                 timestamp: 1000,
                 source: NearbySource::Survey,
                 confidence: 0.6,
-            ..Default::default()
+                ..Default::default()
             }],
             probes: vec![],
         };

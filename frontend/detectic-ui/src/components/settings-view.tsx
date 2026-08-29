@@ -5,7 +5,7 @@ export function SettingsView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Settings"
+        title="Configuración"
         description="Configuración del dashboard y sensores"
       />
       <Card>

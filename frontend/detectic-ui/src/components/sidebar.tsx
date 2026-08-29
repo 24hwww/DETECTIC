@@ -1,7 +1,7 @@
 import {
   Activity,
   LayoutDashboard,
-  Map as MapIcon,
+  // Map as MapIcon,
   Monitor,
   Radio,
   Router,
@@ -61,39 +61,39 @@ export function Sidebar() {
       <div className="mb-6 flex items-center gap-2 px-2">
         <Scan className="h-5 w-5 text-primary" />
         <div>
-          <h1 className="text-base font-semibold tracking-tight">Detectic</h1>
+          <h1 className="text-base font-semibold tracking-tight">DETECTIC</h1>
           <p className="text-[10px] text-muted-foreground">Huella Wi-Fi</p>
         </div>
       </div>
 
       <nav className="flex-1 overflow-y-auto">
         <Section title="">
-          <NavItem to="/" icon={LayoutDashboard} label="Overview" />
+          <NavItem to="/" icon={LayoutDashboard} label="Panel" />
         </Section>
 
-        <Section title="Monitoring">
-          <NavItem to="/" icon={Activity} label="Live Monitor" />
-          <NavItem to="/devices" icon={Smartphone} label="Devices" />
-          <NavItem to="/access-points" icon={Wifi} label="Access Points" />
-          <NavItem to="/rf" icon={Radio} label="RF Environment" />
+        <Section title="Monitoreo">
+          <NavItem to="/" icon={Activity} label="Monitor en vivo" />
+          <NavItem to="/devices" icon={Smartphone} label="Dispositivos" />
+          <NavItem to="/access-points" icon={Wifi} label="Puntos de acceso" />
+          <NavItem to="/rf" icon={Radio} label="Entorno RF" />
         </Section>
 
-        <Section title="Intelligence">
-          <NavItem to="/sessions" icon={Monitor} label="Sessions" />
-          <NavItem to="/events" icon={Activity} label="Events" />
-          <NavItem to="/history" icon={Server} label="History" />
-          <NavItem to="/map" icon={MapIcon} label="Map" />
+        <Section title="Inteligencia">
+          <NavItem to="/sessions" icon={Monitor} label="Sesiones" />
+          <NavItem to="/events" icon={Activity} label="Eventos" />
+          <NavItem to="/history" icon={Server} label="Historial" />
+          { /* <NavItem to="/map" icon={MapIcon} label="Mapa" /> */ }
         </Section>
 
-        <Section title="Network">
-          <NavItem to="/sensors" icon={Server} label="Sensor" />
+        <Section title="Red">
+          { /* <NavItem to="/sensors" icon={Server} label="Sensor" /> */ }
           <NavItem to="/router" icon={Router} label="Router" />
-          <NavItem to="/connectivity" icon={Wifi} label="Connectivity" />
+          <NavItem to="/connectivity" icon={Wifi} label="Conectividad" />
         </Section>
 
-        <Section title="System">
-          <NavItem to="/reports" icon={Monitor} label="Reports" />
-          <NavItem to="/settings" icon={Settings} label="Settings" />
+        <Section title="Sistema">
+          <NavItem to="/reports" icon={Monitor} label="Reportes" />
+          <NavItem to="/settings" icon={Settings} label="Configuración" />
         </Section>
       </nav>
     </aside>

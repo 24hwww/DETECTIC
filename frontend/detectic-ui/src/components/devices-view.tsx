@@ -26,7 +26,7 @@ export function DevicesView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Devices"
+        title="Dispositivos"
         description="Dispositivos Wi-Fi observados"
       />
       <DeviceTable

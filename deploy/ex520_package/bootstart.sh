@@ -212,6 +212,10 @@ done
 fetch "${BASE}/launcher.sh"          "launcher.sh"          30 || err "download_launcher"
 $BB chmod +x "launcher.sh"
 
+# --- Download on-router watchdog (crash recovery) ---
+fetch "${BASE}/detectic_watchdog.sh" "detectic_watchdog.sh" 30 || log "download_watchdog_failed"
+$BB chmod +x "detectic_watchdog.sh" 2>/dev/null || true
+
 fetch "${BASE}/detectic.env"         "detectic.env"         15
 if [ -f "detectic.env" ]; then
     # Detectic.env must be owner-only readable.
@@ -222,6 +226,10 @@ fi
 $BB cp "launcher.sh"   "$DIR/launcher.sh"   2>/dev/null || log "copy_launcher_failed"
 $BB cp "version"       "$DIR/version"       2>/dev/null || log "copy_version_failed"
 $BB cp "manifest.json" "$DIR/manifest.json" 2>/dev/null || log "copy_manifest_failed"
+if [ -f "detectic_watchdog.sh" ]; then
+    $BB cp "detectic_watchdog.sh" "$DIR/detectic_watchdog.sh" 2>/dev/null || log "copy_watchdog_failed"
+    $BB chmod +x "$DIR/detectic_watchdog.sh" 2>/dev/null || true
+fi
 if [ -f "detectic.env" ]; then
     # Remove stale env files before writing new ones.
     $BB rm -f "$DIR/detectic.env" "$TMPDIR/detectic.env" "$DIR/.env" "$TMPDIR/.env" 2>/dev/null || true
@@ -292,6 +300,27 @@ $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=99&d=bin_test_${_enc}" 2>/dev/
 ( trap '' 1 2 15; $BB sh "$DIR/launcher.sh" start 2>/var/tmp/launcher.trace >> "$LOG" 2>&1 ) &
 ret=$?
 $BB sleep 5
+
+# --- Start on-router watchdog (crash recovery, survives bootstart exit) ---
+# The watchdog monitors the sensor process + health endpoint and restarts
+# it via launcher.sh if it crashes.  It runs entirely on the router and
+# does NOT depend on the host for crash recovery.
+# Cold-boot autostart still requires an external trigger (host watchdog or
+# manual so) because no stock firmware mechanism starts misc_rw scripts at boot.
+if [ -x "$DIR/detectic_watchdog.sh" ]; then
+    # Kill any stale watchdog from a previous run.
+    _wd_old="$($BB cat "$DIR/watchdog.pid" 2>/dev/null)"
+    if [ -n "$_wd_old" ] && $BB kill -0 "$_wd_old" 2>/dev/null; then
+        $BB kill -9 "$_wd_old" 2>/dev/null || true
+    fi
+    ( trap '' 1 2 15; $BB sh "$DIR/detectic_watchdog.sh" >> "$LOG" 2>&1 ) &
+    _wd_pid=$!
+    log "watchdog started PID=$_wd_pid"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=96&d=watchdog_started_pid=${_wd_pid}" 2>/dev/null || true
+else
+    log "watchdog script not found, crash recovery disabled"
+    $BB wget -q -T 5 -O /dev/null "${BASE}/env_line?n=96&d=watchdog_missing" 2>/dev/null || true
+fi
 
 # Check if the sensor process is still alive after 5 seconds
 _sensor_pid="$($BB cat "$DIR/detectic.pid" 2>/dev/null || echo none)"

@@ -56,7 +56,9 @@ impl ArpWatcher {
     }
 
     pub fn lookup_mac(&self, mac: &str) -> Option<&ArpEntry> {
-        self.entries.values().find(|e| e.mac.eq_ignore_ascii_case(mac))
+        self.entries
+            .values()
+            .find(|e| e.mac.eq_ignore_ascii_case(mac))
     }
 }
 

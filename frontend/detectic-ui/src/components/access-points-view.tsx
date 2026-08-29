@@ -26,7 +26,7 @@ export function AccessPointsView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Access Points"
+        title="Puntos de acceso"
         description="APs y redes Wi-Fi observadas"
       />
       <NetworkTable

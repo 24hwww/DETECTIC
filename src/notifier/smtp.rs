@@ -403,6 +403,7 @@ mod tests {
             connected: true,
             active: true,
             proximity: "Perto".into(),
+            heat: Some(75),
             signal_quality: "Bom".into(),
             total_devices: 5,
             connected_count: 5,

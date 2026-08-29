@@ -103,7 +103,9 @@ impl DetecticLauncher {
                     LauncherResult::ManualOnly(LaunchMode::StockManual)
                 }
             }
-            LaunchMode::ExternalLauncher => LauncherResult::ManualOnly(LaunchMode::ExternalLauncher),
+            LaunchMode::ExternalLauncher => {
+                LauncherResult::ManualOnly(LaunchMode::ExternalLauncher)
+            }
         }
     }
 

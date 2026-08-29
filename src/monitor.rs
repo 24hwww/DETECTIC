@@ -318,16 +318,12 @@ impl MonitorProvider for MediaTekMonitorProvider {
         all
     }
     fn radio_stats(&mut self) -> Vec<crate::snapshot::RadioStats> {
-        if !self.available() {
-            logging::debug("radio_stats_provider_unavailable");
-            return Vec::new();
-        }
+        // Attempt the read per interface regardless of the cached availability
+        // probe (`iwpriv <if>` no-arg), because `iwpriv <if> stat` itself is a
+        // proven read-only command. Keep only successful outputs.
         let mut all = Vec::new();
         for ifname in &self.interfaces {
-            let output = Command::new("iwpriv")
-                .arg(ifname)
-                .arg("stat")
-                .output();
+            let output = Command::new("iwpriv").arg(ifname).arg("stat").output();
             match output {
                 Ok(o) if o.status.success() => {
                     let stdout = String::from_utf8_lossy(&o.stdout);
@@ -395,6 +391,8 @@ impl MediaTekMonitorProvider {
                 stats.rx_crc = Some(v);
             } else if let Some(v) = Self::extract_int(line, "Noise Floor") {
                 stats.noise_floor_dbm = Some(v);
+            } else if let Some(v) = Self::parse_rssi_per_chain(line) {
+                stats.rssi_per_chain = v;
             }
         }
 
@@ -403,10 +401,30 @@ impl MediaTekMonitorProvider {
             || stats.tx_success.is_some()
             || stats.rx_success.is_some()
             || stats.noise_floor_dbm.is_some()
+            || !stats.rssi_per_chain.is_empty()
         {
             vec![stats]
         } else {
             Vec::new()
+        }
+    }
+
+    /// Parse the `Rssi: -54 -42 -109 -109` line of `iwpriv <if> stat` into the
+    /// per-chain RSSI vector. Tolerant of absent/malformed input: returns `None`
+    /// (leaving the vector empty) unless at least one integer is parsed after the
+    /// `Rssi:` field prefix.
+    fn parse_rssi_per_chain(line: &str) -> Option<Vec<i64>> {
+        let lower = line.to_lowercase();
+        let idx = lower.find("rssi:")?;
+        let rest = &line[idx + 5..];
+        let values: Vec<i64> = rest
+            .split_whitespace()
+            .filter_map(|tok| tok.trim().parse::<i64>().ok())
+            .collect();
+        if values.is_empty() {
+            None
+        } else {
+            Some(values)
         }
     }
 
@@ -521,5 +539,47 @@ mod tests {
         let mut p = NullMonitorProvider;
         assert!(!p.available());
         assert!(p.scan().is_empty());
+    }
+
+    #[test]
+    fn parses_rssi_per_chain_four_chains() {
+        let p = MediaTekMonitorProvider::with_interfaces(vec!["rai0".into()]);
+        let stats = p.parse_radio_stats(
+            "rai0",
+            "CurrentTemperature              = 41\n\
+             Tx success                      = 3448\n\
+             Rssi: -54 -42 -109 -109\n",
+        );
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].interface, "rai0");
+        assert_eq!(stats[0].band.as_deref(), Some("2.4GHz"));
+        assert_eq!(stats[0].rssi_per_chain, vec![-54, -42, -109, -109]);
+    }
+
+    #[test]
+    fn parses_rssi_per_chain_variable_chains() {
+        let p = MediaTekMonitorProvider::with_interfaces(vec!["rax0".into()]);
+        let stats = p.parse_radio_stats("rax0", "Rssi: -51 -47\n");
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].band.as_deref(), Some("5GHz"));
+        assert_eq!(stats[0].rssi_per_chain, vec![-51, -47]);
+    }
+
+    #[test]
+    fn missing_or_malformed_rssi_line_leaves_empty() {
+        let p = MediaTekMonitorProvider::with_interfaces(vec!["rai0".into()]);
+        // A colon-based field present but no Rssi line -> returns the stats with
+        // an empty per-chain vector (no fabrication), no crash.
+        let stats = p.parse_radio_stats("rai0", "Noise Floor: -95\n");
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].noise_floor_dbm, Some(-95));
+        assert!(stats[0].rssi_per_chain.is_empty());
+        // Malformed Rssi line (no integers) + no other parseable field -> empty,
+        // no crash.
+        let stats2 = p.parse_radio_stats("rai0", "Rssi: abc\n");
+        assert!(stats2.is_empty());
+        // Partial malformed tokens: only the valid integers are kept.
+        let stats3 = p.parse_radio_stats("rai0", "Rssi: xx -54 yy -42\n");
+        assert_eq!(stats3[0].rssi_per_chain, vec![-54, -42]);
     }
 }

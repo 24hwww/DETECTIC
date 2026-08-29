@@ -55,6 +55,18 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "python"))
 from detectic_client import Dialect, GtprClient  # noqa: E402
 
+# Stable device identity (huella) + alias map
+from identity import (  # noqa: E402
+    AliasMap,
+    DeviceClass,
+    JsonAliasMap,
+    classify_mac,
+    infer_device_class,
+    is_generic_hostname,
+    manufacturer as oui_manufacturer,
+    stable_fingerprint,
+)
+
 DEFAULT_URL = "http://[fe80::3e6a:d2ff:fe5f:abc1%25enp2s0]"
 TZ = timezone(timedelta(hours=-3), name="BRT")
 ASSOC_OID = "DEV2_WIFI_APDEV_ASSOCDEV"
@@ -130,6 +142,7 @@ class Config:
     state_file: Optional[str]
     log_path: str
     retention: int
+    alias_map_path: Optional[str]
 
 
 def load_config() -> Config:
@@ -154,15 +167,29 @@ def load_config() -> Config:
     email_enabled = env_int("AUTONOMOUS_EMAIL_ENABLED", 1 if smtp_host and smtp_to else 0)
 
     if not secret_hex:
+        if os.environ.get("AUTONOMOUS_ALLOW_DEV_SECRET", "0") != "1":
+            raise ValueError(
+                "no sensor secret configured: set AUTONOMOUS_SECRET or "
+                "DETECTIC_SECRET (development only: AUTONOMOUS_ALLOW_DEV_SECRET=1)"
+            )
+        print(
+            "[event_reporter] WARNING: using development secret "
+            "(AUTONOMOUS_ALLOW_DEV_SECRET=1)",
+            file=sys.stderr,
+        )
         secret = b"detectic-autonomous-dev-secret"
     else:
         try:
             secret = bytes.fromhex(secret_hex)
-        except ValueError:
-            secret = b"detectic-autonomous-dev-secret"
+        except ValueError as exc:
+            raise ValueError(
+                "AUTONOMOUS_SECRET/DETECTIC_SECRET is not valid hex"
+            ) from exc
 
     state_file_raw = env("EVENT_STATE_FILE", str(_HERE / "event_state.json"))
     state_file = state_file_raw if state_file_raw else None
+    alias_map_raw = env("EVENT_ALIAS_MAP", str(_HERE / "alias_map.json"))
+    alias_map_path = alias_map_raw if alias_map_raw else None
     email_mode = env("EVENT_EMAIL_MODE", "individual").lower()
     if email_mode not in ("individual", "batch"):
         email_mode = "individual"
@@ -180,6 +207,7 @@ def load_config() -> Config:
         state_file=state_file,
         log_path=env("EVENT_LOG_PATH", str(_HERE / "logs" / "event_reporter.log")),
         retention=env_int("EVENT_RETENTION", 86400),
+        alias_map_path=alias_map_path,
     )
 
 
@@ -228,8 +256,36 @@ def to_int(v: Any) -> Optional[int]:
         return None
 
 
+def _device_stable_fingerprint(secret: bytes, mac: str, hostname: Optional[str],
+                               protocol: Optional[str], band: Optional[str]) -> Dict[str, Any]:
+    """Compute the stable fingerprint_id (huella) for a device.
+
+    Returns {fingerprint_id, fingerprint_method, fingerprint_confidence,
+    manufacturer, device_class}. The fingerprint_id is stable across reconnects
+    and band switches (hostname-led), unlike the MAC pseudonym.
+    """
+    mac_type = classify_mac(mac)
+    randomized = mac_type in ("LOCAL_RANDOMIZED", "LOCAL_ADMINISTERED", "INVALID")
+    mfr = None
+    if not randomized:
+        mfr = oui_manufacturer(mac)
+    device_class, _ = infer_device_class(hostname, mfr, protocol, band, mac)
+    fp = stable_fingerprint(secret, hostname, mfr, device_class, mac, mac_type)
+    return {
+        "fingerprint_id": fp.fingerprint_id,
+        "fingerprint_method": fp.method,
+        "fingerprint_confidence": fp.confidence,
+        "manufacturer": mfr,
+        "device_class": device_class.value if hasattr(device_class, "value") else str(device_class),
+    }
+
+
 def _normalize_common(d: Dict[str, Any], secret: bytes) -> Optional[Dict[str, Any]]:
-    """Common normalization for ASSOCDEV and UNASSOCSTA entries."""
+    """Common normalization for ASSOCDEV and UNASSOCSTA entries.
+
+    Computes both the MAC pseudonym (per-band, may rotate) and the stable
+    fingerprint_id (huella, stable across reconnects/bands).
+    """
     mac = str(d.get("MACAddress") or "").strip()
     radio_mac = str(d.get("X_TP_RadioMac") or "").strip()
     if not mac:
@@ -237,11 +293,19 @@ def _normalize_common(d: Dict[str, Any], secret: bytes) -> Optional[Dict[str, An
     identity = mac or str(d.get("X_TP_IPAddress") or "") or \
                str(d.get("X_TP_HostName") or "") or "unknown"
     standard = str(d.get("operatingStandard") or "").strip() or None
+    hostname = str(d.get("X_TP_HostName") or "").strip() or None
+    band = derive_band(standard, radio_mac)
+    fp = _device_stable_fingerprint(secret, mac, hostname, standard, band)
     return {
         "pseudonym": pseudonymize(secret, identity),
+        "fingerprint_id": fp["fingerprint_id"],
+        "fingerprint_method": fp["fingerprint_method"],
+        "fingerprint_confidence": fp["fingerprint_confidence"],
+        "manufacturer": fp["manufacturer"],
+        "device_class": fp["device_class"],
         "mac": mac,
-        "hostname": str(d.get("X_TP_HostName") or "").strip() or None,
-        "band": derive_band(standard, radio_mac),
+        "hostname": hostname,
+        "band": band,
         "signal_strength": to_int(d.get("signalStrength")),
         "signal_level": to_int(d.get("X_TP_SignalStrengthLevel")),
         "operating_standard": standard,
@@ -340,6 +404,18 @@ def _set_last_event(info: Dict[str, Any], event_type: str, now: int) -> None:
     info.setdefault("last_event", {})[event_type] = now
 
 
+def _band_info(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Per-band sub-identity record (the band-level view of a device)."""
+    return {
+        "mac_pseudonym": d.get("pseudonym"),
+        "signal_strength": d.get("signal_strength"),
+        "signal_level": d.get("signal_level"),
+        "operating_standard": d.get("operating_standard"),
+        "radio_mac": d.get("radio_mac"),
+        "last_seen": 0,
+    }
+
+
 def detect_events(
     cfg: Config,
     prev_state: Dict[str, Any],
@@ -347,78 +423,163 @@ def detect_events(
     unassoc: List[Dict[str, Any]],
     now: int,
     jlog: JobLog,
+    alias_map: Optional[AliasMap] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Compare current poll with previous state and return events + new state."""
+    """Compare current poll with previous state and return events + new state.
+
+    State is keyed by the **stable fingerprint_id** (huella), not the MAC
+    pseudonym. A single device seen on multiple bands (different MACs) or that
+    rotated its MAC on reconnect collapses into one entry. Per-band info is
+    kept under the ``bands`` sub-dict (the band sub-id), so 2.4GHz vs 5GHz
+    detail is not lost.
+
+    Events:
+      * ``connected`` / ``unassociated_in_range``: fired when the device
+        (fingerprint_id) transitions into the state, regardless of band.
+      * ``disconnected`` / ``unassociated_left``: fired only when the device
+        is not seen on ANY band for ``absence_threshold`` consecutive polls.
+      * ``band_changed``: fired when an already-connected device adds a new
+        band (e.g. roams from 2.4GHz to 5GHz). Does NOT fire connect/disconnect.
+
+    The event ``device_id`` is the fingerprint_id; the MAC pseudonym is carried
+    as ``mac_pseudonym`` (an alias) plus the full alias set in ``aliases``.
+    """
     prev = prev_state.get("devices", {})
     current: Dict[str, Any] = {}
     events: List[Dict[str, Any]] = []
     baseline = prev_state.get("baseline", True)
 
-    # Process connected devices first (a known device may be in both lists)
-    seen_ids = set()
-    for d in assoc:
-        pid = d["pseudonym"]
-        seen_ids.add(pid)
-        info = prev.get(pid, {}).copy() if pid in prev else {}
-        info.update({
-            "state": "connected",
-            "hostname": d.get("hostname") or info.get("hostname"),
-            "band": d.get("band") or info.get("band"),
-            "signal_strength": d.get("signal_strength"),
-            "signal_level": d.get("signal_level"),
-            "operating_standard": d.get("operating_standard"),
-            "radio_mac": d.get("radio_mac"),
-            "last_seen": now,
-            "misses": 0,
-        })
-        current[pid] = info
-        old_state = prev.get(pid, {}).get("state", "absent")
-        if not baseline and old_state != "connected":
-            if _event_allowed(info, "connected", now, cfg.cooldown):
-                events.append({
-                    "event_type": "connected",
-                    "device_id": pid,
-                    "hostname": info.get("hostname") or "unknown",
-                    "band": info.get("band", "unknown"),
-                    "signal_strength": info.get("signal_strength"),
-                    "timestamp": now,
-                })
-                _set_last_event(info, "connected", now)
+    def _register_alias(fp_id: str, d: Dict[str, Any]) -> None:
+        if alias_map is None:
+            return
+        try:
+            alias_map.register(
+                fp_id, d["pseudonym"], ts=now,
+                hostname=d.get("hostname") or None, band=d.get("band") or None,
+            )
+        except Exception:
+            pass
 
-    # Process unassociated devices that are not already connected
+    def _device_event(event_type: str, fp_id: str, info: Dict[str, Any],
+                      d: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        band = (d or {}).get("band") or info.get("band", "unknown")
+        ev = {
+            "event_type": event_type,
+            "device_id": fp_id,
+            "hostname": info.get("hostname") or "unknown",
+            "band": band,
+            "signal_strength": (d or {}).get("signal_strength") or info.get("signal_strength"),
+            "timestamp": now,
+            # Stable identity metadata
+            "fingerprint_id": fp_id,
+            "fingerprint_method": info.get("fingerprint_method"),
+            "fingerprint_confidence": info.get("fingerprint_confidence"),
+            "manufacturer": info.get("manufacturer"),
+            "device_class": info.get("device_class"),
+            # MAC alias for this observation (per-band / may rotate)
+            "mac_pseudonym": (d or {}).get("pseudonym"),
+            "aliases": sorted(info.get("aliases", set())),
+            "bands": sorted(info.get("bands", {}).keys()),
+        }
+        return ev
+
+    # --- Process connected devices, grouped by fingerprint_id ---
+    seen_fps: set = set()
+    # Map fingerprint_id -> list of band observations (a device may be on >1 band)
+    assoc_by_fp: Dict[str, List[Dict[str, Any]]] = {}
+    for d in assoc:
+        fp = d["fingerprint_id"]
+        assoc_by_fp.setdefault(fp, []).append(d)
+
+    for fp, band_obs in assoc_by_fp.items():
+        seen_fps.add(fp)
+        info = prev.get(fp, {}).copy() if fp in prev else {}
+        # Carry stable identity metadata forward
+        info["fingerprint_method"] = info.get("fingerprint_method") or band_obs[0].get("fingerprint_method")
+        info["fingerprint_confidence"] = info.get("fingerprint_confidence") or band_obs[0].get("fingerprint_confidence")
+        info["manufacturer"] = info.get("manufacturer") or band_obs[0].get("manufacturer")
+        info["device_class"] = info.get("device_class") or band_obs[0].get("device_class")
+        info["hostname"] = band_obs[0].get("hostname") or info.get("hostname")
+        # Per-band sub-tracking
+        bands = dict(info.get("bands", {}))
+        prev_bands = set(bands.keys())
+        for d in band_obs:
+            b = d.get("band") or "unknown"
+            bi = _band_info(d)
+            bi["last_seen"] = now
+            bands[b] = bi
+            _register_alias(fp, d)
+        info["bands"] = bands
+        # Top-level band = the strongest / most recent band observed
+        best = max(band_obs, key=lambda x: x.get("signal_level") or 0)
+        info["band"] = best.get("band") or info.get("band")
+        info["signal_strength"] = best.get("signal_strength")
+        info["signal_level"] = best.get("signal_level")
+        info["operating_standard"] = best.get("operating_standard")
+        info["radio_mac"] = best.get("radio_mac")
+        info["last_seen"] = now
+        info["misses"] = 0
+        info["aliases"] = sorted(set(info.get("aliases", [])) | {d["pseudonym"] for d in band_obs})
+        old_state = prev.get(fp, {}).get("state", "absent")
+        info["state"] = "connected"
+        current[fp] = info
+        if not baseline:
+            if old_state != "connected":
+                if _event_allowed(info, "connected", now, cfg.cooldown):
+                    events.append(_device_event("connected", fp, info, best))
+                    _set_last_event(info, "connected", now)
+            else:
+                # Already connected: emit band_changed if a new band appeared
+                new_bands = set(bands.keys()) - prev_bands
+                if new_bands and _event_allowed(info, "band_changed", now, cfg.cooldown):
+                    nd = next(d for d in band_obs if (d.get("band") or "unknown") in new_bands)
+                    events.append(_device_event("band_changed", fp, info, nd))
+                    _set_last_event(info, "band_changed", now)
+
+    # --- Process unassociated devices not already connected ---
+    unassoc_by_fp: Dict[str, List[Dict[str, Any]]] = {}
     for d in unassoc:
-        pid = d["pseudonym"]
-        if pid in seen_ids:
+        fp = d["fingerprint_id"]
+        if fp in seen_fps:
             continue
-        info = prev.get(pid, {}).copy() if pid in prev else {}
-        info.update({
-            "state": "unassociated_in_range",
-            "hostname": d.get("hostname") or info.get("hostname"),
-            "band": d.get("band") or info.get("band"),
-            "signal_strength": d.get("signal_strength"),
-            "signal_level": d.get("signal_level"),
-            "operating_standard": d.get("operating_standard"),
-            "radio_mac": d.get("radio_mac"),
-            "last_seen": now,
-            "misses": 0,
-        })
-        current[pid] = info
-        old_state = prev.get(pid, {}).get("state", "absent")
+        unassoc_by_fp.setdefault(fp, []).append(d)
+
+    for fp, band_obs in unassoc_by_fp.items():
+        seen_fps.add(fp)
+        info = prev.get(fp, {}).copy() if fp in prev else {}
+        info["fingerprint_method"] = info.get("fingerprint_method") or band_obs[0].get("fingerprint_method")
+        info["fingerprint_confidence"] = info.get("fingerprint_confidence") or band_obs[0].get("fingerprint_confidence")
+        info["manufacturer"] = info.get("manufacturer") or band_obs[0].get("manufacturer")
+        info["device_class"] = info.get("device_class") or band_obs[0].get("device_class")
+        info["hostname"] = band_obs[0].get("hostname") or info.get("hostname")
+        bands = dict(info.get("bands", {}))
+        for d in band_obs:
+            b = d.get("band") or "unknown"
+            bi = _band_info(d)
+            bi["last_seen"] = now
+            bands[b] = bi
+            _register_alias(fp, d)
+        info["bands"] = bands
+        best = max(band_obs, key=lambda x: x.get("signal_level") or 0)
+        info["band"] = best.get("band") or info.get("band")
+        info["signal_strength"] = best.get("signal_strength")
+        info["signal_level"] = best.get("signal_level")
+        info["operating_standard"] = best.get("operating_standard")
+        info["radio_mac"] = best.get("radio_mac")
+        info["last_seen"] = now
+        info["misses"] = 0
+        info["aliases"] = sorted(set(info.get("aliases", [])) | {d["pseudonym"] for d in band_obs})
+        old_state = prev.get(fp, {}).get("state", "absent")
+        info["state"] = "unassociated_in_range"
+        current[fp] = info
         if not baseline and old_state != "unassociated_in_range":
             if _event_allowed(info, "unassociated_in_range", now, cfg.cooldown):
-                events.append({
-                    "event_type": "unassociated_in_range",
-                    "device_id": pid,
-                    "hostname": info.get("hostname") or "unknown",
-                    "band": info.get("band", "unknown"),
-                    "signal_strength": info.get("signal_strength"),
-                    "timestamp": now,
-                })
+                events.append(_device_event("unassociated_in_range", fp, info, best))
                 _set_last_event(info, "unassociated_in_range", now)
 
-    # Devices that disappeared
-    for pid, info in prev.items():
-        if pid in current:
+    # --- Devices that disappeared (not seen on ANY band) ---
+    for fp, info in prev.items():
+        if fp in current:
             continue
         misses = info.get("misses", 0) + 1
         if misses >= cfg.absence_threshold:
@@ -427,23 +588,17 @@ def detect_events(
             if not baseline and old_state != "absent":
                 event_type = "disconnected" if old_state == "connected" else "unassociated_left"
                 if _event_allowed(info, event_type, now, cfg.cooldown):
-                    events.append({
-                        "event_type": event_type,
-                        "device_id": pid,
-                        "hostname": info.get("hostname") or "unknown",
-                        "band": info.get("band", "unknown"),
-                        "timestamp": now,
-                    })
+                    events.append(_device_event(event_type, fp, info))
                     _set_last_event(info, event_type, now)
-            current[pid] = {**info, "state": new_state, "misses": misses, "last_seen": now}
+            current[fp] = {**info, "state": new_state, "misses": misses, "last_seen": now}
         else:
-            current[pid] = {**info, "misses": misses, "last_seen": now}
+            current[fp] = {**info, "misses": misses, "last_seen": now}
 
     # Cleanup stale absent devices
     cutoff = now - cfg.retention
-    for pid in list(current):
-        if current[pid].get("state") == "absent" and current[pid].get("last_seen", now) < cutoff:
-            del current[pid]
+    for fp in list(current):
+        if current[fp].get("state") == "absent" and current[fp].get("last_seen", now) < cutoff:
+            del current[fp]
 
     new_state = {"devices": current, "baseline": False, "last_poll": now}
     return events, new_state
@@ -498,6 +653,7 @@ def _event_emoji(et: str) -> str:
         "disconnected": "🔴",
         "unassociated_in_range": "🟣",
         "unassociated_left": "⚪",
+        "band_changed": "🔵",
     }.get(et, "⚫")
 
 
@@ -665,6 +821,8 @@ def run(cfg: Config, jlog: JobLog, stop_event) -> None:
     if state.get("baseline", True):
         jlog.emit("BASELINE_ESTABLISH", message="first poll will suppress events; subsequent polls trigger emails")
 
+    alias_map = JsonAliasMap(cfg.alias_map_path) if cfg.alias_map_path else AliasMap()
+
     client = GtprClient(cfg.url, cfg.user, cfg.password, cfg.dialect)
     jlog.emit("EVENT_REPORTER_START", url=cfg.url, interval=cfg.poll_interval,
               state_file=cfg.state_file or "memory-only",
@@ -688,7 +846,7 @@ def run(cfg: Config, jlog: JobLog, stop_event) -> None:
             continue
 
         now = int(time.time())
-        events, state = detect_events(cfg, state, assoc, unassoc, now, jlog)
+        events, state = detect_events(cfg, state, assoc, unassoc, now, jlog, alias_map)
         save_state(cfg, state)
 
         if state.get("baseline", True):

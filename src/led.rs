@@ -112,8 +112,7 @@ impl LedController {
         self.last_command_ts = now;
 
         let cmd = format!("{} {} {}\n", self.led_name, mode, value);
-        fs::write(&self.path, cmd.as_bytes())
-            .map_err(|e| LedError::WriteFailed(e.to_string()))
+        fs::write(&self.path, cmd.as_bytes()).map_err(|e| LedError::WriteFailed(e.to_string()))
     }
 
     /// Turn the LED ON (manual mode 2, value 1).

@@ -37,16 +37,17 @@ export function DashboardCharts({
   networks,
   sensors,
 }: DashboardChartsProps) {
+  const isOnline = (d: Device) => d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED");
   const statusData = useMemo(
     () => [
       {
         name: "online",
-        value: devices.filter((d) => d.connected).length,
+        value: devices.filter(isOnline).length,
         fill: "var(--color-online)",
       },
       {
         name: "offline",
-        value: devices.filter((d) => !d.connected).length,
+        value: devices.filter((d) => !isOnline(d)).length,
         fill: "var(--color-offline)",
       },
     ],
@@ -86,7 +87,7 @@ export function DashboardCharts({
   const rssiData = useMemo(() => {
     const byQuality = new Map<string, number>();
     for (const d of devices) {
-      if (!d.connected || d.last_signal == null) continue;
+      if (!isOnline(d) || d.last_signal == null) continue;
       const q = getSignalQuality(d.last_signal);
       byQuality.set(q, (byQuality.get(q) || 0) + 1);
     }
@@ -111,8 +112,8 @@ export function DashboardCharts({
         <CardContent className="flex-1">
           <ChartContainer
             config={{
-              online: { label: "Online", color: "var(--chart-1)" },
-              offline: { label: "Offline", color: "var(--chart-2)" },
+              online: { label: "En línea", color: "var(--chart-1)" },
+              offline: { label: "Fuera de línea", color: "var(--chart-2)" },
             }}
             className="mx-auto aspect-square h-[220px] max-h-[240px]"
           >

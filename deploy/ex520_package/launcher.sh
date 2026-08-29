@@ -24,6 +24,28 @@ HEARTBEAT_INTERVAL=30
 
 up() { read u _ < /proc/uptime; echo "$u"; }
 
+# Ensure the sensor's HTTP control port (DETECTIC_HTTP_PORT, default 8787) is
+# reachable from the LAN.  The stock EX520 firewall filters inbound ports other
+# than the management port (80), so without this the host cannot reach
+# 192.168.0.1:8787 / [fe80::...]:8787.  Idempotent: re-applied on every start.
+# Also clears net.ipv6.bindv6only so the dual-stack [::] socket accepts IPv4.
+open_firewall() {
+    _port="${DETECTIC_HTTP_PORT:-8787}"
+    # Prefer the real xtables-multi binaries over BusyBox (which on the EX520
+    # has NO iptables/ip6tables applet).  Fall back to $BB just in case.
+    _ipt="/usr/sbin/iptables"; [ -x "$_ipt" ] || _ipt="/usr/bin/iptables"; [ -x "$_ipt" ] || _ipt="$BB iptables"
+    _ip6t="/usr/sbin/ip6tables"; [ -x "$_ip6t" ] || _ip6t="/usr/bin/ip6tables"; [ -x "$_ip6t" ] || _ip6t="$BB ip6tables"
+    # Allow the kernel to map IPv4 connections onto the IPv6 listener.
+    echo 0 > /proc/sys/net/ipv6/bindv6only 2>/dev/null
+    # IPv4: accept inbound TCP/_port on the LAN bridge (br0).
+    $_ipt -C INPUT -i br0 -p tcp --dport "$_port" -j ACCEPT 2>/dev/null \
+        || $_ipt -I INPUT 1 -i br0 -p tcp --dport "$_port" -j ACCEPT 2>/dev/null
+    # IPv6: accept inbound TCP/_port on the LAN bridge (br0).
+    $_ip6t -C INPUT -i br0 -p tcp --dport "$_port" -j ACCEPT 2>/dev/null \
+        || $_ip6t -I INPUT 1 -i br0 -p tcp --dport "$_port" -j ACCEPT 2>/dev/null
+    log "firewall opened for tcp/$_port on br0 (v4+v6)"
+}
+
 log() {
     echo "[$(up)] $*" >> "$LOG" 2>/dev/null
     if [ -f "$LOG" ]; then
@@ -134,6 +156,9 @@ do_start() {
     # Unset stale backend tokens in case dotenv did not catch them.
     unset DETECTIC_BACKEND_URL DETECTIC_UPLOAD_URL DETECTIC_BACKEND_TOKEN 2>/dev/null
     set -a; [ -f "$DIR/.env" ] && . "$DIR/.env" 2>/dev/null; set +a
+
+    # Open the firewall for the HTTP control port before binding.
+    open_firewall
 
     log "Starting Detectic"
 

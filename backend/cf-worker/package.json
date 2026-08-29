@@ -7,7 +7,9 @@
     "deploy": "npx wrangler deploy",
     "db:init": "npx wrangler d1 execute detectic-db --file=schema.sql",
     "db:init:local": "npx wrangler d1 execute detectic-db --local --file=schema.sql",
-    "test": "npx wrangler dev --port 8787"
+    "test": "npx wrangler dev --port 8787",
+    "test:unit": "node --experimental-strip-types tests/protocol.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.0.0",

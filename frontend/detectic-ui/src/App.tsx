@@ -9,7 +9,6 @@ import {
 } from "@/components/ui/map";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { DashboardCharts } from "@/components/charts";
 import { DeviceTable } from "@/components/device-table";
 import { NetworkTable } from "@/components/network-table";
 import { LiveFeed } from "@/components/live-feed";
@@ -19,7 +18,7 @@ import { PageHeader } from "@/components/page-header";
 import { RssiTimelineChart } from "@/components/rssi-timeline-chart";
 import { ActivityTimelineChart } from "@/components/activity-timeline-chart";
 import { DeviceClassChart } from "@/components/device-class-chart";
-import { SignalProximityChart } from "@/components/signal-proximity-chart";
+import { ProximityRadarChart } from "@/components/proximity-radar-chart";
 import { useRealtime } from "@/lib/realtime";
 import { mergeLive } from "@/lib/merge";
 import { sourceColor } from "@/lib/location";
@@ -30,13 +29,17 @@ import {
   fetchStats,
   fetchAllDevices,
   fetchTimeline,
+  fetchAnalytics,
   type Stats,
   type Device,
   type DetailedDevice,
   type Network,
   type Sensor,
   type Timeline,
+  type Analytics,
 } from "@/lib/api";
+import { HeroKpis } from "@/components/hero-kpis";
+import { AnalyticsDashboard } from "@/components/analytics-dashboard";
 
 function Loading() {
   return (
@@ -51,30 +54,6 @@ function ErrorMessage({ error }: { error?: Error | null }) {
     <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
       {error?.message ?? "Error desconocido"}
     </div>
-  );
-}
-
-function KpiCard({
-  title,
-  value,
-  sub,
-}: {
-  title: string;
-  value: React.ReactNode;
-  sub?: string;
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-bold tabular-nums">{value}</div>
-        {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
-      </CardContent>
-    </Card>
   );
 }
 
@@ -100,19 +79,21 @@ function useDashboardData() {
     queryKey: ["sensors"],
     queryFn: fetchSensors,
   });
-  return { stats, devices, networks, allDevices, timeline, sensors };
+  const analytics = useQuery<Analytics>({
+    queryKey: ["analytics"],
+    queryFn: () => fetchAnalytics(24),
+  });
+  return { stats, devices, networks, allDevices, timeline, sensors, analytics };
 }
 
 export function DashboardView() {
   const queryClient = useQueryClient();
   const live = useRealtime();
-  const { stats, devices, networks, allDevices, timeline, sensors } =
+  const { stats, devices, networks, allDevices, timeline, sensors, analytics } =
     useDashboardData();
 
-  const s = stats.data || {};
   const fetchedDevs = devices.data || [];
   const fetchedNets = networks.data || [];
-  const allSensors = sensors.data || [];
   const detailed = allDevices.data || [];
   const fetchedPoints = timeline.data?.points || [];
 
@@ -140,7 +121,8 @@ export function DashboardView() {
     networks.isLoading ||
     allDevices.isLoading ||
     timeline.isLoading ||
-    sensors.isLoading
+    sensors.isLoading ||
+    analytics.isLoading
   ) {
     return <Loading />;
   }
@@ -151,13 +133,19 @@ export function DashboardView() {
     networks.error ||
     allDevices.error ||
     timeline.error ||
-    sensors.error;
+    sensors.error ||
+    analytics.error;
   if (error) {
     return <ErrorMessage error={error as Error} />;
   }
 
   const connected = liveDevs.filter((d) => d.connected).length;
-  const eventsHour = s.snapshots_last_hour ?? 0;
+  const nearby = liveDevs.filter(
+    (d) =>
+      d.connected &&
+      d.proximity &&
+      ["immediate", "near"].includes(String(d.proximity).toLowerCase())
+  ).length;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["stats"] });
@@ -166,37 +154,25 @@ export function DashboardView() {
     queryClient.invalidateQueries({ queryKey: ["all-devices"] });
     queryClient.invalidateQueries({ queryKey: ["timeline"] });
     queryClient.invalidateQueries({ queryKey: ["sensors"] });
+    queryClient.invalidateQueries({ queryKey: ["analytics"] });
   };
 
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Overview"
-        description="Real-time network and RF intelligence"
+        title="Panel de control"
+        description="Inteligencia de red y RF en tiempo real"
         onRefresh={refresh}
       />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title="Connected Devices" value={connected} sub="en línea" />
-        <KpiCard title="Observed Devices" value={liveDevs.length} sub="últimas 24h" />
-        <KpiCard title="Nearby APs" value={liveNets.length} sub="señales detectadas" />
-        <KpiCard title="Events / hour" value={eventsHour} sub="observaciones" />
-      </div>
+      <HeroKpis connected={connected} nearby={nearby} />
+
+      <AnalyticsDashboard analytics={analytics.data || undefined} />
 
       <LiveNetwork devices={liveDevs} networks={liveNets} />
 
-      <ConnectedDevices devices={liveDevs} />
-
-      <LiveFeed />
-
-      <DashboardCharts
-        devices={liveDevs}
-        networks={liveNets}
-        sensors={allSensors}
-      />
-
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <SignalProximityChart devices={liveDevs} />
+        <ProximityRadarChart devices={liveDevs} />
         <RssiTimelineChart points={livePoints} />
       </div>
 
@@ -204,12 +180,15 @@ export function DashboardView() {
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DeviceClassChart devices={detailed} />
+        <NetworkTable networks={liveNets} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <DeviceTable devices={liveDevs} />
-        <NetworkTable networks={liveNets} />
+        <ConnectedDevices devices={liveDevs} />
       </div>
+
+      <LiveFeed />
     </div>
   );
 }
@@ -235,7 +214,7 @@ export function MapView() {
       <CardContent className="p-0">
         <div className="h-[70vh] w-full">
           <MapComponent
-            theme="light"
+            theme="dark"
             className="h-full w-full"
             viewport={{
               center: [-49.35, -28.68],

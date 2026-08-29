@@ -75,6 +75,42 @@ class TestNormalize(unittest.TestCase):
         devs = [{"pseudonym": "abc", "band": "2.4GHz"}]
         self.assertEqual(c.payload_hash(devs), c.payload_hash(devs))
 
+    def test_multiband_collapses_to_one_fingerprint(self):
+        """Same device on 2.4GHz + 5GHz (different MACs) -> one fingerprint_id."""
+        raw = [
+            {"MACAddress": "AA:BB:CC:DD:EE:01", "X_TP_RadioMac": "3c:6a:d2:5f:ab:c1",
+             "X_TP_HostName": "moto-g42", "operatingStandard": "n",
+             "signalStrength": "100", "X_TP_SignalStrengthLevel": "4", "active": "1"},
+            {"MACAddress": "AA:BB:CC:DD:EE:02", "X_TP_RadioMac": "3c:6a:d2:5f:ab:c3",
+             "X_TP_HostName": "moto-g42", "operatingStandard": "ac",
+             "signalStrength": "64", "X_TP_SignalStrengthLevel": "2", "active": "1"},
+        ]
+        devs = c.normalize_devices(raw, self.SECRET)
+        self.assertEqual(len(devs), 2)
+        fps = {d["fingerprint_id"] for d in devs}
+        self.assertEqual(len(fps), 1)
+        self.assertEqual(devs[0]["fingerprint_method"], "hostname")
+        # MAC pseudonyms remain distinct (per-band aliases)
+        self.assertNotEqual(devs[0]["pseudonym"], devs[1]["pseudonym"])
+
+    def test_mac_rotation_keeps_fingerprint(self):
+        """Reconnect with a new randomized MAC keeps the fingerprint_id."""
+        raw1 = [{"MACAddress": "02:11:22:33:44:55", "X_TP_HostName": "realme-9i",
+                 "operatingStandard": "n", "active": "1"}]
+        raw2 = [{"MACAddress": "02:AA:BB:CC:DD:EE", "X_TP_HostName": "realme-9i",
+                 "operatingStandard": "n", "active": "1"}]
+        d1 = c.normalize_devices(raw1, self.SECRET)[0]
+        d2 = c.normalize_devices(raw2, self.SECRET)[0]
+        self.assertEqual(d1["fingerprint_id"], d2["fingerprint_id"])
+        self.assertNotEqual(d1["pseudonym"], d2["pseudonym"])
+
+    def test_no_raw_mac_in_normalized(self):
+        raw = [{"MACAddress": "AA:BB:CC:11:22:33", "X_TP_HostName": "moto-g42",
+                "operatingStandard": "n", "active": "1"}]
+        d = c.normalize_devices(raw, self.SECRET)[0]
+        blob = str(d)
+        self.assertNotIn("aabbcc112233", blob.lower())
+
 
 class TestStore(unittest.TestCase):
     def setUp(self):

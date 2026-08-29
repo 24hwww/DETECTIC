@@ -17,26 +17,26 @@ use crate::calibrate::Band;
 use crate::config::SensorConfig;
 use crate::crypto;
 use crate::event_transport::{HttpEventTransport, ReliableQueue, SpoolEventTransport};
-#[cfg(feature = "wss")]
-use crate::wss_transport::WssEventTransport;
 use crate::http_server::{HttpServer, SensorState};
 use crate::logging;
 use crate::mdns::{guess_local_ipv4, MdnsResponder};
 use crate::monitor::{MediaTekMonitorProvider, MonitorProvider, NullMonitorProvider};
 use crate::presence::{PresenceEngine, PresenceObservation};
+use crate::proximity::{ProximityResult, SignalType};
 use crate::runtime::install_signal_handlers;
 use crate::runtime::should_shutdown;
 use crate::snapshot::{diff_snapshots, SensorSnapshot};
 use crate::temporal::{DeviceObs, NetworkObs, TemporalConfig, TemporalEngine};
 use crate::transport::{Dialect, GtprClient};
+#[cfg(feature = "wss")]
+use crate::wss_transport::WssEventTransport;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "persist")]
-use crate::notifier::{
-    DetectionEvent, Notifier, SmtpConfig, SmtpNotifier, RustlsSmtpTransport,
-};
+use crate::notifier::{DetectionEvent, Notifier, RustlsSmtpTransport, SmtpConfig, SmtpNotifier};
 
 /// Watchdog configuration.
 pub const MAX_RESTART_ATTEMPTS: u32 = 3;
@@ -149,6 +149,10 @@ pub struct DetecticService {
     /// alive instead of reconnecting on every flush — this is what makes the
     /// immediate device-event flush near-zero latency (no per-flush handshake).
     pub events_transport: Option<SpoolEventTransport>,
+    /// Reused GTPR session across polls. The handshake (RSA + TokenID) is the
+    /// dominant per-poll latency; keeping the client alive makes each poll a
+    /// single encrypted `gl` call instead of a full reconnect.
+    pub gtpr: Option<crate::transport::GtprClient>,
     pub state: Arc<Mutex<SensorState>>,
     pub arp: Option<ArpWatcher>,
     #[cfg(feature = "persist")]
@@ -169,6 +173,7 @@ impl DetecticService {
         let mut state = SensorState::new();
         state.sensor_id = config.sensor_id.clone();
         state.version = env!("CARGO_PKG_VERSION").into();
+        state.secret = config.secret.clone();
         state.started_at = Some(Instant::now());
         state.healthy = true;
         state.ready = false;
@@ -191,6 +196,7 @@ impl DetecticService {
             temporal,
             event_queue,
             events_transport: None,
+            gtpr: None,
             state: Arc::new(Mutex::new(state)),
             arp,
             #[cfg(feature = "persist")]
@@ -209,12 +215,18 @@ impl DetecticService {
             for attempt in 1..=5u32 {
                 match HttpServer::spawn(Arc::clone(&state), self.config.http_port) {
                     Ok(()) => {
-                        logging::info(&format!("http_server_started port={} attempt={}", self.config.http_port, attempt));
+                        logging::info(&format!(
+                            "http_server_started port={} attempt={}",
+                            self.config.http_port, attempt
+                        ));
                         bound = true;
                         break;
                     }
                     Err(e) => {
-                        logging::warn(&format!("http_server_bind_failed attempt={} err={}", attempt, e));
+                        logging::warn(&format!(
+                            "http_server_bind_failed attempt={} err={}",
+                            attempt, e
+                        ));
                         std::thread::sleep(std::time::Duration::from_secs(2));
                     }
                 }
@@ -239,7 +251,9 @@ impl DetecticService {
                     format!("sensor_id={}", self.config.sensor_id),
                     "service=detectic".into(),
                 ];
-                if let Err(e) = MdnsResponder::spawn(&self.config.mdns_hostname, ip, self.config.http_port, txt) {
+                if let Err(e) =
+                    MdnsResponder::spawn(&self.config.mdns_hostname, ip, self.config.http_port, txt)
+                {
                     logging::warn(&format!("mdns_start_failed err={}", e));
                 } else {
                     logging::info("mdns_started");
@@ -257,7 +271,9 @@ impl DetecticService {
             logging::info("smtp_disabled");
             return Ok(false);
         }
-        let transport = Box::new(RustlsSmtpTransport::new(&smtp_config).map_err(|e| format!("smtp transport: {e}"))?);
+        let transport = Box::new(
+            RustlsSmtpTransport::new(&smtp_config).map_err(|e| format!("smtp transport: {e}"))?,
+        );
         let queue_path = std::env::var("DETECTIC_SMTP_QUEUE")
             .unwrap_or_else(|_| "/var/run/misc/misc_rw/detectic/state/smtp_queue.db".into());
         let notifier = SmtpNotifier::new(smtp_config, &queue_path, transport)
@@ -292,30 +308,28 @@ impl DetecticService {
         let mac = device
             .and_then(|d| d.mac.clone())
             .or_else(|| obs.as_ref().and_then(|o| o.mac.clone()));
-        let rssi_dbm: Option<i32> = device
-            .and_then(|d| d.rssi)
-            .map(|r| r as i32)
-            .or_else(|| obs.as_ref().and_then(|o| o.rssi_smoothed.map(|r| r as i32)));
+        let proximity = obs.as_ref().and_then(|o| o.proximity.as_ref()).cloned();
+        let rssi_dbm: Option<i32> = proximity
+            .as_ref()
+            .and_then(|p| p.rssi_dbm.map(|r| r as i32));
+        let heat = proximity.as_ref().map(|p| p.heat);
         let band = device.and_then(|d| d.standard.clone());
         let channel = None;
         let source = device.and_then(|d| d.source.clone());
 
         // Presence / proximity from engine
-        let connected = matches!(event.kind, crate::events::EventKind::DeviceJoined | crate::events::EventKind::DeviceUpdated);
+        let connected = matches!(
+            event.kind,
+            crate::events::EventKind::DeviceJoined | crate::events::EventKind::DeviceUpdated
+        );
         let active = obs
             .as_ref()
             .map(|o| o.presence == crate::presence::PresenceState::Present)
             .unwrap_or(connected);
-        let proximity = obs
+        let proximity_label = proximity
             .as_ref()
-            .map(|o| match o.proximity {
-                crate::presence::Proximity::VeryNear => "Muito perto",
-                crate::presence::Proximity::Near => "Perto",
-                crate::presence::Proximity::Medium => "Distancia media",
-                crate::presence::Proximity::Far => "Longe",
-                crate::presence::Proximity::Unknown => "Incerto",
-            })
-            .unwrap_or("Incerto");
+            .map(|p| p.label())
+            .unwrap_or_else(|| "Incerto".into());
         let signal_quality = match rssi_dbm {
             Some(r) if r >= -50 => "Excelente",
             Some(r) if r >= -60 => "Bom",
@@ -342,15 +356,18 @@ impl DetecticService {
             ip,
             mac,
             rssi_dbm,
-            rcpi: None,
+            rcpi: proximity
+                .as_ref()
+                .and_then(|p| p.raw_signal.map(|r| r as u32)),
             band,
             channel,
             source,
-            distance_m: None,
+            distance_m: proximity.as_ref().and_then(|p| p.distance_m),
             connected,
             active,
-            proximity: proximity.into(),
+            proximity: proximity_label,
             signal_quality: signal_quality.into(),
+            heat,
             total_devices,
             connected_count,
             not_connected_count,
@@ -400,11 +417,12 @@ impl DetecticService {
 
         let mut backend = self.build_backend();
         let secret = self.config.secret.as_bytes().to_vec();
-        let mut monitor: Box<dyn MonitorProvider> = if self.config.enable_site_survey {
-            Box::new(MediaTekMonitorProvider::new())
-        } else {
-            Box::new(NullMonitorProvider)
-        };
+        let mut monitor: Box<dyn MonitorProvider> =
+            if self.config.enable_site_survey || self.config.enable_radio_stats {
+                Box::new(MediaTekMonitorProvider::new())
+            } else {
+                Box::new(NullMonitorProvider)
+            };
         logging::info(&format!("monitor_provider={}", monitor.name()));
 
         match self.poll_once(&mut *backend, &secret, &mut *monitor) {
@@ -444,11 +462,12 @@ impl DetecticService {
 
         let mut backend = self.build_backend();
         let secret = self.config.secret.as_bytes().to_vec();
-        let mut monitor: Box<dyn MonitorProvider> = if self.config.enable_site_survey {
-            Box::new(MediaTekMonitorProvider::new())
-        } else {
-            Box::new(NullMonitorProvider)
-        };
+        let mut monitor: Box<dyn MonitorProvider> =
+            if self.config.enable_site_survey || self.config.enable_radio_stats {
+                Box::new(MediaTekMonitorProvider::new())
+            } else {
+                Box::new(NullMonitorProvider)
+            };
         logging::info(&format!("monitor_provider={}", monitor.name()));
 
         while !should_shutdown() {
@@ -520,9 +539,47 @@ impl DetecticService {
         // Record the snapshot receipt time for T3->T4 measurement.
         self.last_poll_at = Some(t2);
 
-        // Update presence engine
-        let _obs: Vec<PresenceObservation> =
+        // Update presence engine and collect proximity per identity.
+        let mut snapshot = snapshot;
+        let presence_obs: Vec<PresenceObservation> =
             self.presence.update(&snapshot.stations, snapshot.timestamp);
+        let mut proximity_by_id: HashMap<String, ProximityResult> = HashMap::new();
+        for o in &presence_obs {
+            if let Some(p) = o.proximity.clone() {
+                proximity_by_id.insert(o.identity.clone(), p);
+            }
+        }
+        snapshot.station_proximity = proximity_by_id.clone();
+
+        // Phase 4: collect per-radio per-chain RSSI (read-only `iwpriv <if> stat`)
+        // when enabled, and attach to the snapshot so /metrics exposes the time
+        // series. Do NOT change any radio state; this is only a read of existing
+        // firmware telemetry.
+        if self.config.enable_radio_stats {
+            let rs = monitor.radio_stats();
+            if !rs.is_empty() {
+                for s in &rs {
+                    logging::info(&format!(
+                        "radio_stats iface={} band={:?} chains={:?}",
+                        s.interface, s.band, s.rssi_per_chain
+                    ));
+                }
+                snapshot.radio_stats = rs;
+            }
+        }
+
+        // Push the device snapshot to the control plane NOW, BEFORE the (slow)
+        // site survey below, so /devices and the dashboard reflect the latest
+        // proximity immediately instead of waiting for the AP scan to finish.
+        {
+            let mut state = self.state.lock().unwrap();
+            state.last_poll = self.last_poll;
+            state.gtpr_status = "ok".into();
+            state.device_count = snapshot.stations.len();
+            *state.snapshot.lock().unwrap() = Some(snapshot.clone());
+            state.healthy = true;
+            state.ready = true;
+        }
 
         // Build canonical temporal event envelopes from the snapshot.
         // Only devices with active != "0" are considered "associated".
@@ -537,8 +594,7 @@ impl DetecticService {
                 continue;
             }
             let identity = d.identity();
-            let pseudo =
-                crypto::pseudonymize(secret, d.mac.as_deref().unwrap_or(&identity));
+            let pseudo = crypto::pseudonymize(secret, d.mac.as_deref().unwrap_or(&identity));
             let band = d
                 .radio_mac
                 .as_deref()
@@ -549,6 +605,7 @@ impl DetecticService {
                     _ => d.standard.clone(),
                 });
             let noise = d.noise.map(|n| n as i64);
+            let proximity = proximity_by_id.get(&identity).cloned();
             device_obs.push(DeviceObs {
                 identity: identity.clone(),
                 pseudonym: pseudo,
@@ -557,6 +614,7 @@ impl DetecticService {
                 band,
                 interface: d.interface.clone().or(d.radio_mac.clone()),
                 hostname: d.hostname.clone(),
+                proximity,
             });
         }
         let canonical = self
@@ -582,6 +640,30 @@ impl DetecticService {
         // is what the immediate flush removes. Record T3 so flush_events can
         // report the exact T3->T4 gap.
         self.last_event_at = Some(t3);
+
+        // Feed RF probe observations (POST /probes) into the temporal engine so
+        // movement-detected (possibly non-associated) devices also produce
+        // presence events and reach the backend stream.
+        {
+            let queued: Vec<crate::temporal::ProbeObservation> = {
+                let mut state = self.state.lock().unwrap();
+                std::mem::take(&mut state.pending_probes)
+            };
+            if !queued.is_empty() {
+                let probe_events = self.temporal.process_probes(snapshot.timestamp, &queued);
+                for env in &probe_events {
+                    logging::info(&format!(
+                        "T3_ENVELOPE event_id={} device_id={} event_type={:?} envelope_ts={}",
+                        env.event_id,
+                        env.device_id.as_deref().unwrap_or(""),
+                        env.event_type,
+                        env.timestamp
+                    ));
+                }
+                self.event_queue.submit(probe_events);
+            }
+        }
+
         self.event_queue.submit(canonical);
 
         // IMMEDIATE flush of latency-sensitive device events. This is the T3->T4
@@ -598,13 +680,25 @@ impl DetecticService {
             let mut network_obs = Vec::with_capacity(nearby.len());
             for n in &nearby {
                 let pseudo = crypto::pseudonymize(secret, &n.bssid);
+                let band = if n.band.is_empty() {
+                    None
+                } else {
+                    Some(n.band.clone())
+                };
+                let band_enum = band
+                    .as_deref()
+                    .map(Band::from_radio_mac)
+                    .unwrap_or(Band::Ghz2_4);
+                let proximity = self.presence.compute_proximity(
+                    &n.bssid,
+                    n.rssi,
+                    SignalType::Dbm,
+                    band_enum,
+                    snapshot.timestamp,
+                );
                 network_obs.push(NetworkObs {
                     bssid_pseudonym: pseudo,
-                    band: if n.band.is_empty() {
-                        None
-                    } else {
-                        Some(n.band.clone())
-                    },
+                    band,
                     channel: if n.channel == 0 {
                         None
                     } else {
@@ -619,6 +713,7 @@ impl DetecticService {
                     security: n.security.clone(),
                     w_mode: n.w_mode.clone(),
                     extch: n.extch.clone(),
+                    proximity: Some(proximity),
                 });
             }
             let net_events = self
@@ -718,21 +813,68 @@ impl DetecticService {
         Ok(())
     }
 
-    fn collect_snapshot(&self) -> Result<SensorSnapshot, String> {
+    /// Convert a WebSocket backend URL (ws:// or wss://) into the equivalent
+    /// HTTPS snapshot ingest endpoint. The path /ws is stripped and replaced
+    /// with /api/v1/events so the periodic snapshot upload reaches the HTTP
+    /// ingest handler while canonical events continue to flow over WSS.
+    fn derive_http_backend_url(wss_url: &str) -> Option<String> {
+        let stripped = if let Some(rest) = wss_url.strip_prefix("wss://") {
+            format!("https://{}", rest)
+        } else if let Some(rest) = wss_url.strip_prefix("ws://") {
+            format!("http://{}", rest)
+        } else {
+            return None;
+        };
+        let mut url = stripped.trim_end_matches('/').to_string();
+        if url.ends_with("/ws") {
+            url.truncate(url.len() - 3);
+        }
+        if !url.ends_with("/api/v1/events") {
+            url.push_str("/api/v1/events");
+        }
+        Some(url)
+    }
+
+    fn collect_snapshot(&mut self) -> Result<SensorSnapshot, String> {
         let url = self.config.router_url.clone();
         let user = self.config.router_user.clone();
         let password = self.config.router_password.clone();
         let max_stations = self.config.max_stations;
-        let mut transport = GtprClient::with_dialect(&url, &user, &password, self.dialect);
-        transport.connect().map_err(|e| e.to_string())?;
-        let map = crate::collector::collect(&transport).map_err(|e| e.to_string())?;
-        Ok(SensorSnapshot::from_map(&map, max_stations))
+
+        // Reuse the GTPR session across polls: the handshake (RSA params + login
+        // + TokenID) is the dominant per-poll latency. Only establish it when
+        // there is no live client (first poll, or after a failure drops it).
+        if self.gtpr.is_none() {
+            let mut transport = GtprClient::with_dialect(&url, &user, &password, self.dialect);
+            transport.connect().map_err(|e| e.to_string())?;
+            self.gtpr = Some(transport);
+        }
+        let client = self.gtpr.as_ref().expect("gtpr client initialized");
+        match crate::collector::collect(client) {
+            Ok(map) => Ok(SensorSnapshot::from_map(&map, max_stations)),
+            Err(e) => {
+                // Session likely stale (the EX520 may expire JSESSIONID or the
+                // socket dropped). Drop it so the next poll does a fresh connect.
+                self.gtpr = None;
+                Err(e.to_string())
+            }
+        }
     }
 
     fn build_backend(&self) -> Box<dyn BackendTransport> {
         if let Some(url) = &self.config.backend_url {
             if !url.is_empty() && !url.starts_with("wss://") && !url.starts_with("ws://") {
                 return Box::new(crate::backend::HttpBackend::new(&self.config));
+            }
+            // WebSocket event transport is handled separately by flush_events().
+            // For the periodic snapshot upload, derive an HTTPS endpoint so the
+            // full snapshot + diff events still reach the worker's HTTP ingest.
+            if !url.is_empty() && (url.starts_with("wss://") || url.starts_with("ws://")) {
+                if let Some(http_url) = Self::derive_http_backend_url(url) {
+                    let mut cfg = self.config.clone();
+                    cfg.backend_url = Some(http_url);
+                    return Box::new(crate::backend::HttpBackend::new(&cfg));
+                }
             }
         }
         Box::new(NullBackend::new())
@@ -753,14 +895,33 @@ impl DetecticService {
         // This is essential: a fresh WssEventTransport per flush would pay a full
         // TLS + hello/ack handshake every poll, adding tens of ms to T3->T4.
         if self.events_transport.is_none() {
-            let inner: Box<dyn crate::event_transport::EventTransport> = if url.starts_with("wss://") || url.starts_with("ws://") {
-                #[cfg(feature = "wss")]
-                { Box::new(WssEventTransport::new(&url, &self.config.sensor_id)) }
-                #[cfg(not(feature = "wss"))]
-                { Box::new(HttpEventTransport::new(&url, &self.config.sensor_id, secret, Duration::from_secs(30))) }
-            } else {
-                Box::new(HttpEventTransport::new(&url, &self.config.sensor_id, secret, Duration::from_secs(30)))
-            };
+            let inner: Box<dyn crate::event_transport::EventTransport> =
+                if url.starts_with("wss://") || url.starts_with("ws://") {
+                    #[cfg(feature = "wss")]
+                    {
+                        Box::new(WssEventTransport::new(
+                            &url,
+                            &self.config.sensor_id,
+                            &self.config.secret,
+                        ))
+                    }
+                    #[cfg(not(feature = "wss"))]
+                    {
+                        Box::new(HttpEventTransport::new(
+                            &url,
+                            &self.config.sensor_id,
+                            secret,
+                            Duration::from_secs(30),
+                        ))
+                    }
+                } else {
+                    Box::new(HttpEventTransport::new(
+                        &url,
+                        &self.config.sensor_id,
+                        secret,
+                        Duration::from_secs(30),
+                    ))
+                };
             let events_spool = self
                 .config
                 .spool_path
@@ -846,6 +1007,35 @@ mod tests {
     use crate::event_transport::EventTransport;
     use crate::temporal::{EventEnvelope, EventType};
 
+    #[test]
+    fn derive_http_backend_url_converts_wss_workers_dev() {
+        assert_eq!(
+            DetecticService::derive_http_backend_url("wss://detectic.24hwww.workers.dev/ws"),
+            Some("https://detectic.24hwww.workers.dev/api/v1/events".into())
+        );
+    }
+
+    #[test]
+    fn derive_http_backend_url_converts_wss_root() {
+        assert_eq!(
+            DetecticService::derive_http_backend_url("wss://detectic.24hwww.workers.dev"),
+            Some("https://detectic.24hwww.workers.dev/api/v1/events".into())
+        );
+    }
+
+    #[test]
+    fn derive_http_backend_url_converts_ws_trailing_slash() {
+        assert_eq!(
+            DetecticService::derive_http_backend_url("ws://example.com/ws/"),
+            Some("http://example.com/api/v1/events".into())
+        );
+    }
+
+    #[test]
+    fn derive_http_backend_url_returns_none_for_http() {
+        assert_eq!(DetecticService::derive_http_backend_url("https://example.com/api/v1/events"), None);
+    }
+
     // A cooperative fake transport that "acks" every event it receives, and
     // records how many batches were sent (to prove delivery semantics).
     #[derive(Default)]
@@ -926,13 +1116,19 @@ mod tests {
             sent_batches: Vec::new(),
             connected: false,
         });
-        let spool_path = svc.config.spool_path.with_file_name("detectic_events.jsonl");
+        let spool_path = svc
+            .config
+            .spool_path
+            .with_file_name("detectic_events.jsonl");
         // First "creation" — detic's created counter is intentionally not the
         // memoization signal; we simply assert the slot is retained after a flush.
         svc.events_transport = Some(SpoolEventTransport::new(fake, spool_path, 65536));
         svc.event_queue.submit(vec![make_event("a", 1)]);
         svc.flush_events(b"secret");
-        assert!(svc.events_transport.is_some(), "transport stashed back for reuse");
+        assert!(
+            svc.events_transport.is_some(),
+            "transport stashed back for reuse"
+        );
         assert_eq!(svc.event_queue.pending_len(), 0, "event acked and removed");
     }
 }

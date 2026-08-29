@@ -7,11 +7,10 @@
 
 #![cfg(feature = "persist")]
 
-use detectic::notifier::{
-    DetectionEvent, EmailTemplate, Notifier, SmtpConfig, SmtpNotifier,
-    RustlsSmtpTransport,
-};
 use detectic::events::EventKind;
+use detectic::notifier::{
+    DetectionEvent, EmailTemplate, Notifier, RustlsSmtpTransport, SmtpConfig, SmtpNotifier,
+};
 
 fn brevo_config() -> SmtpConfig {
     let mut m = std::collections::HashMap::new();
@@ -19,10 +18,7 @@ fn brevo_config() -> SmtpConfig {
     m.insert("DETECTIC_SMTP_HOST".into(), "smtp-relay.brevo.com".into());
     m.insert("DETECTIC_SMTP_PORT".into(), "587".into());
     m.insert("DETECTIC_SMTP_USER".into(), "24hwww@gmail.com".into());
-    m.insert(
-        "DETECTIC_SMTP_PASSWORD".into(),
-        "CHANGE_ME_SMTP".into(),
-    );
+    m.insert("DETECTIC_SMTP_PASSWORD".into(), "CHANGE_ME_SMTP".into());
     m.insert(
         "DETECTIC_SMTP_FROM".into(),
         "Womni-bot <bot@e-mail.womni.com.br>".into(),
@@ -61,6 +57,7 @@ fn sample_event(kind: EventKind, pseudonym: &str) -> DetectionEvent {
         active: true,
         proximity: "Perto".into(),
         signal_quality: "Bom".into(),
+        heat: None,
         total_devices: 5,
         connected_count: 5,
         not_connected_count: 0,
@@ -74,8 +71,8 @@ fn send_device_joined_email_via_brevo() {
     let transport = Box::new(RustlsSmtpTransport::new(&config).expect("tls transport"));
     let queue_path = std::env::temp_dir().join("detectic_smtp_test_queue.db");
     let _ = std::fs::remove_file(&queue_path);
-    let notifier = SmtpNotifier::new(config.clone(), &queue_path, transport)
-        .expect("notifier created");
+    let notifier =
+        SmtpNotifier::new(config.clone(), &queue_path, transport).expect("notifier created");
 
     let event = sample_event(EventKind::DeviceJoined, "test-pseudo-aaa111");
     println!("[test] sending DeviceJoined email...");
@@ -113,7 +110,10 @@ fn render_email_template_preview() {
     let (subject, text, html) = EmailTemplate::render(&event, &config);
     println!("=== SUBJECT ===\n{}\n", subject);
     println!("=== TEXT ===\n{}\n", text);
-    println!("=== HTML (first 500 chars) ===\n{}\n", &html[..html.len().min(500)]);
+    println!(
+        "=== HTML (first 500 chars) ===\n{}\n",
+        &html[..html.len().min(500)]
+    );
     assert!(!subject.is_empty());
     assert!(text.contains("EX520-Test"));
     assert!(text.contains("AA:BB:CC:**:**:EE:FF")); // masked MAC

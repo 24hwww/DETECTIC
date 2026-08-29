@@ -49,7 +49,10 @@ impl MdnsResponder {
         let fd = unsafe {
             let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
             if fd < 0 {
-                return Err(format!("mdns socket error: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "mdns socket error: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
             let one: libc::c_int = 1;
             let _ = libc::setsockopt(
@@ -69,7 +72,9 @@ impl MdnsResponder {
             let addr: libc::sockaddr_in = libc::sockaddr_in {
                 sin_family: libc::AF_INET as libc::sa_family_t,
                 sin_port: MDNS_PORT.to_be(),
-                sin_addr: libc::in_addr { s_addr: libc::INADDR_ANY },
+                sin_addr: libc::in_addr {
+                    s_addr: libc::INADDR_ANY,
+                },
                 sin_zero: [0; 8],
             };
             if libc::bind(
@@ -79,7 +84,10 @@ impl MdnsResponder {
             ) < 0
             {
                 libc::close(fd);
-                return Err(format!("mdns bind error: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "mdns bind error: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
             fd
         };

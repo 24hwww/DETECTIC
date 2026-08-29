@@ -35,9 +35,27 @@ directory = "./public"
 binding = "ASSETS"
 run_worker_first = true
 
+[observability]
+enabled = false
+head_sampling_rate = 1
+redact_query_string = false
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
+
+
 # Environment variables (set via: npx wrangler secret put DETECTIC_SENSORS)
 # DETECTIC_SENSORS = '{"ex520-001": "your-sensor-secret"}'
 # DETECTIC_MASTER_SECRET = 'your-master-secret'
+# DETECTIC_ALLOWED_ORIGINS = 'https://detectic.24hwww.workers.dev'  (optional)
 
 # Free tier: 100K req/day, 10 ms CPU/req
 # Paid ($5/mo): 10M req/day, 30 ms CPU/req

@@ -5,6 +5,7 @@ translate raw observations into the `Observation` model before calling the
 engine. Raw MAC/BSSID never leave the engine boundary.
 """
 
+from .alias_map import AliasMap, AliasRecord, JsonAliasMap
 from .classifier import extract_brand, infer_device_class
 from .engine import DeviceIdentityEngine
 from .evidence import (
@@ -30,6 +31,13 @@ from .model import (
 )
 from .oui import OuiResolver, manufacturer, resolve
 from .repository import InMemoryRepositories
+from .stable_id import (
+    StableFingerprint,
+    is_generic_hostname,
+    normalize_hostname,
+    stable_fingerprint,
+    stable_fingerprint_from_observation,
+)
 from .temporal import TemporalRecord, update_record
 
 __all__ = [
@@ -48,15 +56,23 @@ __all__ = [
     "OuiResolver",
     "InMemoryRepositories",
     "TemporalRecord",
+    "AliasMap",
+    "AliasRecord",
+    "JsonAliasMap",
+    "StableFingerprint",
     "classify_mac",
     "is_randomized",
+    "is_generic_hostname",
     "normalize_mac",
+    "normalize_hostname",
     "oui",
     "manufacturer",
     "resolve",
     "extract_brand",
     "infer_device_class",
     "fingerprint",
+    "stable_fingerprint",
+    "stable_fingerprint_from_observation",
     "combine_confidence",
     "confidence_label",
     "confidence_word",

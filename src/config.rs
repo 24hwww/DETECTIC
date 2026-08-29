@@ -216,6 +216,34 @@ impl SensorConfig {
         if let Ok(v) = std::env::var("DETECTIC_RADIO_STATS") {
             cfg.enable_radio_stats = v == "1" || v.eq_ignore_ascii_case("true");
         }
+        if let Ok(v) = std::env::var("DETECTIC_PROXIMITY_HISTORY_WINDOW") {
+            if let Ok(n) = v.parse::<usize>() {
+                if n > 0 {
+                    cfg.presence.proximity.history_window = n;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("DETECTIC_PROXIMITY_EMA_ALPHA") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..=1.0).contains(&f) {
+                    cfg.presence.proximity.ema_alpha = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("DETECTIC_PROXIMITY_TREND_DELTA") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    cfg.presence.proximity.trend_delta_db = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("DETECTIC_PROXIMITY_TREND_MIN_SAMPLES") {
+            if let Ok(n) = v.parse::<usize>() {
+                if n > 0 {
+                    cfg.presence.proximity.trend_min_samples = n;
+                }
+            }
+        }
         if let Ok(v) = std::env::var("DETECTIC_LOG_LEVEL") {
             cfg.log_level = LogLevel::from_str(&v);
         }
@@ -315,7 +343,8 @@ impl SensorConfig {
                             }
                         }
                         "enable_arp_fastpath" => {
-                            cfg.enable_arp_fastpath = val == "1" || val.eq_ignore_ascii_case("true");
+                            cfg.enable_arp_fastpath =
+                                val == "1" || val.eq_ignore_ascii_case("true");
                         }
                         "arp_interval" => {
                             if let Ok(secs) = val.parse::<u64>() {

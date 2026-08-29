@@ -57,7 +57,7 @@ export function RFEnvironmentView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="RF Environment"
+        title="Entorno RF"
         description="Canales, densidad de APs y señal"
       />
 

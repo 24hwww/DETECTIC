@@ -27,8 +27,7 @@ fn fmt_option(o: &Option<String>) -> String {
 }
 
 fn fmt_option_u8(o: Option<u8>) -> String {
-    o.map(|v| v.to_string())
-        .unwrap_or_else(|| "N/A".into())
+    o.map(|v| v.to_string()).unwrap_or_else(|| "N/A".into())
 }
 
 /// Proximity icon for HTML display.
@@ -113,11 +112,7 @@ impl EmailTemplate {
             "&#9679;"
         };
 
-        let activity = if event.active {
-            "Presente"
-        } else {
-            "Ausente"
-        };
+        let activity = if event.active { "Presente" } else { "Ausente" };
         let act_color = if event.active { "#2d7" } else { "#999" };
 
         let prox_label = &event.proximity;
@@ -305,6 +300,7 @@ mod tests {
             connected: true,
             active: true,
             proximity: "Perto".into(),
+            heat: Some(75),
             signal_quality: "Bom".into(),
             total_devices: 5,
             connected_count: 5,
@@ -344,6 +340,7 @@ mod tests {
             connected: false,
             active: true,
             proximity: "Muito perto".into(),
+            heat: Some(95),
             signal_quality: "Excelente".into(),
             total_devices: 3,
             connected_count: 2,

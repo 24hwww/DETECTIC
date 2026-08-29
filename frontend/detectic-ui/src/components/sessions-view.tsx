@@ -5,7 +5,7 @@ export function SessionsView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Sessions"
+        title="Sesiones"
         description="Sesiones de dispositivos detectadas"
       />
       <Card>

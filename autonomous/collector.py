@@ -72,6 +72,10 @@ from identity import (
     Observation,
 )
 from identity.repository import JsonFileRepositories
+from identity.stable_id import stable_fingerprint
+from identity.classifier import infer_device_class
+from identity.mac import classify_mac
+from identity.oui import manufacturer as oui_manufacturer
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -179,6 +183,16 @@ def load_config() -> Config:
         identity_path = str(here / "data" / "identity_state.json")
 
     if not secret_hex:
+        if os.environ.get("AUTONOMOUS_ALLOW_DEV_SECRET", "0") != "1":
+            raise ValueError(
+                "no sensor secret configured: set AUTONOMOUS_SECRET or "
+                "DETECTIC_SECRET (development only: AUTONOMOUS_ALLOW_DEV_SECRET=1)"
+            )
+        print(
+            "[collector] WARNING: using development secret "
+            "(AUTONOMOUS_ALLOW_DEV_SECRET=1)",
+            file=sys.stderr,
+        )
         secret = b"detectic-autonomous-dev-secret"
     else:
         # Canonical HMAC contract: UTF-8 bytes of the secret string.
@@ -244,6 +258,8 @@ CREATE TABLE IF NOT EXISTS device_observations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     capture_id        TEXT NOT NULL,
     pseudonym         TEXT NOT NULL,
+    fingerprint_id    TEXT,
+    fingerprint_method TEXT,
     hostname          TEXT,
     band              TEXT,
     signal_strength   INTEGER,
@@ -257,6 +273,7 @@ CREATE TABLE IF NOT EXISTS device_observations (
     FOREIGN KEY(capture_id) REFERENCES captures(capture_id)
 );
 CREATE INDEX IF NOT EXISTS idx_devobs_capture ON device_observations(capture_id);
+CREATE INDEX IF NOT EXISTS idx_devobs_fp ON device_observations(fingerprint_id);
 
 CREATE TABLE IF NOT EXISTS deliveries (
     delivery_id   TEXT NOT NULL,
@@ -297,6 +314,26 @@ class Store:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.executescript(SCHEMA)
+        self.conn.commit()
+        # Migrate existing DBs: add fingerprint columns if absent.
+        self._migrate()
+
+    def _migrate(self) -> None:
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(device_observations)")}
+        for col, decl in [("fingerprint_id", "TEXT"), ("fingerprint_method", "TEXT")]:
+            if col not in cols:
+                try:
+                    self.conn.execute(
+                        f"ALTER TABLE device_observations ADD COLUMN {col} {decl}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_devobs_fp ON device_observations(fingerprint_id)"
+            )
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
     # ---- runs ----
@@ -364,11 +401,12 @@ class Store:
             id_json = json.dumps(d.get("identity")) if d.get("identity") is not None else None
             self.conn.execute(
                 "INSERT OR IGNORE INTO device_observations "
-                "(capture_id, pseudonym, hostname, band, signal_strength, signal_level, "
-                " noise, operating_standard, tx_rate_kbps, rx_rate_kbps, status, "
-                " identity_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (capture_id, d.get("pseudonym"), d.get("hostname"), d.get("band"),
+                "(capture_id, pseudonym, fingerprint_id, fingerprint_method, hostname, "
+                " band, signal_strength, signal_level, noise, operating_standard, "
+                " tx_rate_kbps, rx_rate_kbps, status, identity_json) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (capture_id, d.get("pseudonym"), d.get("fingerprint_id"),
+                 d.get("fingerprint_method"), d.get("hostname"), d.get("band"),
                  d.get("signal_strength"), d.get("signal_level"), d.get("noise"),
                  d.get("operating_standard"), d.get("tx_rate_kbps"),
                  d.get("rx_rate_kbps"), d.get("status"), id_json),
@@ -377,14 +415,15 @@ class Store:
 
     def devices_for(self, capture_id: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT pseudonym, hostname, band, signal_strength, signal_level, noise, "
-            "       operating_standard, tx_rate_kbps, rx_rate_kbps, status, identity_json "
+            "SELECT pseudonym, fingerprint_id, fingerprint_method, hostname, band, "
+            "       signal_strength, signal_level, noise, operating_standard, "
+            "       tx_rate_kbps, rx_rate_kbps, status, identity_json "
             "FROM device_observations WHERE capture_id=? ORDER BY id",
             (capture_id,),
         ).fetchall()
-        cols = ["pseudonym", "hostname", "band", "signal_strength", "signal_level",
-                "noise", "operating_standard", "tx_rate_kbps", "rx_rate_kbps",
-                "status", "identity_json"]
+        cols = ["pseudonym", "fingerprint_id", "fingerprint_method", "hostname", "band",
+                "signal_strength", "signal_level", "noise", "operating_standard",
+                "tx_rate_kbps", "rx_rate_kbps", "status", "identity_json"]
         out = []
         for r in rows:
             d = dict(zip(cols, r))
@@ -673,8 +712,31 @@ def to_int(v: Any) -> Optional[int]:
         return None
 
 
+def _stable_fingerprint_for(secret: bytes, mac: str, hostname: Optional[str],
+                           protocol: Optional[str], band: Optional[str]) -> Dict[str, Any]:
+    """Compute the stable fingerprint_id (huella) for a raw device entry."""
+    mac_type = classify_mac(mac)
+    randomized = mac_type in ("LOCAL_RANDOMIZED", "LOCAL_ADMINISTERED", "INVALID")
+    mfr = None
+    if not randomized:
+        mfr = oui_manufacturer(mac)
+    device_class, _ = infer_device_class(hostname, mfr, protocol, band, mac)
+    fp = stable_fingerprint(secret, hostname, mfr, device_class, mac, mac_type)
+    return {
+        "fingerprint_id": fp.fingerprint_id,
+        "fingerprint_method": fp.method,
+        "fingerprint_confidence": fp.confidence,
+        "manufacturer": mfr,
+        "device_class": device_class.value if hasattr(device_class, "value") else str(device_class),
+    }
+
+
 def normalize_devices(raw_devices: List[Dict], secret: bytes) -> List[Dict[str, Any]]:
-    """Pseudonymize raw ASSOCDEV entries. Raw MAC is never persisted."""
+    """Pseudonymize raw ASSOCDEV entries. Raw MAC is never persisted.
+
+    Computes both the MAC pseudonym (per-band, may rotate) and the stable
+    fingerprint_id (huella, stable across reconnects/bands).
+    """
     out = []
     for d in raw_devices:
         if d.get("_meta"):
@@ -685,10 +747,18 @@ def normalize_devices(raw_devices: List[Dict], secret: bytes) -> List[Dict[str, 
                    str(d.get("X_TP_HostName") or "") or "unknown"
         pseudo = pseudonymize(secret, identity)
         standard = str(d.get("operatingStandard") or "").strip() or None
+        hostname = str(d.get("X_TP_HostName") or "").strip() or None
+        band = derive_band(standard, radio_mac)
+        fp = _stable_fingerprint_for(secret, mac, hostname, standard, band)
         out.append({
             "pseudonym": pseudo,
-            "hostname": str(d.get("X_TP_HostName") or "").strip() or None,
-            "band": derive_band(standard, radio_mac),
+            "fingerprint_id": fp["fingerprint_id"],
+            "fingerprint_method": fp["fingerprint_method"],
+            "fingerprint_confidence": fp["fingerprint_confidence"],
+            "manufacturer": fp["manufacturer"],
+            "device_class": fp["device_class"],
+            "hostname": hostname,
+            "band": band,
             "signal_strength": to_int(d.get("signalStrength")),
             "signal_level": to_int(d.get("X_TP_SignalStrengthLevel")),
             "noise": to_int(d.get("noise")),

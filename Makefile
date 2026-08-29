@@ -35,9 +35,20 @@ router:
 router-docker:
 	docker run --rm -v "$(CURDIR):/home/rust/src" $(MUSL_IMAGE) \
 		cargo build --release --no-default-features --features wss,tls
+	mkdir -p dist
 	cp target/$(TARGET)/release/detectic dist/detectic-aarch64-musl
 	chmod +x dist/detectic-aarch64-musl
 	@echo "Built dist/detectic-aarch64-musl"
+
+# Cross-build the external RF probe sensor for OpenWrt/embedded Linux arm64.
+# Static musl, no C deps, HTTPS support.
+extsensor-docker:
+	docker run --rm -v "$(CURDIR):/home/rust/src" $(MUSL_IMAGE) \
+		cargo build --release --bin extsensor --no-default-features --features tls
+	mkdir -p dist
+	cp target/$(TARGET)/release/extsensor dist/extsensor-aarch64-musl
+	chmod +x dist/extsensor-aarch64-musl
+	@echo "Built dist/extsensor-aarch64-musl"
 
 # Build the deployable package (split parts + flat manifest + verifiers) into the
 # served package dir. Idempotent; safe to re-run.

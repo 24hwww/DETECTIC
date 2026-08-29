@@ -19,11 +19,15 @@ function signalColor(r?: number) {
   return "bg-[var(--color-offline)]/10 text-[var(--color-offline)]";
 }
 
+function isOnline(d: Device) {
+  return d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED");
+}
+
 export function ConnectedDevices({ devices }: { devices: Device[] }) {
   const connected = useMemo(
     () =>
       devices
-        .filter((d) => d.connected)
+        .filter(isOnline)
         .sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0))
         .slice(0, 24),
     [devices]

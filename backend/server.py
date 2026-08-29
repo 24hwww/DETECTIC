@@ -148,6 +148,12 @@ class RateLimiter:
 # Sensor registry
 # ---------------------------------------------------------------------------
 
+# Development-only fallback credentials. NEVER used unless
+# DETECTIC_ALLOW_DEV_FALLBACK=1 is explicitly set, so production fails closed
+# rather than silently accepting these well-known values.
+DEV_SENSORS = {"ex520-001": "dev-secret-change-me"}
+
+
 def load_sensors():
     env_sensors = os.environ.get("DETECTIC_SENSORS")
     if env_sensors:
@@ -160,9 +166,21 @@ def load_sensors():
     if os.path.exists(SENSORS_FILE):
         with open(SENSORS_FILE) as f:
             return json.load(f)
-    with open(SENSORS_FILE, "w") as f:
-        json.dump(DEV_SENSORS, f, indent=2)
-    return DEV_SENSORS
+    # Fail closed: without either DETECTIC_SENSORS or sensors.json, and without
+    # an explicit development opt-in, refuse to start so production can never
+    # silently fall back to the well-known development credentials.
+    if os.environ.get("DETECTIC_ALLOW_DEV_FALLBACK", "0") == "1":
+        sys.stderr.write(
+            "[backend] WARNING: using development sensor credentials "
+            "(DETECTIC_ALLOW_DEV_FALLBACK=1)\n"
+        )
+        with open(SENSORS_FILE, "w") as f:
+            json.dump(DEV_SENSORS, f, indent=2)
+        return DEV_SENSORS
+    raise RuntimeError(
+        "no sensor credentials configured: set DETECTIC_SENSORS or create "
+        "sensors.json (development only: DETECTIC_ALLOW_DEV_FALLBACK=1)"
+    )
 
 # ---------------------------------------------------------------------------
 # Backend (SQLite + HMAC auth)
@@ -612,12 +630,23 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--db", default=os.path.join(HERE, "backend.db"))
     ap.add_argument("--master-secret",
-                    default=os.environ.get("DETECTIC_MASTER_SECRET",
-                                           "dev-master-secret"))
+                    default=os.environ.get("DETECTIC_MASTER_SECRET", ""))
     ap.add_argument("--max-threads", type=int, default=16,
                     help="Max concurrent request threads (default: 16)")
     ap.add_argument("--rate-burst", type=int, default=60,
                     help="Max burst requests per IP (default: 60)")
     args = ap.parse_args()
+    if not args.master_secret:
+        if os.environ.get("DETECTIC_ALLOW_DEV_FALLBACK", "0") != "1":
+            raise SystemExit(
+                "master secret is required (set DETECTIC_MASTER_SECRET or "
+                "pass --master-secret; development only: "
+                "DETECTIC_ALLOW_DEV_FALLBACK=1)"
+            )
+        args.master_secret = "dev-master-secret"
+        sys.stderr.write(
+            "[backend] WARNING: using development master secret "
+            "(DETECTIC_ALLOW_DEV_FALLBACK=1)\n"
+        )
     serve(args.host, args.port, args.db, args.master_secret,
           args.max_threads, args.rate_burst)

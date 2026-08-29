@@ -1,26 +1,70 @@
 {
   "devices": {
-    "e48877d361952816": {
-      "state": "connected",
-      "hostname": "realme-9i",
-      "band": "2.4GHz",
-      "signal_strength": 126,
-      "signal_level": 5,
-      "operating_standard": "n",
-      "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787679522,
-      "misses": 0
-    },
     "0d387ad027900b6f": {
       "state": "connected",
       "hostname": "moto-g42",
       "band": "2.4GHz",
-      "signal_strength": 128,
+      "signal_strength": 106,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1787986581,
+      "misses": 0
+    },
+    "e48877d361952816": {
+      "state": "connected",
+      "hostname": "realme-9i",
+      "band": "2.4GHz",
+      "signal_strength": 136,
       "signal_level": 5,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787679522,
+      "last_seen": 1787986581,
       "misses": 0
+    },
+    "2a0e66a584cd5376": {
+      "state": "connected",
+      "hostname": "soporte24hwww",
+      "band": "2.4GHz",
+      "signal_strength": 0,
+      "signal_level": 0,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1787986581,
+      "misses": 0,
+      "last_event": {
+        "connected": 1787940939
+      }
+    },
+    "27b17f4433850243": {
+      "state": "connected",
+      "hostname": "moto-g54-5G",
+      "band": "5GHz",
+      "signal_strength": 82,
+      "signal_level": 3,
+      "operating_standard": "ac",
+      "radio_mac": "3C:6A:D2:5F:AB:C3",
+      "last_seen": 1787986581,
+      "misses": 0,
+      "last_event": {
+        "connected": 1787940939,
+        "disconnected": 1787899959
+      }
+    },
+    "0aedc19fc2428f3e": {
+      "state": "connected",
+      "hostname": "moto-g42",
+      "band": "5GHz",
+      "signal_strength": 64,
+      "signal_level": 2,
+      "operating_standard": "ac",
+      "radio_mac": "3C:6A:D2:5F:AB:C3",
+      "last_seen": 1787986581,
+      "misses": 0,
+      "last_event": {
+        "disconnected": 1787935905,
+        "connected": 1787940939
+      }
     },
     "2d90efa6e960e00c": {
       "state": "connected",
@@ -30,66 +74,44 @@
       "signal_level": 4,
       "operating_standard": "ac",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787679522,
-      "misses": 0
-    },
-    "27b17f4433850243": {
-      "state": "connected",
-      "hostname": "moto-g54-5G",
-      "band": "5GHz",
-      "signal_strength": 80,
-      "signal_level": 3,
-      "operating_standard": "ac",
-      "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787679522,
+      "last_seen": 1787986581,
       "misses": 0,
       "last_event": {
-        "connected": 1787679522
-      }
-    },
-    "da25a8ac47e5da3e": {
-      "state": "absent",
-      "hostname": "moto-g54-5G",
-      "band": "2.4GHz",
-      "signal_strength": 110,
-      "signal_level": 4,
-      "operating_standard": "n",
-      "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787679522,
-      "misses": 3,
-      "last_event": {
-        "disconnected": 1787657111
+        "disconnected": 1787935905,
+        "connected": 1787986581
       }
     },
     "39c704abe35fac86": {
-      "state": "absent",
+      "state": "connected",
       "hostname": "Unknown",
       "band": "5GHz",
       "signal_strength": 120,
       "signal_level": 5,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787679522,
-      "misses": 3,
+      "last_seen": 1787986581,
+      "misses": 0,
       "last_event": {
-        "disconnected": 1787657111
+        "disconnected": 1787935905,
+        "connected": 1787986581
       }
     },
-    "0aedc19fc2428f3e": {
+    "da25a8ac47e5da3e": {
       "state": "absent",
-      "hostname": "moto-g42",
-      "band": "5GHz",
-      "signal_strength": 60,
-      "signal_level": 2,
-      "operating_standard": "ac",
-      "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787679522,
-      "misses": 3,
+      "hostname": "moto-g54-5G",
+      "band": "2.4GHz",
+      "signal_strength": 108,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1787986581,
+      "misses": 4,
       "last_event": {
-        "disconnected": 1787657111
+        "disconnected": 1787935905,
+        "connected": 1787779866
       }
     }
   },
   "baseline": false,
-  "last_poll": 1787679522
+  "last_poll": 1787986581
 }

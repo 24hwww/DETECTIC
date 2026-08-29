@@ -442,8 +442,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cfg.presence.missing_polls_before_leave
             );
             println!(
-                "rssi_smoothing_alpha: {}",
-                cfg.presence.rssi_smoothing_alpha
+                "proximity_history_window: {}",
+                cfg.presence.proximity.history_window
+            );
+            println!("proximity_ema_alpha: {}", cfg.presence.proximity.ema_alpha);
+            println!(
+                "proximity_trend_delta_db: {}",
+                cfg.presence.proximity.trend_delta_db
             );
         }
         Command::Spool => {
@@ -540,17 +545,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 GtprClient::with_dialect(&cli.url, &cli.user, &password, cli.dialect.into());
             transport.connect().map_err(|e| e.to_string())?;
             let result = if let Some(d) = data {
-                transport.op_with_data(&oid, &d).map_err(|e| e.to_string())?
+                transport
+                    .op_with_data(&oid, &d)
+                    .map_err(|e| e.to_string())?
             } else {
                 transport.op(&oid).map_err(|e| e.to_string())?
             };
             println!("{}", result);
         }
-    Command::Driver => {
-        let provider = detectic::driver::select_best();
-        let matrix = detectic::driver::capability_matrix(provider.as_ref());
-        println!("{}", matrix);
-    }
+        Command::Driver => {
+            let provider = detectic::driver::select_best();
+            let matrix = detectic::driver::capability_matrix(provider.as_ref());
+            println!("{}", matrix);
+        }
         Command::Realtime { once: _once } => {
             use detectic::realtime::{ObservationBatch, RealtimePipeline};
             // Build a one-shot batch from the GTPR source if reachable, else
@@ -574,7 +581,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for e in &events {
                 println!(
                     "seq={} kind={} identity={} rssi={:?} source={}",
-                    e.seq, e.kind.as_str(), e.identity, e.rssi, e.source
+                    e.seq,
+                    e.kind.as_str(),
+                    e.identity,
+                    e.rssi,
+                    e.source
                 );
             }
             if events.is_empty() {

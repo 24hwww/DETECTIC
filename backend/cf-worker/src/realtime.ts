@@ -1,9 +1,20 @@
 import { DurableObject } from 'cloudflare:workers';
 import { generateVapidKeys, serializeVapidKeys, deserializeVapidKeys, sendPushNotification } from 'web-push-browser';
+import {
+  validateSensorToken,
+  parseAllowedOrigins,
+  resolveCorsOrigin,
+  type SensorRegistry,
+} from './protocol.ts';
+import { applyCanonicalEventToD1 } from './index.ts';
 
 export interface Env {
   REALTIME_HUB: DurableObjectNamespace<RealtimeHub>;
   DB: D1Database;
+  /** JSON: {"sensor_id": "secret", ...} — the sensor credential registry. */
+  DETECTIC_SENSORS: string;
+  /** Comma-separated list of allowed dashboard origins (optional). */
+  DETECTIC_ALLOWED_ORIGINS?: string;
 }
 
 interface PushSubscription {
@@ -12,7 +23,17 @@ interface PushSubscription {
   keys: { p256dh: string; auth: string };
 }
 
-type SocketMeta = { role?: string; sensor_id?: string };
+/**
+ * Per-socket metadata. `sensor_authed` is set to true ONLY after a sensor
+ * presents a valid credential for its declared sensor_id. Frontend sockets
+ * never need it (they cannot inject events). `sensor_id` on the socket is
+ * always the authenticated id for sensor sockets — never the message body.
+ */
+type SocketMeta = {
+  role?: string;
+  sensor_id?: string;
+  sensor_authed?: boolean;
+};
 
 interface DeviceSummary {
   first_seen: number;
@@ -20,10 +41,12 @@ interface DeviceSummary {
   event_count: number;
   last_type: string;
   connected: boolean;
+  state?: string;
   sensor_id?: string;
   last_signal?: number;
   band?: string;
   hostname?: string;
+  proximity?: string;
 }
 
 interface NetworkSummary {
@@ -39,6 +62,8 @@ interface NetworkSummary {
   security?: string;
   last_signal?: number;
   online_since?: number;
+  proximity?: string;
+  proximity_detail?: string;
 }
 
 export class RealtimeHub extends DurableObject {
@@ -50,10 +75,41 @@ export class RealtimeHub extends DurableObject {
   private pushSubsLoaded = false;
   private vapidKeys: CryptoKeyPair | null = null;
   private d1: D1Database | null = null;
+  private _env: Env;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.d1 = env.DB || null;
+    this._env = env;
+    console.log('[RealtimeHub] constructor d1=', !!this.d1, 'db=', !!env.DB);
+  }
+
+  /** Decode the DETECTIC_SENSORS credential registry once per request. */
+  private sensorRegistry(): SensorRegistry {
+    try {
+      return (JSON.parse(this._env.DETECTIC_SENSORS || '{}') || {}) as SensorRegistry;
+    } catch {
+      return {};
+    }
+  }
+
+  /** CORS policy for the browser-facing REST endpoints (vapid/subscribe). */
+  private corsFor(request: Request): Record<string, string> {
+    const origin = request.headers.get('Origin') || undefined;
+    const allowed = parseAllowedOrigins(this._env.DETECTIC_ALLOWED_ORIGINS);
+    const self = request.headers.get('Host');
+    const selfOrigin =
+      self && (self.includes('localhost') || self.includes('127.0.0.1'))
+        ? `http://${self}`
+        : `https://${self}`;
+    const reflect = resolveCorsOrigin(origin, allowed, selfOrigin);
+    const headers: Record<string, string> = {
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Detectic-Sensor, X-Detectic-Signature',
+      'Access-Control-Max-Age': '86400',
+    };
+    if (reflect) headers['Access-Control-Allow-Origin'] = reflect;
+    return headers;
   }
 
   private async loadDevices() {
@@ -198,10 +254,12 @@ export class RealtimeHub extends DurableObject {
           event_count: d.event_count,
           last_type: d.last_type,
           connected: d.connected,
+          state: d.state,
           sensor_id: d.sensor_id,
           last_signal: d.last_signal,
           band: d.band,
           hostname: d.hostname,
+          proximity: d.proximity,
         });
       }
       devices.sort((a, b) => b.last_seen - a.last_seen);
@@ -231,6 +289,8 @@ export class RealtimeHub extends DurableObject {
           security: n.security,
           last_signal: n.last_signal,
           online_since: n.online_since,
+          proximity: n.proximity,
+          proximity_detail: n.proximity_detail,
         });
       }
       networks.sort((a, b) => b.last_seen - a.last_seen);
@@ -242,27 +302,27 @@ export class RealtimeHub extends DurableObject {
     if (url.pathname === '/api/v1/vapid/public-key') {
       const publicKey = await this.getVapidPublicKey();
       return new Response(JSON.stringify({ publicKey }), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: { 'Content-Type': 'application/json', ...this.corsFor(request) },
       });
     }
 
     if (url.pathname === '/api/v1/subscribe' && request.method === 'POST') {
       const sub = await request.json() as PushSubscription;
       if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
-        return new Response(JSON.stringify({ ok: false, error: 'invalid subscription' }), { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+        return new Response(JSON.stringify({ ok: false, error: 'invalid subscription' }), { status: 400, headers: { 'Content-Type': 'application/json', ...this.corsFor(request) } });
       }
       await this.subscribePush(sub);
       return new Response(JSON.stringify({ ok: true }), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: { 'Content-Type': 'application/json', ...this.corsFor(request) },
       });
     }
 
     if (url.pathname === '/api/v1/unsubscribe' && request.method === 'POST') {
       const body = await request.json() as { endpoint?: string };
-      if (!body?.endpoint) return new Response(JSON.stringify({ ok: false, error: 'missing endpoint' }), { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+      if (!body?.endpoint) return new Response(JSON.stringify({ ok: false, error: 'missing endpoint' }), { status: 400, headers: { 'Content-Type': 'application/json', ...this.corsFor(request) } });
       await this.unsubscribePush(body.endpoint);
       return new Response(JSON.stringify({ ok: true }), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: { 'Content-Type': 'application/json', ...this.corsFor(request) },
       });
     }
 
@@ -272,19 +332,29 @@ export class RealtimeHub extends DurableObject {
     }
 
     const role = url.searchParams.get('role') || 'unknown';
+    // sensor_id in the URL is NEVER trusted for authentication; it is only a
+    // routing/identity hint. Sensor sockets must also present a valid credential
+    // (via the `hello` message) before they can send `event` messages.
     const sensorId = url.searchParams.get('sensor_id') || 'unknown';
 
     const [client, server] = Object.values(new WebSocketPair());
 
-    (server as any).serializeAttachment({ role, sensor_id: sensorId } as SocketMeta);
+    (server as any).serializeAttachment({
+      role,
+      sensor_id: sensorId,
+      sensor_authed: false,
+    } as SocketMeta);
     this.ctx.acceptWebSocket(server);
 
+    // Non-sensitive greeting. A sensor is NOT considered authenticated by
+    // receiving this; it must complete the credential handshake below.
     const hello = JSON.stringify({
       type: 'hello_ack',
       protocol: 1,
       role,
       sensor_id: sensorId,
       server_time: Date.now(),
+      authed: role !== 'sensor', // sensors must authenticate before trusted
       message: 'DETECTIC-RT/1 ready',
     });
     server.send(hello);
@@ -321,7 +391,8 @@ export class RealtimeHub extends DurableObject {
       last_seen: observedAt,
       event_count: 0,
       last_type: eventType,
-      connected: !eventType.includes('disconnected'),
+      connected: !eventType.includes('disconnected') && !eventType.includes('absent'),
+      state: eventType === 'device.presence_changed' ? String(dev.to_state || p.to_state || 'UNKNOWN') : undefined,
       sensor_id: sensorId,
     };
 
@@ -337,19 +408,38 @@ export class RealtimeHub extends DurableObject {
     summary.event_count += 1;
     summary.last_type = eventType;
 
-    if (eventType === 'device.connected' || eventType === 'device.detected') {
+    const toState = dev.to_state || p.to_state;
+    const stateValue = toState ? String(toState) : summary.state;
+    if (stateValue) {
+      summary.state = stateValue;
+    }
+
+    if (eventType === 'device.connected' || eventType === 'device.detected' || (eventType === 'device.presence_changed' && toState === 'RF_PRESENT')) {
       summary.connected = true;
-    } else if (eventType === 'device.disconnected' || eventType === 'device.network_changed') {
+    } else if (eventType === 'device.disconnected' || eventType === 'device.network_changed' || (eventType === 'device.presence_changed' && (toState === 'ABSENT' || toState === 'DISCONNECTED'))) {
       summary.connected = false;
     }
 
     if (dev.rssi != null) summary.last_signal = Number(dev.rssi);
     else if (dev.new_signal != null) summary.last_signal = Number(dev.new_signal);
     else if (p.rssi != null) summary.last_signal = Number(p.rssi);
+    else if (dev.rssi_dbm != null) summary.last_signal = Number(dev.rssi_dbm);
+    else if (p.rssi_dbm != null) summary.last_signal = Number(p.rssi_dbm);
     if (dev.band || p.band) summary.band = String(dev.band || p.band || '');
+
+    if (dev.proximity != null) summary.proximity = String(dev.proximity);
+    else if (p.proximity != null) summary.proximity = String(p.proximity);
+    else if (dev.proximity_detail?.zone_label) summary.proximity = String(dev.proximity_detail.zone_label);
 
     this.devices.set(deviceId, summary);
     await this.persistDevices();
+  }
+
+  private newOrValue(v: unknown): unknown {
+    if (v && typeof v === 'object' && !Array.isArray(v) && 'new' in (v as Record<string, unknown>)) {
+      return (v as Record<string, unknown>).new;
+    }
+    return v;
   }
 
   private async updateNetwork(sensorId: string, msg: any) {
@@ -362,7 +452,7 @@ export class RealtimeHub extends DurableObject {
     const eventType = String(p.type || p.event_type || 'unknown');
     const observedAt = typeof msg.observed_at === 'number' ? msg.observed_at
       : (typeof p.observed_at === 'number' ? p.observed_at
-        : (typeof p.event_timestamp === 'number' ? p.event_timestamp * 1000 : now));
+        : (typeof p.timestamp === 'number' ? p.timestamp * 1000 : now));
 
     const existing = this.networks.get(apId);
     const summary: NetworkSummary = existing || {
@@ -389,12 +479,23 @@ export class RealtimeHub extends DurableObject {
       if (!summary.online_since) summary.online_since = observedAt;
     }
 
-    if (dev.ssid != null) summary.ssid = String(dev.ssid);
-    if (dev.band != null) summary.band = String(dev.band);
-    if (dev.w_mode != null) summary.w_mode = String(dev.w_mode);
-    if (dev.security != null) summary.security = String(dev.security);
-    if (dev.signal != null) summary.last_signal = Number(dev.signal);
-    else if (dev.current_signal != null) summary.last_signal = Number(dev.current_signal);
+    const ssid = this.newOrValue(dev.ssid);
+    const band = this.newOrValue(dev.band);
+    const wMode = this.newOrValue(dev.w_mode);
+    const security = this.newOrValue(dev.security);
+    const signal = this.newOrValue(dev.signal ?? dev.current_signal);
+    const proximity = this.newOrValue(dev.proximity);
+
+    if (ssid != null) summary.ssid = String(ssid);
+    if (band != null) summary.band = String(band);
+    if (wMode != null) summary.w_mode = String(wMode);
+    if (security != null) summary.security = String(security);
+    if (signal != null) summary.last_signal = Number(signal);
+
+    if (proximity != null) summary.proximity = String(proximity);
+    if (dev.proximity_detail && typeof dev.proximity_detail === 'object') {
+      summary.proximity_detail = JSON.stringify(dev.proximity_detail);
+    }
 
     this.networks.set(apId, summary);
     await this.persistNetworks();
@@ -428,6 +529,7 @@ export class RealtimeHub extends DurableObject {
 
     const type = msg?.type;
     const now = Date.now();
+    console.log('[RealtimeHub] ws message type=', type, 'role=', this.meta(ws).role, 'sensor_id=', this.meta(ws).sensor_id);
 
     if (type === 'ping') {
       ws.send(JSON.stringify({
@@ -443,6 +545,30 @@ export class RealtimeHub extends DurableObject {
         server_time: now,
       }));
     } else if (type === 'hello') {
+      // A sensor socket must authenticate here by presenting a credential for
+      // its declared sensor_id. Frontend sockets do not authenticate.
+      const meta = this.meta(ws);
+      if (meta.role === 'sensor') {
+        const registry = this.sensorRegistry();
+        const token = typeof msg.token === 'string' && msg.token.length > 0 ? msg.token : null;
+        const verdict = validateSensorToken(meta.sensor_id || '', token, registry);
+        if (!verdict.ok) {
+          // Reject: never log the token or the secret.
+          ws.send(JSON.stringify({
+            type: 'auth_error',
+            reason: verdict.reason || 'invalid_credentials',
+            server_time: now,
+          }));
+          ws.close(1008, 'auth_required');
+          return;
+        }
+        (ws as any).serializeAttachment({
+          ...meta,
+          sensor_id: meta.sensor_id,
+          sensor_authed: true,
+        } as SocketMeta);
+      }
+
       ws.send(JSON.stringify({
         type: 'hello_ack',
         protocol: 1,
@@ -463,7 +589,22 @@ export class RealtimeHub extends DurableObject {
         server_time: now,
       }));
     } else if (type === 'event') {
-      const sensorId = msg.sensor_id || 'unknown';
+      // Only authenticated sensor sockets may push events. The sensor_id used
+      // for attribution is the one bound at handshake time, never the message
+      // body, so a sensor cannot impersonate another sensor_id.
+      console.log('[RealtimeHub] event received sensor_id=', this.meta(ws).sensor_id, 'authed=', this.meta(ws).sensor_authed);
+      const meta = this.meta(ws);
+      const authedSensor = meta.role === 'sensor' && meta.sensor_authed === true && typeof meta.sensor_id === 'string' && meta.sensor_id.length > 0;
+      if (!authedSensor) {
+        ws.send(JSON.stringify({
+          type: 'auth_error',
+          reason: 'unauthorized_sender',
+          server_time: now,
+        }));
+        ws.close(1008, 'unauthorized');
+        return;
+      }
+      const sensorId = meta.sensor_id!;
       const p = msg.payload || {};
       const eventType = String(p.type || p.event_type || '');
       if (eventType.startsWith('network.')) {
@@ -480,11 +621,17 @@ export class RealtimeHub extends DurableObject {
         }
       }
 
-      // Persist event to D1 so historical queries work for the dashboard.
+      // Persist event to D1 so historical queries work for the dashboard,
+      // then apply the same side effects the HTTP batch path uses
+      // (device_state, ap_state, rf_environment_snapshots, device_aliases).
       try {
-        await this.persistEventToD1(sensorId, msg);
+        const inserted = await this.persistEventToD1(sensorId, msg);
+        if (inserted && this._env.DB) {
+          // applyCanonicalEventToD1 only needs env.DB; the realtime Env is a subset.
+          await applyCanonicalEventToD1(this._env as any, sensorId, msg.payload, Math.floor(Date.now() / 1000));
+        }
       } catch (e: any) {
-        console.error('D1 persist error:', e?.message || e);
+        console.error('D1 persist/side-effect error:', e?.message || e);
       }
 
       const eventPayload = msg.payload || {};
@@ -529,6 +676,13 @@ export class RealtimeHub extends DurableObject {
   // real-time fan-out without waiting for the response to the sensor.
   async notify(events: any[], sensorId: string): Promise<void> {
     for (const e of events) {
+      const eventType = String(e.type || e.event_type || '');
+      const msg = { payload: e, observed_at: Date.now() };
+      if (eventType.startsWith('network.')) {
+        try { await this.updateNetwork(sensorId, msg); } catch (e: any) { console.error('notify updateNetwork error:', e?.message || e); }
+      } else if (eventType.startsWith('device.')) {
+        try { await this.updateDevice(sensorId, msg); } catch (e: any) { console.error('notify updateDevice error:', e?.message || e); }
+      }
       this.broadcastToFrontends(sensorId, e, { via: 'http_ingest', persisted: true });
     }
   }
@@ -536,13 +690,18 @@ export class RealtimeHub extends DurableObject {
   /**
    * Persist a WSS event to D1 so historical dashboard queries work.
    * Uses INSERT OR IGNORE to handle duplicates (event_id is UNIQUE).
+   * Returns true if a new row was actually inserted.
    */
-  private async persistEventToD1(sensorId: string, msg: any): Promise<void> {
-    if (!this.d1) return;
+  private async persistEventToD1(sensorId: string, msg: any): Promise<boolean> {
+    if (!this.d1) {
+      console.error('[RealtimeHub] persistEventToD1 skipped: no D1 binding');
+      return false;
+    }
 
     const p = msg.payload || {};
-    const eventId = msg.event_id || '';
-    if (!eventId) return;
+    const dev = p.payload || p;
+    const eventId = msg.event_id || p.event_id || '';
+    if (!eventId) return false;
 
     const eventType = String(p.type || p.event_type || '');
     const ts = typeof p.timestamp === 'number'
@@ -551,11 +710,11 @@ export class RealtimeHub extends DurableObject {
         ? p.event_timestamp
         : Math.floor(Date.now() / 1000);
     const deviceId = p.device_id ?? null;
-    const payloadJson = JSON.stringify(p);
+    const payloadJson = JSON.stringify(dev);
     const seq = typeof p.sequence === 'number' ? p.sequence : null;
     const now = Math.floor(Date.now() / 1000);
 
-    await this.d1.prepare(
+    const result = await this.d1.prepare(
       "INSERT OR IGNORE INTO events (sensor_id, event_id, event_type, event_timestamp, device_id, snapshot_json, payload_json, sequence, schema_version, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
       .bind(
@@ -572,9 +731,14 @@ export class RealtimeHub extends DurableObject {
       )
       .run();
 
+    const inserted = (result.meta?.changes ?? 0) > 0;
+    console.log('[RealtimeHub] persistEventToD1 event_id=', eventId, 'event_type=', eventType, 'inserted=', inserted, 'changes=', result.meta?.changes);
+
     // Update sensor last_seen
     await this.d1.prepare(
       "UPDATE sensors SET last_seen = ? WHERE id = ?"
     ).bind(now, sensorId).run();
+
+    return inserted;
   }
 }

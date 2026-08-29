@@ -6,36 +6,36 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-background: #ffffff;
-  --color-foreground: #171717;
-  --color-card: #ffffff;
-  --color-card-foreground: #171717;
-  --color-primary: #2563eb;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #f3f4f6;
-  --color-secondary-foreground: #171717;
-  --color-muted: #f3f4f6;
-  --color-muted-foreground: #525252;
-  --color-border: #e5e7eb;
-  --color-border-hover: #d1d5db;
-  --color-ring: #2563eb;
-  --color-destructive: #dc2626;
-  --color-input: #e5e7eb;
-  --color-popover: #ffffff;
-  --color-popover-foreground: #171717;
-  --color-accent: #f3f4f6;
-  --color-accent-foreground: #171717;
-  --color-chart-1: #2563eb;
-  --color-chart-2: #15803d;
+  --color-background: #0f1115;
+  --color-foreground: #e6e6e6;
+  --color-card: #1a1d23;
+  --color-card-foreground: #e6e6e6;
+  --color-primary: #58a6ff;
+  --color-primary-foreground: #0f1115;
+  --color-secondary: #16181d;
+  --color-secondary-foreground: #e6e6e6;
+  --color-muted: #16181d;
+  --color-muted-foreground: #9aa5b1;
+  --color-border: #2a2f36;
+  --color-border-hover: #3a4048;
+  --color-ring: #58a6ff;
+  --color-destructive: #f85149;
+  --color-input: #2a2f36;
+  --color-popover: #1a1d23;
+  --color-popover-foreground: #e6e6e6;
+  --color-accent: #16181d;
+  --color-accent-foreground: #ffffff;
+  --color-chart-1: #58a6ff;
+  --color-chart-2: #3fb950;
   --color-chart-3: #b45309;
   --color-chart-4: #7c3aed;
   --color-chart-5: #db2777;
-  --color-online: #15803d;
-  --color-offline: #b91c1c;
+  --color-online: #3fb950;
+  --color-offline: #f85149;
   --color-warning: #b45309;
-  --radius: 0.75rem;
+  --radius: 0.625rem;
   --font-heading: var(--font-sans);
-  --font-sans: 'Geist Variable', sans-serif;
+  --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -85,40 +85,62 @@
   }
 }
 
+/* Proximity zone badges — same color logic as http_dashboard.html */
+.prox-near {
+  color: #3fb950;
+  border-color: rgba(63, 185, 80, 0.35);
+  background: rgba(63, 185, 80, 0.12);
+}
+.prox-medium {
+  color: #d29922;
+  border-color: rgba(210, 153, 34, 0.35);
+  background: rgba(210, 153, 34, 0.12);
+}
+.prox-far {
+  color: #f85149;
+  border-color: rgba(248, 81, 73, 0.35);
+  background: rgba(248, 81, 73, 0.12);
+}
+.prox-unknown {
+  color: #9aa5b1;
+  border-color: rgba(154, 165, 177, 0.35);
+  background: rgba(154, 165, 177, 0.12);
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-  --card: #ffffff;
-  --card-foreground: #171717;
-  --popover: #ffffff;
-  --popover-foreground: #171717;
-  --primary: #2563eb;
-  --primary-foreground: #ffffff;
-  --secondary: #f3f4f6;
-  --secondary-foreground: #171717;
-  --muted: #f3f4f6;
-  --muted-foreground: #525252;
-  --accent: #f3f4f6;
-  --accent-foreground: #171717;
-  --destructive: #dc2626;
-  --border: #e5e7eb;
-  --input: #e5e7eb;
-  --ring: #2563eb;
-  --chart-1: #2563eb;
-  --chart-2: #15803d;
+  --background: #0f1115;
+  --foreground: #e6e6e6;
+  --card: #1a1d23;
+  --card-foreground: #e6e6e6;
+  --popover: #1a1d23;
+  --popover-foreground: #e6e6e6;
+  --primary: #58a6ff;
+  --primary-foreground: #0f1115;
+  --secondary: #16181d;
+  --secondary-foreground: #e6e6e6;
+  --muted: #16181d;
+  --muted-foreground: #9aa5b1;
+  --accent: #16181d;
+  --accent-foreground: #ffffff;
+  --destructive: #f85149;
+  --border: #2a2f36;
+  --input: #2a2f36;
+  --ring: #58a6ff;
+  --chart-1: #58a6ff;
+  --chart-2: #3fb950;
   --chart-3: #b45309;
   --chart-4: #7c3aed;
   --chart-5: #db2777;
-  --color-online: #15803d;
-  --color-offline: #b91c1c;
+  --color-online: #3fb950;
+  --color-offline: #f85149;
   --color-warning: #b45309;
   --radius: 0.625rem;
-  --sidebar: #fafafa;
-  --sidebar-foreground: #171717;
-  --sidebar-primary: #2563eb;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f3f4f6;
-  --sidebar-accent-foreground: #171717;
-  --sidebar-border: #e5e7eb;
-  --sidebar-ring: #2563eb;
+  --sidebar: #16181d;
+  --sidebar-foreground: #e6e6e6;
+  --sidebar-primary: #58a6ff;
+  --sidebar-primary-foreground: #0f1115;
+  --sidebar-accent: #1a1d23;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #2a2f36;
+  --sidebar-ring: #58a6ff;
 }

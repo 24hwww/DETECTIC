@@ -174,7 +174,9 @@ impl DriverProvider for GtprProvider {
             return v;
         }
         // GTPR is available if the router URL is configured (env or default).
-        let v = std::env::var("DETECTIC_URL").map(|u| !u.is_empty()).unwrap_or(true);
+        let v = std::env::var("DETECTIC_URL")
+            .map(|u| !u.is_empty())
+            .unwrap_or(true);
         self.cached_available.set(Some(v));
         v
     }

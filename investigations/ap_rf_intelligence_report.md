@@ -565,3 +565,247 @@ Updated `src/monitor.rs` `MediaTekMonitorProvider::parse_survey` to:
 - Query `DEV2_USER_CFG` or expose credentials.
 - Access remote APs without user authorization and a known protocol.
 - Claim precise positioning from RSSI without calibration.
+
+---
+
+## 28. Runtime STADB / `nrd` — Negative Finding
+
+> **Date:** 2026-08-29
+> **Investigation:** Fase 2b/2c — passive runtime observation of the EX520's
+> `nrd` daemon. **YELLOW / read-only.** No socket was bound, no takeover, no
+> injection, no firmware change, no reboot, no `bbp/mac/rf/rx/rd`.
+> **Evidence file:** `/tmp/opencode/nrd_inspect_output.txt`.
+
+The stock `nrd` configuration proves the daemon **does** maintain an
+**out-of-network** station database in memory:
+
+```text
+[STADB]
+IncludeOutOfNetwork=1
+OutOfNetworkMaxAge=300
+PopulateNonServingPHYInfo=1
+ProbeMaxInterval=3
+        |
+        v
+nrd mantiene una STADB de estaciones FUERA de red (probes)
+        |
+        v
+NO hay netlink multicast observable           (/proc/net/netlink proto 21, Groups=00000000)
+NO hay fichero de estado                       (find: no stadb / staInfo / clientLink)
+NO hay shared memory observable
+NO hay IPC legible pasivamente                (/var/tmp/42/43/45 son DGRAM de nrd)
+/proc/net/wireless no aporta RSSI              (todas las interfaces en link level -256)
+        |
+        v
+NO existe canal read-only para extraer la STADB
+```
+
+### The critical distinction
+
+> **"`nrd` conoce las estaciones"  ≠  "Detectic puede leerlas".**
+
+`IncludeOutOfNetwork=1` means the vendor daemon sees and tracks nearby
+non-associated devices **internally** for band/steering. It does **not** mean
+there is any accessible API, socket, multicast group, file, or shared-memory
+region that Detectic can read **without altering nrd's state**. This must not be
+re-derived as an implied capability.
+
+---
+
+## 29. Final Determination — EX520-only unassociated detection is NO-GO
+
+> **Date:** 2026-08-29
+> **Result of the consolidated investigation** (GTPR/GDPR probe, `iwpriv`
+> enumeration, radio-object read, and passive `nrd` runtime observation).
+
+### Statement
+
+> **Final determination:** On stock EX520 firmware, unassociated Wi-Fi client
+> detection with **MAC + RSSI + channel** is **not available** through the
+> exposed GTPR/GDPR, `iwpriv`, radio statistics, or passively observable `nrd`
+> runtime interfaces tested. Obtaining this telemetry requires an **external
+> 802.11 capture sensor** or a **firmware-level integration** exposing the
+> relevant internal state.
+
+### Decision status
+
+```text
+EX520-only unassociated detection : NO-GO   🔴
+External sensor (extsensor)       : GO      🟢
+```
+
+### Investigation status snapshot
+
+```text
+PHASE 1 — EX520 telemetry (GTPR / iwpriv / radio)
+    GREEN / COMPLETE   (ASSOCDEV ok; get_site_survey ok for APs;
+                        DEV2_WIFI_DE_UNASSOCSTA = real object, 0 instances;
+                        no cfg80211/nl80211/monitor VIF)
+
+PHASE 2b/2c — nrd passive runtime observation
+    YELLOW / COMPLETE  (STADB out-of-network exists but is NOT
+                        observable without altering nrd's state)
+
+RESULT
+    No additional passive telemetry path found.
+
+DECISION
+    Stop EX520-only investigation.
+    Proceed with external sensor architecture (extsensor).
+```
+
+### Guidance
+
+Do **not** re-open the EX520-only non-associated detection line unless new
+concrete evidence of another observation surface appears (e.g., a future
+firmware revision that populates `DEV2_WIFI_DE_UNASSOCSTA`, or a documented,
+read-only MediaTek HAL command for unassociated STA discovery). Otherwise, the
+engineering effort belongs on the **external RF sensor** (`src/bin/extsensor.rs`),
+which already implements monitor-mode probe capture, IE/OUI fingerprinting
+readiness (`process_probes` → `process_rf_evidence`), pseudonymization, and the
+canonical event envelope.
+
+---
+
+## 30. RF / PHY Sensing Loop — Compiled-but-NOT-Exposed
+
+> **Date:** 2026-08-29
+> **Investigation:** High-value RF/PHY sensing loop. Question addressed:
+> *Can a stock EX520 (MT7981 / MediaTek Connac2) sense the physical presence /
+> proximity of a Wi-Fi device that is NOT associated, using RF/PHY telemetry —
+> independently of recovering the MAC?*
+>
+> **Safety:** All new evidence is **static, host-side analysis of already-extracted
+> firmware artifacts** (`_rootfs/`, kernel modules, firmware blobs, binaries).
+> **Nothing was executed on the live EX520.** The safety rules forbid Lifemote/
+> Phoenix execution, state-changing ioctls, and interface/radio changes, which is
+> why the experimental (runtime-sampling) branches are **escalated but not executed.**
+>
+> **Recall the principle:** *"The EX520 cannot expose an unassociated station
+> table" ≠ "The EX520 cannot sense an unassociated device."* This section checks
+> the second statement.
+
+### 30.1 Executive verdict (per mechanism)
+
+| Mechanism | Verdict | Reason |
+|-----------|---------|--------|
+| CSI / I-Q (ICap) | **NO-GO** | Compiled in, but access requires RF **test mode / ATE** (state-changing) |
+| RXV (PHY receive-vector dump) | **NO-GO** | Compiled in, but requires **arming** (write) + dmesg/shell to read |
+| Channel utilization / airtime / OBSS | **PROMISING — BLOCKED** | Counters compiled; not surfaced on the standard read path (needs shell/debug) |
+| Per-chain radio RSSI (`stat`) | **PROMISING — UNPROVEN** | Read-only observable, but time-series sampling requires executing on the router |
+| Station discovery (GTPR / iwpriv) | **NO-GO** | Already closed (prior phases) |
+
+No branch reaches **S2 (reproducible presence)** without executing/enabling
+something on the router, which the rules forbid.
+
+### 30.2 Capability matrix
+
+| Mechanism | Hardware | Stock FW | Enabled | Observable (read-only) | Unassociated signal | Result |
+|-----------|----------|----------|---------|------------------------|---------------------|--------|
+| CSI / ICap (I-Q) | ✅ | ✅ compiled | ❌ ICapMode + ATE/test-mode | ❌ (`get_icap_data "not supported"`; `MtCmdRfTest*`/`MT_ATEGetICapIQData` ioctls) | — | **NO-GO** |
+| RXV dump | ✅ | ✅ compiled | ⚠️ needs `chip_rxv_dump_start` (write) | ❌ (arm via ioctl/set; output via dmesg/shell) | — | **NO-GO** |
+| Channel util / airtime / OBSS | ✅ | ✅ compiled | ✅ counters exist | ⚠️ not in `stat`; behind shell `show`/debug | ⚠️ possible | **BLOCKED** |
+| Per-chain RSSI (`stat`) | ✅ | ✅ | ✅ | ✅ proven (`rai0 Rssi: -54 -42 -109 -109`) | ⚠️ unproven, needs time series | **ESCALATE** |
+| Site survey (APs) | ✅ | ✅ | ✅ | ✅ (`get_site_survey` ~120 APs) | ❌ APs, not clients | NO-GO (clients) |
+
+### 30.3 Evidence (static, host-side; all GREEN)
+
+Driver — `_rootfs/lib/modules/5.4.211/mt_wifi.ko` (kernel 5.4.211):
+
+- **ICap (I-Q / CSI):** `prICapInfo` struct (`fgRingCapEn`, `fgTrigger`, `u4CaptureLen`,
+  `u4EnBitWidth`, `u4FixRxGain`, `ucBW`, `u4PhyIdx`, …); `ExtEventICapUnSolicitIQDataHandler`,
+  `ExtEventICap96BitDataParser`, `MT_ATEGetICapIQData`, `MtCmdRfTestSolicitICapIQDataCb`,
+  `MT7622_ICAP_*` (shared chip code); **`mt_serv_get_icap_data is not supported`**;
+  `IcapMode` / `IsICAPFW`; `Before NICLoadFirmware, check ICapMode`.
+- **RXV (PHY receive vector):** `[RXV DUMP START/END]`, `dump_rxd`, `dump_rxd_4dw`,
+  `chip_rxv_dump_start/stop`, `chip_get_rxv_cnt/content`, `AsicSetRxvFilter`.
+- **CCA / airtime / OBSS:** `get_channel_utilization`, `My Rx/Tx Airtime`,
+  `u4OBSSAirtime`, `obss percentage`, `CCA_NAV_Tx_Time`, `EDCCA`/`EDCCAthreshold`,
+  `cca_en`, and a read-only `show` command (`iwpriv ... show srmeshbhdlobsspdth`).
+- **Exposed iwpriv commands (`$` table):** `$stat`, `$get_site_survey`,
+  `$get_driverinfo`, `$get_ba_table`, `$get_wsc_profile`, `$phystate`.
+  **No `$get_channel_utilization` / `$dump_rxv`** in the exposed table.
+- **No read-only `/proc`/debugfs node** is registered by the driver for these.
+
+HAL — `_rootfs/lib/libplatform_api.so`: only `get radio snr`, `rssi_to_rcpi`
+(no CSI/RXV/I-Q symbols).
+
+Firmware: `WIFI_RAM_CODE_MT7981.bin` (normal) **and** `WIFI_RAM_CODE_MT7981_TESTMODE.bin`
++ `mt7981_patch_e1_hdr_testmode.bin` (test mode) → the I-Q path is a **test-mode** capability.
+
+Tooling: `/bin/ated_tp` (MediaTek ATE / RF-test) present — drives test mode, **not read-only**.
+
+`nrd` (`_rootfs/bin/nrd`) consumes RSSI / RCPI / utilization **internally** for
+band steering (e.g., `Delay24GProbeRSSIThreshold`, `CliSteerRCPIThreshold`,
+`estimator_estimateNonServingUplinkRSSI`); no read-only external surface.
+
+### 30.4 Experiments
+
+**None executed** (rules forbid runtime execution). The experiment that would
+demonstrate **S2** for the per-chain-RSSI / airtime branch:
+
+```text
+setup:   test device with Wi-Fi ON, NOT associated, at 0.5 / 1 / 2 / 3 / 5 m
+control: device absent (baseline)
+measure: time series (Δt=1 s, N≥60) of
+         - iwpriv <if> stat -> "Rssi:" (per-chain)
+         - My Rx/Tx Airtime / OBSS percentage (if reachable)
+         - site survey (AP signal) as control
+states:  A absent / B idle / C transmitting / D moving / E stationary / F removed
+metric:  baseline vs signal mean/variance, delta, SNR, repeatability (≥3 trials)
+```
+
+**Why not executed:** sampling requires **repeatedly running a command on the
+router**. The only remote shell is Lifemote/Phoenix (**forbidden**), and adding a
+collector to the resident sensor requires build + a `bootstart`/Phoenix deploy
+(**forbidden**, and "service replacement" is also disallowed). Airtime/OBSS live
+counters sit behind shell `show`/debug commands.
+
+### 30.5 Dead ends (anti-callejón: the 5 questions)
+
+- **CSI / I-Q (ICap): CLOSED.** HW ✅ · FW compiled ✅ · enabled ❌ (`ICapMode` +
+  test mode) · observable read-only ❌ (`get_icap_data "not supported"`; ATE ioctls)
+  → any access needs **test mode / state change** (RED) or `ated_tp`.
+- **RXV dump: CLOSED.** Compiled, but arming (`chip_rxv_dump_start`) is a **write**
+  and the output is dmesg (shell). No read-only command or proc node.
+- **Channel utilization / airtime / OBSS: CLOSED for exposed access.** Counters exist
+  but `stat` does not emit them; they are behind shell `show`/debug. No read path
+  without executing.
+- **Station discovery (GTPR / iwpriv): CLOSED** (prior phases: `DEV2_WIFI_DE_UNASSOCSTA`
+  empty; `get_sta_info` / `ap_get_assoclist` = "Invalid command").
+- **`nrd` passive: CLOSED** (STADB internal, no observable surface; consumes RSSI
+  internally).
+
+**Strength of closure:** the chain `compiled → not enabled for normal mode → no
+read-only interface → requires state / shell / ATE` is backed by concrete symbols
+and strings, not "not found".
+
+### 30.6 Loop status
+
+```text
+Priority 1 (CSI/Connac2)........ COMPILED, access = test-mode/gate  -> CLOSE
+Priority 2 (RXV/PHY rx)......... COMPILED, access = arm + dmesg      -> CLOSE
+Priority 3 (env. per-chain RSSI). Read-only observable, unproven     -> ESCALATE
+Priority 5 (CCA/airtime/OBSS)... Counters compiled, no exposed read  -> CLOSE (exposed)
+Priority 8 (nrd cross-check).... Internal RSSI only                  -> CLOSE
+
+RESULT
+    No read-only, non-executable, non-state-changing interface exists on stock
+    firmware to drive an unassociated-device RF/presence signal (S2+).
+
+DECISION
+    ESCALATE the per-chain-RSSI / airtime time-series sensing (requires a
+    read-only on-router collector = a YELLOW deploy, NOT authorized now).
+    Do NOT re-open CSI/I-Q or RXV (they are test-mode/state-changing).
+```
+
+### 30.7 Detectic recommendation
+
+**D — Abandon EX520-only RF sensing; rely on the external sensor (`extsensor`)**,
+which provides S4/S5 (MAC + RSSI + channel) via a reproducible read-only design.
+
+**Conditional future (B/C):** if a **read-only resident collector** on the EX520 is
+later authorized (YELLOW deploy, no firmware change), the **per-chain RSSI of
+`stat`** and the **airtime/OBSS counters** could contribute a low-cost **presence
+(S2)** signal alongside `extsensor`. That would re-open only the "on-router
+collector" branch — not CSI/I-Q or RXV.

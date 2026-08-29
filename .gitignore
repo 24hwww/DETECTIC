@@ -68,4 +68,14 @@ logs/
 
 # Runtime PID files (regenerated, never commit)
 deploy/ex520_package/.*.pid
+
+# --- Runtime proofs / logs / forensic output with potential secrets ---
+/deploy/ex520_package/proof_log.txt
+/deploy/ex520_package/proof_log_hot.txt
+/deploy/ex520_package/env_probe_output.txt
+/deploy/ex520_package/detectic_events.txt
+/deploy/ex520_package/acs_*.txt
+/deploy/ex520_package/acs_*.json
+/firmware_forensics/
+/tasks/
 tools/wss_probe/target

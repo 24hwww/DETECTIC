@@ -12,7 +12,8 @@
 
 use crate::model::Device;
 use crate::monitor::NearbyObservation;
-use crate::presence::{PresenceState, Proximity, ProximityThresholds};
+use crate::presence::PresenceState;
+use crate::proximity::{ProximityConfig, ProximityResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -42,7 +43,7 @@ pub struct UnifiedPresenceDevice {
     /// Presence state from the engine.
     pub presence: PresenceState,
     /// Proximity classification.
-    pub proximity: Proximity,
+    pub proximity: Option<ProximityResult>,
     /// Confidence [0.0, 1.0].
     pub confidence: f64,
     /// First seen (epoch seconds).
@@ -67,8 +68,8 @@ pub struct UnifiedPresenceDevice {
 pub fn fuse(
     associated: &[Device],
     nearby: &[NearbyObservation],
-    presence_state: &HashMap<String, (PresenceState, Proximity, f64, i64, i64)>,
-    thresholds: &ProximityThresholds,
+    presence_state: &HashMap<String, (PresenceState, Option<ProximityResult>, f64, i64, i64)>,
+    _config: &ProximityConfig,
 ) -> Vec<UnifiedPresenceDevice> {
     let mut map: HashMap<String, UnifiedPresenceDevice> = HashMap::new();
 
@@ -76,14 +77,10 @@ pub fn fuse(
     for d in associated {
         let id = d.identity();
         let rssi = d.rssi;
-        let (presence, proximity, confidence, first, last) =
-            presence_state.get(&id).cloned().unwrap_or((
-                PresenceState::Present,
-                classify_rssi(rssi, thresholds),
-                0.5,
-                0,
-                0,
-            ));
+        let (presence, proximity, confidence, first, last) = presence_state
+            .get(&id)
+            .cloned()
+            .unwrap_or((PresenceState::Present, None, 0.5, 0, 0));
         let entry = map.entry(id.clone()).or_insert(UnifiedPresenceDevice {
             identity: id.clone(),
             associated: true,
@@ -128,7 +125,7 @@ pub fn fuse(
         let (presence, proximity, confidence, first, last) =
             presence_state.get(&id).cloned().unwrap_or((
                 PresenceState::Present,
-                classify_rssi(rssi, thresholds),
+                None,
                 n.confidence,
                 n.timestamp,
                 n.timestamp,
@@ -175,13 +172,6 @@ pub fn fuse(
     }
 
     map.into_values().collect()
-}
-
-fn classify_rssi(rssi: Option<i64>, t: &ProximityThresholds) -> Proximity {
-    match rssi {
-        Some(r) => t.classify(r),
-        None => Proximity::Unknown,
-    }
 }
 
 #[cfg(test)]
@@ -234,13 +224,13 @@ mod tests {
         let mut state = HashMap::new();
         state.insert(
             "AA:BB:CC:00:00:01".into(),
-            (PresenceState::Present, Proximity::Near, 0.9, 1000, 1010),
+            (PresenceState::Present, None, 0.9, 1000, 1010),
         );
         let fused = fuse(
             &associated,
             &nearby_obs,
             &state,
-            &ProximityThresholds::default(),
+            &ProximityConfig::default(),
         );
         assert_eq!(fused.len(), 1);
         let d = &fused[0];
@@ -260,7 +250,7 @@ mod tests {
             &associated,
             &nearby_obs,
             &state,
-            &ProximityThresholds::default(),
+            &ProximityConfig::default(),
         );
         assert_eq!(fused.len(), 2);
         let assoc = fused.iter().find(|d| d.associated).unwrap();
@@ -280,7 +270,7 @@ mod tests {
             &associated,
             &nearby_obs,
             &state,
-            &ProximityThresholds::default(),
+            &ProximityConfig::default(),
         );
         assert_eq!(fused[0].rssi, Some(-40));
     }

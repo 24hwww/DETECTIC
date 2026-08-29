@@ -6,7 +6,9 @@
 
 use crate::events::Event;
 use crate::model::NetworkMap;
+use crate::proximity::ProximityResult;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::thread::sleep;
@@ -22,10 +24,52 @@ use std::time::Duration;
 pub struct UploadDevice {
     pub pseudonym: String,
     pub rssi: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rssi_dbm: Option<f64>,
     pub standard: Option<String>,
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radio_mac: Option<String>,
+    /// Proximity result for this device.
+    #[serde(skip_serializing_if = "Option::is_none", flatten)]
+    pub proximity: Option<FlattenedProximity>,
+}
+
+/// Flattened proximity fields for backend upload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlattenedProximity {
+    pub proximity_zone: String,
+    pub proximity_trend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proximity_zone_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proximity_trend_label: Option<String>,
+    pub heat: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proximity_confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proximity_samples: Option<usize>,
+}
+
+impl From<&ProximityResult> for FlattenedProximity {
+    fn from(p: &ProximityResult) -> Self {
+        Self {
+            proximity_zone: p.zone.as_str().into(),
+            proximity_trend: p.trend.as_str().into(),
+            proximity_zone_label: Some(p.zone_label().into()),
+            proximity_trend_label: Some(p.trend_label().into()),
+            heat: p.heat,
+            distance_m: p.distance_m,
+            proximity_confidence: if p.confidence > 0.0 {
+                Some(p.confidence)
+            } else {
+                None
+            },
+            proximity_samples: if p.samples > 0 { Some(p.samples) } else { None },
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,16 +85,28 @@ pub struct UploadPayload {
 
 impl UploadPayload {
     pub fn from_map(map: &NetworkMap, sensor_id: &str, secret: &[u8]) -> Self {
-        Self::from_map_with_events(map, &[], sensor_id, secret)
+        Self::from_map_with_events_and_proximity(map, &[], sensor_id, secret, &HashMap::new())
     }
 
     /// Build a payload that includes both the current snapshot and the privacy-safe
     /// change events that produced it.
+    #[deprecated(note = "use from_map_with_events_and_proximity")]
     pub fn from_map_with_events(
         map: &NetworkMap,
         events: &[Event],
         sensor_id: &str,
         secret: &[u8],
+    ) -> Self {
+        Self::from_map_with_events_and_proximity(map, events, sensor_id, secret, &HashMap::new())
+    }
+
+    /// Build a payload with optional per-device proximity results.
+    pub fn from_map_with_events_and_proximity(
+        map: &NetworkMap,
+        events: &[Event],
+        sensor_id: &str,
+        secret: &[u8],
+        proximity: &HashMap<String, ProximityResult>,
     ) -> Self {
         let mut pseudos: Vec<String> = map
             .devices
@@ -69,15 +125,21 @@ impl UploadPayload {
             devices: map
                 .devices
                 .iter()
-                .map(|d| UploadDevice {
-                    pseudonym: crate::pseudonymize(secret, &d.identity()),
-                    rssi: d.rssi,
-                    standard: d.standard.clone(),
-                    source: d.source.clone(),
-                    radio_mac: d
-                        .radio_mac
-                        .as_deref()
-                        .map(|r| crate::pseudonymize(secret, r)),
+                .map(|d| {
+                    let prox = proximity.get(&d.identity());
+                    let flat = prox.map(FlattenedProximity::from);
+                    UploadDevice {
+                        pseudonym: crate::pseudonymize(secret, &d.identity()),
+                        rssi: d.rssi,
+                        rssi_dbm: prox.and_then(|p| p.rssi_dbm),
+                        standard: d.standard.clone(),
+                        source: d.source.clone(),
+                        radio_mac: d
+                            .radio_mac
+                            .as_deref()
+                            .map(|r| crate::pseudonymize(secret, r)),
+                        proximity: flat,
+                    }
                 })
                 .collect(),
             events: events.to_vec(),
@@ -328,7 +390,13 @@ mod tests {
             identity: "AA:BB:CC:11:22:33".into(),
             changed_fields: vec![],
         }];
-        let p = UploadPayload::from_map_with_events(&m, &events, "home-001", b"secret");
+        let p = UploadPayload::from_map_with_events_and_proximity(
+            &m,
+            &events,
+            "home-001",
+            b"secret",
+            &HashMap::new(),
+        );
         assert_eq!(p.events.len(), 1);
         let json = serde_json::to_string(&p).unwrap();
         assert!(!json.contains("AA:BB:CC"));

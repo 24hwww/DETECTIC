@@ -5,6 +5,7 @@ import { ArrowLeft, Wifi } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProximityBadge } from "@/components/proximity-badge";
 import { useRealtime } from "@/lib/realtime";
 import { fetchAllNetworks } from "@/lib/api";
 
@@ -109,13 +110,13 @@ export function APDetailView() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Current State
+            Estado actual
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
             <Field
-              label="Status"
+              label="Estado"
               value={
                 <Badge
                   variant="outline"
@@ -130,7 +131,7 @@ export function APDetailView() {
               }
             />
             <Field
-              label="Signal (current)"
+              label="Señal (actual)"
               value={
                 liveAp?.last_signal != null || detail?.current_signal != null
                   ? `${liveAp?.last_signal ?? detail?.current_signal} dBm`
@@ -138,7 +139,7 @@ export function APDetailView() {
               }
             />
             <Field
-              label="Average Signal"
+              label="Señal promedio"
               value={
                 detail?.average_signal != null
                   ? `${detail.average_signal} dBm`
@@ -146,29 +147,40 @@ export function APDetailView() {
               }
             />
             <Field
-              label="Signal Range"
+              label="Rango de señal"
               value={
                 detail?.min_signal != null && detail?.max_signal != null
                   ? `${detail.min_signal} … ${detail.max_signal} dBm`
                   : "—"
               }
             />
-            <Field label="Band" value={liveAp?.band || detail?.band || "—"} />
+            <Field label="Banda" value={liveAp?.band || detail?.band || "—"} />
             <Field
-              label="Channel"
+              label="Canal"
               value={detail?.channel != null ? String(detail.channel) : liveAp?.channel != null ? String(liveAp.channel) : "—"}
             />
             <Field
-              label="Security"
+              label="Seguridad"
               value={liveAp?.security || detail?.security || "—"}
             />
-            <Field label="Mode" value={liveAp?.w_mode || detail?.w_mode || "—"} />
+            <Field label="Modo" value={liveAp?.w_mode || detail?.w_mode || "—"} />
             <Field label="Sensor" value={liveAp?.sensor_id || detail?.sensor_id || "—"} />
-            <Field label="First Seen" value={fmtDate(detail?.first_seen)} />
-            <Field label="Last Seen" value={timeAgo(liveAp?.last_seen || detail?.last_seen)} />
+            <Field label="Primera vez" value={fmtDate(detail?.first_seen)} />
+            <Field label="Última vez" value={timeAgo(liveAp?.last_seen || detail?.last_seen)} />
             <Field
-              label="Observations"
+              label="Observaciones"
               value={liveAp?.event_count ?? detail?.observation_count ?? "—"}
+            />
+            <Field
+              label="Proximidad"
+              value={
+                <div className="flex flex-col">
+                  <ProximityBadge
+                    proximity={liveAp?.proximity ?? detail?.proximity}
+                    detail={liveAp?.proximity_detail ?? detail?.proximity_detail}
+                  />
+                </div>
+              }
             />
           </div>
         </CardContent>

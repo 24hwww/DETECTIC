@@ -94,7 +94,7 @@ export function ReportsView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Reports"
+        title="Reportes"
         description="Resumen histórico y métricas de 24h"
       />
 
@@ -105,7 +105,7 @@ export function ReportsView() {
           sub={`${s.identified_devices ?? 0} identificados`}
         />
         <KpiCard
-          title="APs detectadas"
+          title="APs detectados"
           value={liveNets.length}
           sub="señales Wi-Fi"
         />

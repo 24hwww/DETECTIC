@@ -4,24 +4,24 @@ import { RealtimeIndicator } from "@/components/realtime-indicator";
 import { cn } from "@/lib/utils";
 
 const breadcrumbMap: Record<string, string> = {
-  "/": "Overview",
-  "/map": "Map",
-  "/devices": "Devices",
-  "/access-points": "Access Points",
-  "/rf": "RF Environment",
-  "/events": "Events",
-  "/sessions": "Sessions",
-  "/history": "History",
-  "/sensors": "Sensors",
+  "/": "Panel",
+  "/map": "Mapa",
+  "/devices": "Dispositivos",
+  "/access-points": "Puntos de acceso",
+  "/rf": "Entorno RF",
+  "/events": "Eventos",
+  "/sessions": "Sesiones",
+  "/history": "Historial",
+  "/sensors": "Sensores",
   "/router": "Router",
-  "/connectivity": "Connectivity",
-  "/reports": "Reports",
-  "/settings": "Settings",
+  "/connectivity": "Conectividad",
+  "/reports": "Reportes",
+  "/settings": "Configuración",
 };
 
 export function Topbar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
   const path = typeof window !== "undefined" ? window.location.pathname : "/";
-  const page = breadcrumbMap[path] || "Overview";
+  const page = breadcrumbMap[path] || "Panel";
 
   return (
     <header className="flex h-14 items-center gap-4 border-b border-border bg-card px-4">

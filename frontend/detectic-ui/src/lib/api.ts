@@ -15,6 +15,7 @@ export type Sensor = {
 export type Device = {
   device_id: string;
   connected: boolean;
+  state?: string;
   last_signal?: number;
   sensor_id?: string;
   first_seen?: number;
@@ -23,6 +24,7 @@ export type Device = {
   last_type?: string;
   hostname?: string;
   band?: string;
+  proximity?: string | null;
 };
 
 export type DetailedDevice = {
@@ -71,6 +73,8 @@ export type Network = {
   observation_count?: number;
   session_count?: number;
   extch?: string;
+  proximity?: string | null;
+  proximity_detail?: string | Record<string, unknown> | null;
 };
 
 export type RfSnapshot = {
@@ -122,6 +126,65 @@ export type Timeline = {
   points: TimelinePoint[];
 };
 
+export type AnalyticsBucket = {
+  bucket: string;
+  connected?: number;
+  disconnected?: number;
+  nearby?: number;
+  avg?: number | null;
+  min?: number | null;
+  max?: number | null;
+  immediate?: number;
+  near?: number;
+  medium?: number;
+  far?: number;
+  unknown?: number;
+};
+
+export type ActivityHour = { hour: number; count: number };
+
+export type Dweller = {
+  device_id: string;
+  manufacturer?: string | null;
+  device_class?: string | null;
+  total_seconds: number;
+  total_minutes: number;
+  sessions: number;
+  last_signal?: number | null;
+};
+
+export type AnalyticsTotals = {
+  total_connected: number;
+  total_disconnected: number;
+  total_observed: number;
+  total_nearby_events: number;
+  avg_session_seconds: number;
+  total_dwell_hours: number;
+  peak_hour: number | null;
+  peak_hour_connections: number;
+};
+
+export type Analytics = {
+  hours: number;
+  granularity: "hour" | "day";
+  cutoff: number;
+  connectionTimeline: { bucket: string; connected: number }[];
+  disconnectionTimeline: { bucket: string; disconnected: number }[];
+  nearbyTimeline: { bucket: string; nearby: number }[];
+  rssiTimeline: { bucket: string; avg: number | null; min: number | null; max: number | null }[];
+  proximityTimeline: {
+    bucket: string;
+    immediate: number;
+    near: number;
+    medium: number;
+    far: number;
+    unknown: number;
+  }[];
+  activityByHour: ActivityHour[];
+  topDwellers: Dweller[];
+  totals: AnalyticsTotals;
+};
+
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} en ${url}`);
@@ -141,14 +204,21 @@ export async function fetchDevices(): Promise<Device[]> {
 }
 
 export async function fetchNetworks(): Promise<Network[]> {
-  const data = await fetchJson<{ networks?: Network[] }>(
-    `${API}/reports/networks?hours=24`
+  const data = await fetchJson<{ aps?: Network[]; networks?: Network[] }>(
+    `${API}/networks?hours=168`
   );
-  return data.networks || [];
+  return data.aps || data.networks || [];
+}
+
+export async function fetchRecentNetworks(): Promise<Network[]> {
+  const data = await fetchJson<{ aps?: Network[]; networks?: Network[] }>(
+    `${API}/networks?hours=24`
+  );
+  return data.aps || data.networks || [];
 }
 
 export async function fetchAllNetworks(): Promise<NetworksResponse> {
-  return fetchJson<NetworksResponse>(`${API}/networks?hours=24`);
+  return fetchJson<NetworksResponse>(`${API}/networks?hours=168`);
 }
 
 export async function fetchStats(): Promise<Stats> {
@@ -164,4 +234,8 @@ export async function fetchAllDevices(): Promise<DetailedDevice[]> {
 
 export async function fetchTimeline(): Promise<Timeline> {
   return fetchJson<Timeline>(`${API}/timeline?hours=24`);
+}
+
+export async function fetchAnalytics(hours = 24): Promise<Analytics> {
+  return fetchJson<Analytics>(`${API}/analytics?hours=${hours}`);
 }

@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ProximityBadge } from "@/components/proximity-badge";
 import type { Network } from "@/lib/api";
 
 function timeAgo(ms?: number) {
@@ -78,6 +79,15 @@ const columns = [
     header: "Modo",
     cell: (info) => info.getValue() || "—",
   }),
+  columnHelper.accessor("proximity", {
+    header: "Proximidad",
+    cell: (info) => (
+      <ProximityBadge
+        proximity={info.getValue()}
+        detail={info.row.original.proximity_detail}
+      />
+    ),
+  }),
   columnHelper.accessor("sensor_id", {
     header: "Sensor",
     cell: (info) => info.getValue() || "—",
@@ -113,7 +123,7 @@ export function NetworkTable({
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Redes Wi-Fi observadas (APs)
+          Puntos de acceso detectados
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">

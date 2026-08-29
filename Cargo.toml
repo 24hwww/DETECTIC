@@ -9,6 +9,10 @@ license = "MIT"
 name = "detectic"
 path = "src/main.rs"
 
+[[bin]]
+name = "extsensor"
+path = "src/bin/extsensor.rs"
+
 [lib]
 name = "detectic"
 path = "src/lib.rs"

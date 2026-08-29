@@ -5,7 +5,7 @@
 //! Privacy contract: every event carries only the HMAC pseudonym (`device_id`);
 //! raw MACs/IPs/hostnames never enter [`EventEnvelope`].
 
-use crate::calibrate::{ProximityBucket, ProximityConfidence};
+use crate::proximity::{ProximityResult, ProximityZone};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -41,6 +41,8 @@ pub enum EventType {
     DeviceNetworkChanged,
     #[serde(rename = "device.presence_changed")]
     DevicePresenceChanged,
+    #[serde(rename = "device.proximity_changed")]
+    DeviceProximityChanged,
     #[serde(rename = "network.detected")]
     NetworkDetected,
     #[serde(rename = "network.disappeared")]
@@ -49,6 +51,8 @@ pub enum EventType {
     NetworkChanged,
     #[serde(rename = "rf.environment_snapshot")]
     RfEnvironmentSnapshot,
+    #[serde(rename = "rf.probe_detected")]
+    RfProbeDetected,
 }
 
 impl EventType {
@@ -60,10 +64,12 @@ impl EventType {
             EventType::DeviceBandChanged => "device.band_changed",
             EventType::DeviceNetworkChanged => "device.network_changed",
             EventType::DevicePresenceChanged => "device.presence_changed",
+            EventType::DeviceProximityChanged => "device.proximity_changed",
             EventType::NetworkDetected => "network.detected",
             EventType::NetworkDisappeared => "network.disappeared",
             EventType::NetworkChanged => "network.changed",
             EventType::RfEnvironmentSnapshot => "rf.environment_snapshot",
+            EventType::RfProbeDetected => "rf.probe_detected",
         }
     }
 }
@@ -128,6 +134,8 @@ pub struct DeviceObs {
     pub band: Option<String>,
     pub interface: Option<String>,
     pub hostname: Option<String>,
+    /// Proximity result from the ProximityEngine.
+    pub proximity: Option<ProximityResult>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -140,6 +148,8 @@ pub struct NetworkObs {
     pub security: Option<String>,
     pub w_mode: Option<String>,
     pub extch: Option<String>,
+    /// Proximity result for this nearby AP.
+    pub proximity: Option<ProximityResult>,
 }
 
 /// RF-only probe observation from an external sensor (USB monitor adapter,
@@ -162,6 +172,8 @@ pub struct ProbeObservation {
     pub supported_rates: Vec<String>,
     pub randomized: bool,
     pub confidence: f64,
+    /// Proximity classification computed by the sensor-side presence engine.
+    pub proximity: Option<ProximityResult>,
 }
 
 /// Snapshot of the RF environment at one observation time.
@@ -199,6 +211,10 @@ pub struct TemporalConfig {
     pub polls_to_absent: u32,
     /// Minimum absolute RSSI delta required to emit device.signal_changed.
     pub signal_delta_threshold: i64,
+    /// Proximity "radius": a device is *within* the radius when its zone rank
+    /// is at most this value (0=Immediate, 1=Near, 2=Medium, 3=Far, 4=Edge).
+    /// Default 1 => Near or closer counts as "cerca" and fires the radius event.
+    pub proximity_radius_max_rank: u8,
     /// Maximum devices tracked simultaneously (memory bound).
     pub max_tracked_devices: usize,
     /// Maximum site-survey networks tracked simultaneously (memory bound).
@@ -211,6 +227,7 @@ impl Default for TemporalConfig {
             missing_polls_to_disconnect: 2,
             polls_to_absent: 240,
             signal_delta_threshold: 5,
+            proximity_radius_max_rank: 1,
             max_tracked_devices: 4096,
             max_tracked_networks: 512,
         }
@@ -279,6 +296,7 @@ struct TrackedDevice {
     last_rssi: Option<i64>,
     last_band: Option<String>,
     last_interface: Option<String>,
+    last_proximity_zone: Option<ProximityZone>,
     hostname: Option<String>,
     current_session: Option<ConnectionSession>,
     summary: DeviceSummary,
@@ -293,6 +311,7 @@ impl Default for TrackedDevice {
             last_rssi: None,
             last_band: None,
             last_interface: None,
+            last_proximity_zone: None,
             hostname: None,
             current_session: None,
             summary: DeviceSummary::default(),
@@ -398,7 +417,8 @@ impl TemporalEngine {
         for obs in observed {
             seen.push(obs.identity.as_str());
             if !self.devices.contains_key(&obs.identity) {
-                self.devices.insert(obs.identity.clone(), TrackedDevice::default());
+                self.devices
+                    .insert(obs.identity.clone(), TrackedDevice::default());
             }
             let prev_rssi;
             let prev_band;
@@ -453,8 +473,6 @@ impl TemporalEngine {
                         entry.summary.connection_count += 1;
                         count = entry.summary.connection_count;
                     }
-                    let prox = ProximityBucket::from_rcpi(obs.rssi);
-                    let prox_conf = ProximityConfidence::from_calibration(0);
                     out.push(make_event(
                         &mut self.seq,
                         &self.sensor_id,
@@ -466,13 +484,15 @@ impl TemporalEngine {
                             "new_device": is_new_device,
                             "connection_count": count,
                             "rssi": obs.rssi,
+                            "rssi_dbm": obs.proximity.as_ref().and_then(|p| p.rssi_dbm),
                             "noise": obs.noise,
                             "band": obs.band,
                             "hostname": obs.hostname,
-                            "proximity": prox.label(),
-                            "proximity_confidence": prox_conf.as_str(),
+                            "proximity": proximity_label(obs.proximity.as_ref()),
+                            "proximity_detail": proximity_payload(obs.proximity.as_ref()),
                         }),
                     ));
+                    self.maybe_proximity_event(&mut out, ts, obs);
                     continue;
                 }
             }
@@ -505,8 +525,6 @@ impl TemporalEngine {
 
             if let (Some(old), Some(new)) = (prev_rssi, obs.rssi) {
                 if (old - new).abs() >= self.config.signal_delta_threshold {
-                    let prox = ProximityBucket::from_rcpi(Some(new));
-                    let prox_conf = ProximityConfidence::from_calibration(0);
                     out.push(make_event(
                         &mut self.seq,
                         &self.sensor_id,
@@ -516,14 +534,20 @@ impl TemporalEngine {
                         serde_json::json!({
                             "old_signal": old,
                             "new_signal": new,
+                            "rssi_dbm": obs.proximity.as_ref().and_then(|p| p.rssi_dbm),
                             "band": obs.band,
                             "hostname": obs.hostname,
-                            "proximity": prox.label(),
-                            "proximity_confidence": prox_conf.as_str(),
+                            "proximity": proximity_label(obs.proximity.as_ref()),
+                            "proximity_detail": proximity_payload(obs.proximity.as_ref()),
                         }),
                     ));
                 }
             }
+
+            // Proximity radius event: fire whenever the device's proximity zone
+            // changes (entering/leaving "cerca" within the configured radius), so
+            // the stream reflects each new signal detection.
+            self.maybe_proximity_event(&mut out, ts, obs);
         }
 
         let missing_threshold = self.config.missing_polls_to_disconnect;
@@ -639,6 +663,50 @@ impl TemporalEngine {
         out
     }
 
+    /// Emit `device.proximity_changed` when a device's proximity zone changes,
+    /// so the event stream reflects each new signal detection and the entry/exit
+    /// of the configured "cerca" radius.
+    fn maybe_proximity_event(&mut self, out: &mut Vec<EventEnvelope>, ts: i64, obs: &DeviceObs) {
+        let Some(px) = obs.proximity.as_ref() else { return };
+        let cur_zone = px.zone;
+        let prev_zone = {
+            let entry = self.devices.get_mut(&obs.identity).unwrap();
+            let prev = entry.last_proximity_zone;
+            entry.last_proximity_zone = Some(cur_zone);
+            prev
+        };
+        if prev_zone == Some(cur_zone) {
+            return;
+        }
+        let radius = self.config.proximity_radius_max_rank;
+        let in_radius = in_radius_zone(cur_zone, radius);
+        let prev_in = prev_zone.map(|z| in_radius_zone(z, radius)).unwrap_or(false);
+        out.push(make_event(
+            &mut self.seq,
+            &self.sensor_id,
+            ts,
+            EventType::DeviceProximityChanged,
+            Some(obs.pseudonym.clone()),
+            serde_json::json!({
+                "old_zone": prev_zone.map(|z| z.as_str()),
+                "new_zone": cur_zone.as_str(),
+                "zone_label": px.zone_label(),
+                "trend": px.trend.as_str(),
+                "trend_label": px.trend_label(),
+                "trend_arrow": px.trend.arrow(),
+                "heat": px.heat,
+                "rssi_dbm": px.rssi_dbm,
+                "distance_m": px.distance_m,
+                "confidence": px.confidence,
+                "in_radius": in_radius,
+                "entered_radius": in_radius && !prev_in,
+                "exited_radius": !in_radius && prev_in,
+                "band": obs.band,
+                "hostname": obs.hostname,
+            }),
+        ));
+    }
+
     /// Process RF-only evidence (site survey / probes) for unassociated
     /// devices. Moves DISCONNECTED/ABSENT/UNKNOWN devices into RF_PRESENT.
     pub fn process_rf_evidence(&mut self, ts: i64, observed: &[DeviceObs]) -> Vec<EventEnvelope> {
@@ -648,11 +716,57 @@ impl TemporalEngine {
                 self.devices
                     .insert(obs.identity.clone(), TrackedDevice::default());
             }
-            let entry = self.devices.get_mut(&obs.identity).unwrap();
-            if entry.state.is_associated() || entry.state == TemporalState::RfPresent {
+            // Read prev values before any &mut self calls.
+            let (prev_rssi, prev_zone) = {
+                let entry = self.devices.get(&obs.identity).unwrap();
+                (entry.last_rssi, entry.last_proximity_zone)
+            };
+            let state = {
+                let entry = self.devices.get(&obs.identity).unwrap();
+                entry.state
+            };
+            if state == TemporalState::RfPresent {
+                let entry = self.devices.get_mut(&obs.identity).unwrap();
                 entry.summary.last_seen = Some(ts);
+                entry.missing_polls = 0;
+                // Emit signal_changed / proximity_changed for recurring RF sightings.
+                if let (Some(old), Some(new)) = (prev_rssi, obs.rssi) {
+                    if (old - new).abs() >= self.config.signal_delta_threshold {
+                        out.push(make_event(
+                            &mut self.seq,
+                            &self.sensor_id,
+                            ts,
+                            EventType::DeviceSignalChanged,
+                            Some(obs.pseudonym.clone()),
+                            serde_json::json!({
+                                "old_signal": old,
+                                "new_signal": new,
+                                "rssi_dbm": obs.proximity.as_ref().and_then(|p| p.rssi_dbm),
+                                "band": obs.band,
+                                "proximity": proximity_label(obs.proximity.as_ref()),
+                                "proximity_detail": proximity_payload(obs.proximity.as_ref()),
+                            }),
+                        ));
+                    }
+                }
+                self.maybe_proximity_event(&mut out, ts, obs);
+                let entry = self.devices.get_mut(&obs.identity).unwrap();
+                entry.last_rssi = obs.rssi;
+                entry.last_band = obs.band.clone();
+                if prev_zone.is_none() {
+                    if let Some(px) = obs.proximity.as_ref() {
+                        entry.last_proximity_zone = Some(px.zone);
+                    }
+                }
                 continue;
             }
+            if state.is_associated() {
+                let entry = self.devices.get_mut(&obs.identity).unwrap();
+                entry.summary.last_seen = Some(ts);
+                entry.missing_polls = 0;
+                continue;
+            }
+            let entry = self.devices.get_mut(&obs.identity).unwrap();
             entry.pseudonym = obs.pseudonym.clone();
             entry.hostname = obs.hostname.clone().or_else(|| entry.hostname.clone());
             entry.state = TemporalState::RfPresent;
@@ -660,6 +774,11 @@ impl TemporalEngine {
             entry.summary.last_seen = Some(ts);
             if entry.summary.first_seen.is_none() {
                 entry.summary.first_seen = Some(ts);
+            }
+            entry.last_rssi = obs.rssi;
+            entry.last_band = obs.band.clone();
+            if let Some(px) = obs.proximity.as_ref() {
+                entry.last_proximity_zone = Some(px.zone);
             }
             out.push(make_event(
                 &mut self.seq,
@@ -671,6 +790,7 @@ impl TemporalEngine {
                     "to_state": TemporalState::RfPresent.as_str(),
                     "rssi": obs.rssi,
                     "band": obs.band,
+                    "proximity": proximity_label(obs.proximity.as_ref()),
                 }),
             ));
         }
@@ -724,6 +844,7 @@ impl TemporalEngine {
                 band: p.band.clone(),
                 interface: None,
                 hostname: None,
+                proximity: p.proximity.clone(),
             })
             .collect();
         self.process_rf_evidence(ts, &obs)
@@ -739,10 +860,7 @@ impl TemporalEngine {
         for n in observed {
             seen.push(n.bssid_pseudonym.as_str());
             let is_new = !self.networks.contains_key(&n.bssid_pseudonym);
-            let entry = self
-                .networks
-                .entry(n.bssid_pseudonym.clone())
-                .or_default();
+            let entry = self.networks.entry(n.bssid_pseudonym.clone()).or_default();
             let prev_band = entry.band.clone();
             let prev_channel = entry.channel;
             let prev_signal = entry.last_signal;
@@ -766,6 +884,8 @@ impl TemporalEngine {
                         "security": n.security,
                         "w_mode": n.w_mode,
                         "extch": n.extch,
+                        "proximity": proximity_label(n.proximity.as_ref()),
+                        "proximity_detail": proximity_payload(n.proximity.as_ref()),
                     }),
                 ));
             } else {
@@ -796,7 +916,8 @@ impl TemporalEngine {
                         serde_json::json!({ "old": prev_ssid, "new": n.ssid }),
                     );
                 }
-                if prev_security != n.security && !(prev_security.is_none() && n.security.is_none()) {
+                if prev_security != n.security && !(prev_security.is_none() && n.security.is_none())
+                {
                     changed.insert(
                         "security".into(),
                         serde_json::json!({ "old": prev_security, "new": n.security }),
@@ -815,6 +936,14 @@ impl TemporalEngine {
                     );
                 }
                 if !changed.is_empty() {
+                    changed.insert(
+                        "proximity".into(),
+                        proximity_label(n.proximity.as_ref()).into(),
+                    );
+                    changed.insert(
+                        "proximity_detail".into(),
+                        proximity_payload(n.proximity.as_ref()),
+                    );
                     out.push(make_event(
                         &mut self.seq,
                         &self.sensor_id,
@@ -888,13 +1017,18 @@ impl TemporalEngine {
                 Some("5GHz") => ap_count_5 += 1,
                 _ => {}
             }
-            let key = e.channel.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into());
+            let key = e
+                .channel
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".into());
             *channel_dist.entry(key).or_insert(0) += 1;
         }
 
         aps.sort_by(|a, b| {
             // Descending by signal, then by AP id for determinism.
-            b.1.last_signal.cmp(&a.1.last_signal).then_with(|| a.0.cmp(b.0))
+            b.1.last_signal
+                .cmp(&a.1.last_signal)
+                .then_with(|| a.0.cmp(b.0))
         });
 
         let strongest = signals.iter().copied().max();
@@ -906,7 +1040,13 @@ impl TemporalEngine {
         };
         let variance = if signals.len() >= 2 {
             let mean = signals.iter().sum::<i64>() as f64 / signals.len() as f64;
-            Some(signals.iter().map(|&s| (s as f64 - mean).powi(2)).sum::<f64>() / signals.len() as f64)
+            Some(
+                signals
+                    .iter()
+                    .map(|&s| (s as f64 - mean).powi(2))
+                    .sum::<f64>()
+                    / signals.len() as f64,
+            )
         } else {
             None
         };
@@ -989,6 +1129,43 @@ impl TemporalEngine {
     }
 }
 
+/// Return a short human-readable label for an optional proximity result.
+fn proximity_label(p: Option<&ProximityResult>) -> String {
+    match p {
+        Some(px) => px.label(),
+        None => "unknown".into(),
+    }
+}
+
+/// True when a proximity zone is "within the configured radius" (rank <= max).
+/// `Unknown` is never considered in radius.
+fn in_radius_zone(zone: ProximityZone, max_rank: u8) -> bool {
+    zone != ProximityZone::Unknown && zone.rank() <= max_rank
+}
+
+/// Serialize a proximity result into the JSON payload shape expected by the
+/// backend and dashboard.  Returns `null` when no result is available.
+fn proximity_payload(p: Option<&ProximityResult>) -> serde_json::Value {
+    match p {
+        Some(px) => serde_json::json!({
+            "zone": px.zone.as_str(),
+            "zone_label": px.zone_label(),
+            "trend": px.trend.as_str(),
+            "trend_label": px.trend_label(),
+            "trend_arrow": px.trend.arrow(),
+            "heat": px.heat,
+            "rssi_dbm": px.rssi_dbm,
+            "distance_m": px.distance_m,
+            "confidence": px.confidence,
+            "calibrated": px.calibrated,
+            "band_mhz": px.band_mhz,
+            "samples": px.samples,
+            "raw_signal": px.raw_signal,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1008,6 +1185,7 @@ mod tests {
             band: Some("2.4GHz".into()),
             interface: Some("rai0".into()),
             hostname: None,
+            proximity: None,
         }
     }
 
@@ -1024,6 +1202,58 @@ mod tests {
 
     fn kinds(events: &[EventEnvelope]) -> Vec<EventType> {
         events.iter().map(|e| e.event_type).collect()
+    }
+
+    fn obs_prox(id: &str, rssi: Option<i64>, zone: ProximityZone) -> DeviceObs {
+        let mut d = obs(id, rssi);
+        let mut p = crate::proximity::ProximityResult::unknown();
+        p.zone = zone;
+        p.rssi_dbm = rssi.map(|_| -60.0);
+        p.heat = 60;
+        d.proximity = Some(p);
+        d
+    }
+
+    #[test]
+    fn proximity_event_fires_on_zone_change_and_radius_entry_exit() {
+        let mut e = engine();
+        // New device, far -> DeviceConnected + DeviceProximityChanged (not in radius).
+        let ev = e.process_associated(1000, &[obs_prox("AA", Some(-90), ProximityZone::Far)]);
+        assert_eq!(
+            kinds(&ev),
+            vec![EventType::DeviceConnected, EventType::DeviceProximityChanged]
+        );
+        let p0 = ev
+            .iter()
+            .find(|x| x.event_type == EventType::DeviceProximityChanged)
+            .expect("proximity event on first detection");
+        assert_eq!(p0.payload["in_radius"], false);
+        assert_eq!(p0.payload["entered_radius"], false);
+        assert_eq!(p0.payload["new_zone"], "far");
+
+        // Moves nearer -> proximity_changed with entered_radius=true.
+        let ev = e.process_associated(1010, &[obs_prox("AA", Some(-60), ProximityZone::Near)]);
+        let prox = ev
+            .iter()
+            .find(|x| x.event_type == EventType::DeviceProximityChanged)
+            .expect("proximity event");
+        assert_eq!(prox.payload["in_radius"], true);
+        assert_eq!(prox.payload["entered_radius"], true);
+        assert_eq!(prox.payload["new_zone"], "near");
+
+        // Still near -> no proximity_changed (zone unchanged).
+        let ev = e.process_associated(1020, &[obs_prox("AA", Some(-55), ProximityZone::Near)]);
+        assert!(ev.iter().all(|x| x.event_type != EventType::DeviceProximityChanged));
+
+        // Moves away -> proximity_changed with exited_radius=true.
+        let ev = e.process_associated(1030, &[obs_prox("AA", Some(-95), ProximityZone::Far)]);
+        let prox = ev
+            .iter()
+            .find(|x| x.event_type == EventType::DeviceProximityChanged)
+            .expect("proximity event 2");
+        assert_eq!(prox.payload["in_radius"], false);
+        assert_eq!(prox.payload["exited_radius"], true);
+        assert_eq!(prox.payload["new_zone"], "far");
     }
 
     #[test]
@@ -1297,11 +1527,14 @@ mod tests {
         assert_eq!(events[0].payload["old_band"], "2.4GHz");
         assert_eq!(events[0].payload["new_band"], "5GHz");
 
-        let again = e.process_associated(1060, &[{
-            let mut o = obs("AA", Some(-52));
-            o.band = Some("5GHz".into());
-            o
-        }]);
+        let again = e.process_associated(
+            1060,
+            &[{
+                let mut o = obs("AA", Some(-52));
+                o.band = Some("5GHz".into());
+                o
+            }],
+        );
         assert!(again.is_empty());
     }
 
@@ -1360,10 +1593,7 @@ mod tests {
     fn no_raw_identity_in_any_event() {
         let mut e = engine();
         let mut all = Vec::new();
-        all.extend(e.process_associated(
-            1000,
-            &[obs("11:22:33:44:55:66", Some(-50))],
-        ));
+        all.extend(e.process_associated(1000, &[obs("11:22:33:44:55:66", Some(-50))]));
         all.extend(e.process_associated(1030, &[]));
         all.extend(e.process_associated(1060, &[]));
         all.extend(e.process_rf_evidence(1070, &[obs("aa:bb:cc:dd:ee:ff", Some(-80))]));
@@ -1489,5 +1719,39 @@ mod tests {
         assert_eq!(e.state_of("AA"), TemporalState::Connected);
         let ev = e.process_associated(1060, &[obs("AA", Some(-50))]);
         assert_eq!(kinds(&ev), vec![EventType::DeviceDisconnected]);
+    }
+
+    /// Deterministic replay: T1 connect, T2 unchanged, T3 signal drop, T4 leave,
+    /// T5 reappear. Assert the final state and the canonical event stream.
+    #[test]
+    fn replay_presence_signal_leave_reappear() {
+        let mut e = engine_threshold_1();
+
+        // T1: device A present, RSSI -45
+        let e1 = e.process_associated(1000, &[obs("AA", Some(-45))]);
+        assert_eq!(kinds(&e1), vec![EventType::DeviceConnected]);
+        assert_eq!(e.state_of("AA"), TemporalState::Connected);
+
+        // T2: same RSSI -45 -> no event
+        let e2 = e.process_associated(1005, &[obs("AA", Some(-45))]);
+        assert!(e2.is_empty(), "unchanged signal must not emit");
+        assert_eq!(e.state_of("AA"), TemporalState::Connected);
+
+        // T3: RSSI -60 -> signal_changed (delta 15 >= threshold 5)
+        let e3 = e.process_associated(1010, &[obs("AA", Some(-60))]);
+        assert_eq!(kinds(&e3), vec![EventType::DeviceSignalChanged]);
+        assert_eq!(e3[0].payload["old_signal"], -45);
+        assert_eq!(e3[0].payload["new_signal"], -60);
+        assert_eq!(e.state_of("AA"), TemporalState::Connected);
+
+        // T4: absent -> disconnected (threshold=1 means immediate)
+        let e4 = e.process_associated(1015, &[]);
+        assert_eq!(kinds(&e4), vec![EventType::DeviceDisconnected]);
+        assert_eq!(e.state_of("AA"), TemporalState::Disconnected);
+
+        // T5: reappear, RSSI -50 -> connected again
+        let e5 = e.process_associated(1020, &[obs("AA", Some(-50))]);
+        assert_eq!(kinds(&e5), vec![EventType::DeviceConnected]);
+        assert_eq!(e.state_of("AA"), TemporalState::Connected);
     }
 }

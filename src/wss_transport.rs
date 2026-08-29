@@ -19,6 +19,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct WssEventTransport {
     base_url: String,
+    token: String,
     socket: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
     connected: bool,
     last_ok: Instant,
@@ -26,7 +27,7 @@ pub struct WssEventTransport {
 }
 
 impl WssEventTransport {
-    pub fn new(base_url: &str, sensor_id: &str) -> Self {
+    pub fn new(base_url: &str, sensor_id: &str, token: &str) -> Self {
         let mut url = base_url.trim_end_matches('/').to_string();
         if !url.contains('?') {
             url.push_str("?role=sensor&sensor_id=");
@@ -37,6 +38,7 @@ impl WssEventTransport {
         }
         Self {
             base_url: url,
+            token: token.to_string(),
             socket: None,
             connected: false,
             last_ok: Instant::now(),
@@ -63,20 +65,34 @@ impl WssEventTransport {
             Ok((mut ws, _resp)) => {
                 // Read the automatic hello_ack the DO sends on connection.
                 if let Ok(Message::Text(_)) = ws.read() {
-                    // send hello and wait for the hello_ack (and diagnostic command)
+                    // send hello carrying the per-sensor credential. The token
+                    // is NEVER logged and NEVER placed in the URL.
                     let hello = serde_json::json!({
                         "type": "hello",
                         "protocol": WSS_PROTOCOL,
+                        "token": self.token,
                     });
                     if ws.send(Message::Text(hello.to_string())).is_ok() {
-                        // drain hello_ack + optional command
-                        let _ = drain_until(&mut ws, &["hello_ack", "command", "command_ack_ok"], Duration::from_secs(2));
-                        self.socket = Some(ws);
-                        self.connected = true;
-                        self.last_ok = Instant::now();
-                        self.backoff = Duration::from_secs(1);
-                        crate::logging::info("wss_connected");
-                        return true;
+                        // Wait for hello_ack (granted) or auth_error (rejected).
+                        match wait_handshake(&mut ws, Duration::from_secs(5)) {
+                            Ok(()) => {
+                                self.socket = Some(ws);
+                                self.connected = true;
+                                self.last_ok = Instant::now();
+                                self.backoff = Duration::from_secs(1);
+                                crate::logging::info("wss_authenticated");
+                                return true;
+                            }
+                            Err(reason) => {
+                                crate::logging::warn(&format!(
+                                    "wss_auth_rejected reason={}",
+                                    reason
+                                ));
+                                let _ = ws.close(None);
+                                self.backoff = (self.backoff * 2).min(Duration::from_secs(60));
+                                return false;
+                            }
+                        }
                     }
                 }
                 let _ = ws.close(None);
@@ -84,7 +100,10 @@ impl WssEventTransport {
                 false
             }
             Err(e) => {
-                crate::logging::warn(&format!("wss_connect_error err={} url={}", e, self.base_url));
+                crate::logging::warn(&format!(
+                    "wss_connect_error err={} url={}",
+                    e, self.base_url
+                ));
                 self.backoff = (self.backoff * 2).min(Duration::from_secs(60));
                 false
             }
@@ -111,11 +130,10 @@ fn parse_msg(text: &str) -> Option<serde_json::Value> {
     serde_json::from_str(text).ok()
 }
 
-fn drain_until(
+fn wait_handshake(
     ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    stop_types: &[&str],
     timeout: Duration,
-) {
+) -> Result<(), String> {
     let start = Instant::now();
     while start.elapsed() < timeout {
         let remaining = timeout - start.elapsed();
@@ -124,16 +142,25 @@ fn drain_until(
             Ok(Message::Text(t)) => {
                 if let Some(v) = parse_msg(&t) {
                     if let Some(ty) = v.get("type").and_then(|x| x.as_str()) {
-                        if stop_types.contains(&ty) {
-                            return;
+                        match ty {
+                            "hello_ack" | "command" | "command_ack_ok" => return Ok(()),
+                            "auth_error" => {
+                                let reason = v
+                                    .get("reason")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("unknown");
+                                return Err(reason.to_string());
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
             Ok(_) => {}
-            Err(_) => return,
+            Err(_) => return Err("connection_closed".into()),
         }
     }
+    Err("timeout".into())
 }
 
 fn is_timeout_or_closed(e: &tungstenite::Error) -> bool {
@@ -158,7 +185,8 @@ impl crate::event_transport::EventTransport for WssEventTransport {
             None => return Vec::new(),
         };
 
-        let mut expected: std::collections::HashSet<&str> = events.iter().map(|e| e.event_id.as_str()).collect();
+        let mut expected: std::collections::HashSet<&str> =
+            events.iter().map(|e| e.event_id.as_str()).collect();
         let mut acked: Vec<String> = Vec::with_capacity(events.len());
 
         for env in events {
@@ -195,7 +223,8 @@ impl crate::event_transport::EventTransport for WssEventTransport {
                                 if expected.remove(id) {
                                     crate::logging::info(&format!(
                                         "T6_ACK event_id={} ack_payload={}",
-                                        id, v.to_string()
+                                        id,
+                                        v.to_string()
                                     ));
                                     acked.push(id.to_string());
                                 }
@@ -243,7 +272,9 @@ mod tests {
     fn test_wss_roundtrip() {
         let url = std::env::var("WSS_TEST_URL")
             .unwrap_or_else(|_| "wss://detectic.24hwww.workers.dev/ws".to_string());
-        let mut t = WssEventTransport::new(&url, "ex520-test-001");
+        let token = std::env::var("WSS_TEST_TOKEN")
+            .expect("WSS_TEST_TOKEN must provide a registered sensor credential");
+        let mut t = WssEventTransport::new(&url, "ex520-test-001", &token);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

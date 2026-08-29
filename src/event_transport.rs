@@ -118,6 +118,61 @@ enum SendError {
     Permanent,
 }
 
+/// The canonical event-batch ACK contract returned by the Worker.
+///
+/// The three classes are distinguished explicitly and carried by stable
+/// event ID (never by array position):
+///   - `accepted_ids`   — newly persisted events (resolved; drop from retry)
+///   - `duplicate_ids`  — already-known event IDs (resolved; drop from retry so
+///                        the sensor never re-sends forever)
+///   - `rejected_ids`   — malformed/un-insertable events (retained on the
+///                        sensor for diagnostics)
+#[derive(Debug, Default, PartialEq)]
+pub struct ResolvedAck {
+    pub accepted_ids: Vec<String>,
+    pub duplicate_ids: Vec<String>,
+    pub rejected_ids: Vec<String>,
+}
+
+impl ResolvedAck {
+    /// Event IDs that are considered resolved (no longer need delivery):
+    /// newly accepted plus already-accepted duplicates. `rejected` events are
+    /// intentionally NOT included so the caller can retry them.
+    pub fn resolved_ids(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(self.accepted_ids.len() + self.duplicate_ids.len());
+        for id in self.accepted_ids.iter().chain(self.duplicate_ids.iter()) {
+            if seen.insert(id.clone()) {
+                out.push(id.clone());
+            }
+        }
+        out
+    }
+}
+
+/// Parse a Worker event-batch ACK body into a `ResolvedAck`.
+/// Pure, deterministic, and unit-testable. Unknown/malformed bodies yield an
+/// empty ack (nothing acknowledged) so the caller keeps its events.
+pub fn parse_ack_body(text: &str) -> ResolvedAck {
+    #[derive(Deserialize)]
+    struct AckBody {
+        #[serde(default)]
+        accepted_ids: Vec<String>,
+        #[serde(default)]
+        duplicate_ids: Vec<String>,
+        #[serde(default)]
+        rejected_ids: Vec<String>,
+    }
+    match serde_json::from_str::<AckBody>(text) {
+        Ok(b) => ResolvedAck {
+            accepted_ids: b.accepted_ids,
+            duplicate_ids: b.duplicate_ids,
+            rejected_ids: b.rejected_ids,
+        },
+        Err(_) => ResolvedAck::default(),
+    }
+}
+
 fn parse_ack(resp: ureq::Response) -> Result<Vec<String>, SendError> {
     let status = resp.status();
     if status >= 300 && status < 500 {
@@ -130,15 +185,7 @@ fn parse_ack(resp: ureq::Response) -> Result<Vec<String>, SendError> {
     if std::io::Read::read_to_string(&mut resp.into_reader(), &mut text).is_err() {
         return Err(SendError::Transient);
     }
-    #[derive(Deserialize)]
-    struct Ack {
-        #[serde(default)]
-        accepted_ids: Vec<String>,
-    }
-    Ok(serde_json::from_str::<Ack>(&text)
-        .ok()
-        .map(|a| a.accepted_ids)
-        .unwrap_or_default())
+    Ok(parse_ack_body(&text).resolved_ids())
 }
 
 fn classify_send_error(err: ureq::Error) -> SendError {
@@ -205,9 +252,7 @@ impl SpoolEventTransport {
     }
 
     fn append_bounded(&self, line: &str) {
-        let existing_len = std::fs::metadata(&self.path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let existing_len = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         let line_len = line.len() as u64 + 1;
         if line_len > self.max_bytes {
             return;
@@ -404,7 +449,11 @@ mod tests {
     #[test]
     fn queue_flush_removes_acked_keeps_unacked_in_order() {
         let mut q = ReliableQueue::new(16, 4096);
-        q.submit(vec![envelope(1, "e1"), envelope(2, "e2"), envelope(3, "e3")]);
+        q.submit(vec![
+            envelope(1, "e1"),
+            envelope(2, "e2"),
+            envelope(3, "e3"),
+        ]);
 
         struct PartialAck;
         impl EventTransport for PartialAck {
@@ -525,5 +574,92 @@ mod tests {
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         assert!(size <= 600, "spool must stay bounded, got {size}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_ack_body_maps_worker_contract() {
+        // Worker returns the canonical contract; the transport must resolve
+        // accepted + duplicate IDs (so duplicates are dropped, not retained).
+        let body = r#"{"accepted_ids":["e1","e2"],"duplicate_ids":["e3"],"rejected_ids":["e4"],"accepted":2,"duplicates":1,"rejected":1}"#;
+        let ack = parse_ack_body(body);
+        assert_eq!(ack.accepted_ids, vec!["e1", "e2"]);
+        assert_eq!(ack.duplicate_ids, vec!["e3"]);
+        assert_eq!(ack.rejected_ids, vec!["e4"]);
+        let resolved = ack.resolved_ids();
+        assert_eq!(resolved.len(), 3);
+        assert!(resolved.contains(&"e1".to_string()));
+        assert!(resolved.contains(&"e2".to_string()));
+        assert!(resolved.contains(&"e3".to_string()));
+        // rejected is intentionally NOT resolved -> survives for retry
+        assert!(!resolved.contains(&"e4".to_string()));
+    }
+
+    #[test]
+    fn parse_ack_body_empty_on_malformed_or_legacy() {
+        // Legacy body only had `accepted`. It must not be misinterpreted.
+        assert_eq!(
+            parse_ack_body("not json").resolved_ids(),
+            Vec::<String>::new()
+        );
+        let legacy = parse_ack_body(r#"{"accepted":5}"#);
+        assert!(legacy.resolved_ids().is_empty());
+        // Empty contract acknowledges nothing (caller keeps its events).
+        let empty = parse_ack_body("{}");
+        assert!(empty.accepted_ids.is_empty());
+    }
+
+    #[test]
+    fn queue_removes_both_accepted_and_duplicate() {
+        // Integration-style: enqueue two events, transport sends them, the
+        // Worker accepts one and reports the other as a duplicate. BOTH must be
+        // resolved to avoid the spool growing indefinitely.
+        struct AcceptAll;
+        impl EventTransport for AcceptAll {
+            fn send_events(&mut self, _events: &[EventEnvelope]) -> Vec<String> {
+                // Simulate the Worker contract: e1 accepted, e2 duplicate.
+                let body = r#"{"accepted_ids":["e1"],"duplicate_ids":["e2"],"rejected_ids":[],"accepted":1,"duplicates":1}"#;
+                parse_ack_body(body).resolved_ids()
+            }
+            fn name(&self) -> &str {
+                "accept-all"
+            }
+            fn is_connected(&self) -> bool {
+                true
+            }
+        }
+        let mut q = ReliableQueue::new(16, 4096);
+        q.submit(vec![envelope(1, "e1"), envelope(2, "e2")]);
+        let mut t = AcceptAll;
+        let report = q.flush(&mut t);
+        // Neither event is retained -> no unbounded spool / retry loop.
+        assert_eq!(report.sent, 2);
+        assert_eq!(report.kept, 0);
+        assert_eq!(q.pending_len(), 0);
+    }
+
+    #[test]
+    fn rejected_event_survives_retry() {
+        // A rejected event must remain distinguishable (kept) while accepted
+        // and duplicate events are dropped.
+        struct ApproveOne;
+        impl EventTransport for ApproveOne {
+            fn send_events(&mut self, _events: &[EventEnvelope]) -> Vec<String> {
+                let body = r#"{"accepted_ids":["e1"],"duplicate_ids":[],"rejected_ids":["e2"],"accepted":1,"rejected":1}"#;
+                parse_ack_body(body).resolved_ids()
+            }
+            fn name(&self) -> &str {
+                "approve-one"
+            }
+            fn is_connected(&self) -> bool {
+                true
+            }
+        }
+        let mut q = ReliableQueue::new(16, 4096);
+        q.submit(vec![envelope(1, "e1"), envelope(2, "e2")]);
+        let mut t = ApproveOne;
+        let report = q.flush(&mut t);
+        assert_eq!(report.sent, 1);
+        assert_eq!(report.kept, 1, "rejected event must remain queued");
+        assert_eq!(q.last_sequence(), Some(2));
     }
 }

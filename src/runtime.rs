@@ -150,7 +150,10 @@ impl SensorRuntime {
                 let http = Box::new(crate::backend::HttpBackend::new(&self.config));
                 return Box::new(crate::backend::SpoolBackend::new(
                     http,
-                    self.config.spool_path.to_str().unwrap_or("/var/run/misc/misc_rw/detectic/spool/detectic_buffer.jsonl"),
+                    self.config
+                        .spool_path
+                        .to_str()
+                        .unwrap_or("/var/run/misc/misc_rw/detectic/spool/detectic_buffer.jsonl"),
                     self.config.spool_max_bytes,
                     self.config.secret.as_bytes(),
                 ));

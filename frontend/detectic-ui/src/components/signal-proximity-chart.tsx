@@ -19,9 +19,10 @@ function barColor(rssi?: number) {
 }
 
 export function SignalProximityChart({ devices }: { devices: Device[] }) {
+  const isOnline = (d: Device) => d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED");
   const data = useMemo(() => {
     return devices
-      .filter((d) => d.connected && d.last_signal != null)
+      .filter((d) => isOnline(d) && d.last_signal != null)
       .sort((a, b) => (b.last_signal || -100) - (a.last_signal || -100))
       .slice(0, 15)
       .map((d) => ({

@@ -27,7 +27,7 @@ export function PageHeader({
           onClick={onRefresh}
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Actualizar
+          Refrescar
         </Button>
       </div>
     </div>

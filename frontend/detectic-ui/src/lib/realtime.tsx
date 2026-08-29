@@ -98,7 +98,19 @@ export function extractDevice(event: any): Device | null {
       ? Number(inner.signal)
       : undefined;
 
-  const connected = type === "device.disconnected" ? false : true;
+  const toState = inner.to_state || inner.new_state;
+  const state =
+    toState ||
+    (type === "device.disconnected" ? "ABSENT" : type === "device.connected" ? "CONNECTED" : undefined);
+
+  const connected =
+    state === "ABSENT"
+      ? false
+      : state === "DISCONNECTED"
+      ? false
+      : type === "device.disconnected"
+      ? false
+      : true;
 
   const observedAt =
     typeof outer.timestamp === "number"
@@ -111,6 +123,7 @@ export function extractDevice(event: any): Device | null {
   return {
     device_id: deviceId,
     connected,
+    state,
     last_signal: rssi,
     sensor_id: outer.sensor_id || event?.sensor_id,
     last_seen: observedAt,
@@ -118,6 +131,7 @@ export function extractDevice(event: any): Device | null {
     last_type: type,
     hostname: inner.hostname,
     band: inner.band || inner.new_band || inner.old_band,
+    proximity: inner.proximity ?? null,
   };
 }
 

@@ -21,7 +21,7 @@ export function ConnectivityView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="Connectivity"
+        title="Conectividad"
         description="Estado de transporte y eventos en vivo"
       />
 

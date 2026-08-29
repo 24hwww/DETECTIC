@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Shell(bash -c git status --short && echo '---' && git log --oneline -15 && echo '---' && git diff --stat)",
-      "Shell(cargo:*)"
+      "Shell(cargo:*)",
+      "Shell(file:*)",
+      "Shell(strings:*)",
+      "Shell(grep:*)",
+      "Shell(ls -la deploy/ex520_package/detectic.aa deploy/ex520_package/detectic.ab && echo \"---\" && wc -c deploy/ex520_package/detectic.aa deploy/ex520_package/detectic.ab && echo \"---\" && echo \"Sum: $(( $(wc -c < deploy/ex520_package/detectic.aa) + $(wc -c < deploy/ex520_package/detectic.ab) )) bytes\")"
     ],
     "deny": [],
     "defaultMode": "default"

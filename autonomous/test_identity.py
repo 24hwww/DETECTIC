@@ -12,15 +12,18 @@ from autonomous.identity import (
     EvidenceType,
     MacType,
     Observation,
+    AliasMap,
     classify_mac,
     combine_confidence,
     confidence_label,
     confidence_word,
     infer_device_class,
+    is_generic_hostname,
     is_randomized,
     manufacturer,
     normalize_mac,
     oui,
+    stable_fingerprint,
 )
 from autonomous.identity.model import Evidence
 
@@ -209,6 +212,92 @@ class TestTemporal(unittest.TestCase):
         i2 = eng.identify(obs2, SECRET)
         self.assertEqual(i2.evidence[-1].type, EvidenceType.TEMPORAL_CORRELATION)
         self.assertEqual(eng.repos.get_temporal(i1.pseudonym).observation_count, 2)
+
+
+class TestStableFingerprint(unittest.TestCase):
+    def test_multiband_same_device_same_fingerprint(self):
+        """A device on 2.4GHz and 5GHz (different MACs) must share fingerprint_id."""
+        fp24 = stable_fingerprint(SECRET, "moto-g42", "Motorola", DeviceClass.SMARTPHONE,
+                                  "aa:bb:cc:dd:ee:01")
+        fp5 = stable_fingerprint(SECRET, "moto-g42", "Motorola", DeviceClass.SMARTPHONE,
+                                 "aa:bb:cc:dd:ee:02")
+        self.assertEqual(fp24.fingerprint_id, fp5.fingerprint_id)
+        self.assertEqual(fp24.method, "hostname")
+        self.assertGreaterEqual(fp24.confidence, 0.9)
+
+    def test_mac_rotation_with_hostname_stays_stable(self):
+        """Randomized MAC rotation on reconnect keeps the same fingerprint_id
+        as long as the hostname is specific."""
+        fp_a = stable_fingerprint(SECRET, "realme-9i", None, DeviceClass.SMARTPHONE,
+                                  "02:11:22:33:44:55")
+        fp_b = stable_fingerprint(SECRET, "realme-9i", None, DeviceClass.SMARTPHONE,
+                                  "02:aa:bb:cc:dd:ee")
+        self.assertEqual(fp_a.fingerprint_id, fp_b.fingerprint_id)
+
+    def test_randomized_mac_no_hostname_changes(self):
+        """Without a usable hostname, a rotated randomized MAC yields a new id."""
+        fp_a = stable_fingerprint(SECRET, None, None, DeviceClass.UNKNOWN,
+                                  "02:11:22:33:44:55")
+        fp_b = stable_fingerprint(SECRET, None, None, DeviceClass.UNKNOWN,
+                                  "02:aa:bb:cc:dd:ee")
+        self.assertNotEqual(fp_a.fingerprint_id, fp_b.fingerprint_id)
+        self.assertEqual(fp_a.method, "mac_randomized")
+        self.assertLess(fp_a.confidence, 0.5)
+
+    def test_global_mac_stable_without_hostname(self):
+        """A non-randomized MAC (e.g. IoT) is a stable key by itself."""
+        fp1 = stable_fingerprint(SECRET, None, None, DeviceClass.UNKNOWN,
+                                 "00:19:e0:12:34:56")
+        fp2 = stable_fingerprint(SECRET, None, None, DeviceClass.UNKNOWN,
+                                 "00:19:e0:12:34:56")
+        self.assertEqual(fp1.fingerprint_id, fp2.fingerprint_id)
+        self.assertEqual(fp1.method, "mac")
+
+    def test_generic_hostname_not_used_as_key(self):
+        self.assertTrue(is_generic_hostname("iphone"))
+        self.assertTrue(is_generic_hostname("android"))
+        self.assertTrue(is_generic_hostname("Unknown"))
+        self.assertTrue(is_generic_hostname(""))
+        self.assertFalse(is_generic_hostname("moto-g42"))
+        self.assertFalse(is_generic_hostname("amazon-07a4dcc48"))
+        self.assertFalse(is_generic_hostname("soporte24hwww"))
+
+    def test_hostname_and_mac_namespaces_disjoint(self):
+        """A hostname-derived id can never collide with a mac-derived id."""
+        fp_h = stable_fingerprint(SECRET, "moto-g42", "Motorola", DeviceClass.SMARTPHONE,
+                                  "00:19:e0:12:34:56")
+        fp_m = stable_fingerprint(SECRET, None, None, DeviceClass.UNKNOWN,
+                                  "00:19:e0:12:34:56")
+        self.assertNotEqual(fp_h.fingerprint_id, fp_m.fingerprint_id)
+
+    def test_sensor_scoped(self):
+        """Different secrets yield different fingerprint_ids (privacy scoping)."""
+        fp1 = stable_fingerprint(b"secret-A", "moto-g42", "Motorola", DeviceClass.SMARTPHONE, "aa")
+        fp2 = stable_fingerprint(b"secret-B", "moto-g42", "Motorola", DeviceClass.SMARTPHONE, "aa")
+        self.assertNotEqual(fp1.fingerprint_id, fp2.fingerprint_id)
+
+
+class TestAliasMap(unittest.TestCase):
+    def test_register_and_resolve(self):
+        m = AliasMap()
+        m.register("fp1", "mac-a", ts=100, hostname="moto-g42", band="2.4GHz")
+        m.register("fp1", "mac-b", ts=200, hostname="moto-g42", band="5GHz")
+        self.assertEqual(m.fingerprint_of("mac-a"), "fp1")
+        self.assertEqual(m.fingerprint_of("mac-b"), "fp1")
+        self.assertEqual(sorted(m.aliases("fp1")), ["mac-a", "mac-b"])
+        rec = m.get("fp1")
+        self.assertEqual(rec.first_seen, 100)
+        self.assertEqual(rec.last_seen, 200)
+        self.assertIn("2.4GHz", rec.bands)
+        self.assertIn("5GHz", rec.bands)
+
+    def test_roundtrip(self):
+        m = AliasMap()
+        m.register("fp1", "mac-a", ts=10, hostname="h", band="2.4GHz")
+        m.register("fp2", "mac-b", ts=20, hostname="h2", band="5GHz")
+        m2 = AliasMap.from_dict(m.to_dict())
+        self.assertEqual(sorted(m2.aliases("fp1")), ["mac-a"])
+        self.assertEqual(m2.fingerprint_of("mac-b"), "fp2")
 
 
 if __name__ == "__main__":

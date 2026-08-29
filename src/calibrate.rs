@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Maximum valid RCPI per MediaTek (0-127 inclusive).
-pub const RCPI_MAX: i64 = 127;
+/// Maximum valid RCPI per MediaTek (0-255; the SDN reports an 8-bit value).
+/// Live EX520 values have been observed up to ~134 for very close stations,
+/// so the older 0-127 cap wrongly rejected strong signals as "unknown".
+pub const RCPI_MAX: i64 = 255;
 pub const RCPI_MIN: i64 = 0;
 
 /// Quality classification for a raw RCPI value.
@@ -49,18 +51,24 @@ pub fn classify_rcpi(rcpi: i64) -> RssiQuality {
     }
 }
 
-/// Convert RCPI to estimated dBm using the linear mapping documented in
-/// `investigations/rssi_semantics.md`.
+/// Convert RCPI to estimated dBm using the MediaTek-derived linear mapping.
 ///
-/// `RSSI(dBm) ≈ -110 + (RCPI / 127) * 30`
+/// `RSSI(dBm) ≈ -125 + RCPI * 0.5`, caped at -30 dBm so an extreme-high RCPI
+/// (>190) can never yield an impossible positive/too-strong value.
 ///
-/// This is a vendor-approximate, uncalibrated conversion. It returns `None` for
-/// values that cannot represent a real RCPI, including the common `-100` sentinel.
+/// This reflects the EX520's observed range: typical strong associated stations
+/// report RCPI 90-110, which maps to dBm ≈ -80…-70 (cerca/medio). A very close
+/// station may report RCPI up to ~134, which maps to ≈ -58 dBm (near). The older
+/// `-110 + (RCPI/127)*30` mapping bottomed out at -80 dBm even for the strongest
+/// signal, which misclassified nearby devices as "far". This is still a
+/// vendor-approximate, uncalibrated conversion, and it returns `None` for values
+/// that cannot represent a real RCPI, including the common `-100` sentinel.
 pub fn rcpi_to_dbm(rcpi: i64) -> Option<f64> {
     if !classify_rcpi(rcpi).is_usable() {
         return None;
     }
-    Some(-110.0 + (rcpi as f64 * 30.0) / RCPI_MAX as f64)
+    let dbm = -125.0 + rcpi as f64 * 0.5;
+    Some(dbm.min(-30.0))
 }
 
 /// Convert RCPI noise to dBm if and only if the noise scale is known.
@@ -240,10 +248,20 @@ pub struct Calibrator {
 
 impl Calibrator {
     pub fn new(session: CalibrationSession) -> Self {
-        Self { session, samples: Vec::new() }
+        Self {
+            session,
+            samples: Vec::new(),
+        }
     }
 
-    pub fn record(&mut self, device: &Device, raw_signal: i64, smoothed: Option<f64>, distance_m: f32, orientation: &str) {
+    pub fn record(
+        &mut self,
+        device: &Device,
+        raw_signal: i64,
+        smoothed: Option<f64>,
+        distance_m: f32,
+        orientation: &str,
+    ) {
         let device_id = device.identity();
         let radio_id = device.radio_mac.clone().unwrap_or_default();
         let band = Band::Unknown; // Derive from radio config in real implementation
@@ -279,14 +297,19 @@ impl Calibrator {
             let e = per_dist.entry(key).or_insert(Vec::new());
             e.push(s.raw_signal_strength);
         }
-        let stats = per_dist.into_iter().map(|(d, vals)| {
-            let n = vals.len() as f64;
-            let sum: i64 = vals.iter().sum();
-            let mean = sum as f64 / n;
-            let var = vals.iter().map(|v| (*v as f64 - mean).powi(2)).sum::<f64>() / n;
-            (d as f32, mean, var.sqrt())
-        }).collect();
-        CalibrationSummary { per_distance_stats: stats }
+        let stats = per_dist
+            .into_iter()
+            .map(|(d, vals)| {
+                let n = vals.len() as f64;
+                let sum: i64 = vals.iter().sum();
+                let mean = sum as f64 / n;
+                let var = vals.iter().map(|v| (*v as f64 - mean).powi(2)).sum::<f64>() / n;
+                (d as f32, mean, var.sqrt())
+            })
+            .collect();
+        CalibrationSummary {
+            per_distance_stats: stats,
+        }
     }
 
     /// Fit a log-distance profile from the collected samples.
@@ -336,7 +359,11 @@ impl Calibrator {
             }
         }
 
-        let n = if n_count > 0 { n_sum / n_count as f64 } else { 2.0 };
+        let n = if n_count > 0 {
+            n_sum / n_count as f64
+        } else {
+            2.0
+        };
         Some(DistanceProfile {
             band: self.session.band,
             d0_m: d0,
@@ -381,12 +408,18 @@ impl DistanceProfile {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     format!("{:x}", n)
 }
 
@@ -503,9 +536,7 @@ pub fn estimate_distance(
             let conf = confidence_score(db, sample_count, profile.calibrated);
             (Some(db as f32), bucket, Some(m as f32), conf)
         }
-        _ => {
-            (None, ModelProximityBucket::Unknown, None, 0.0)
-        }
+        _ => (None, ModelProximityBucket::Unknown, None, 0.0),
     };
 
     DistanceEstimate {
@@ -568,7 +599,13 @@ impl LogDistanceEstimator {
             Some(next_ema)
         };
 
-        let est = estimate_distance(rcpi, self.profile.band, filtered, &self.profile, self.sample_count);
+        let est = estimate_distance(
+            rcpi,
+            self.profile.band,
+            filtered,
+            &self.profile,
+            self.sample_count,
+        );
         self.last = Some(est);
         self.last.as_ref()
     }
@@ -604,7 +641,10 @@ mod tests {
 
     #[test]
     fn proximity_bucket_from_rcpi() {
-        assert_eq!(ProximityBucket::from_rcpi(Some(100)), ProximityBucket::Immediate);
+        assert_eq!(
+            ProximityBucket::from_rcpi(Some(100)),
+            ProximityBucket::Immediate
+        );
         assert_eq!(ProximityBucket::from_rcpi(Some(75)), ProximityBucket::Near);
         assert_eq!(ProximityBucket::from_rcpi(Some(45)), ProximityBucket::Far);
         assert_eq!(ProximityBucket::from_rcpi(Some(10)), ProximityBucket::Edge);
@@ -613,10 +653,22 @@ mod tests {
 
     #[test]
     fn proximity_confidence_from_samples() {
-        assert_eq!(ProximityConfidence::from_calibration(25), ProximityConfidence::High);
-        assert_eq!(ProximityConfidence::from_calibration(15), ProximityConfidence::Medium);
-        assert_eq!(ProximityConfidence::from_calibration(5), ProximityConfidence::Low);
-        assert_eq!(ProximityConfidence::from_calibration(0), ProximityConfidence::None);
+        assert_eq!(
+            ProximityConfidence::from_calibration(25),
+            ProximityConfidence::High
+        );
+        assert_eq!(
+            ProximityConfidence::from_calibration(15),
+            ProximityConfidence::Medium
+        );
+        assert_eq!(
+            ProximityConfidence::from_calibration(5),
+            ProximityConfidence::Low
+        );
+        assert_eq!(
+            ProximityConfidence::from_calibration(0),
+            ProximityConfidence::None
+        );
     }
 
     #[test]
@@ -628,21 +680,34 @@ mod tests {
 
     #[test]
     fn rcpi_to_dbm_boundaries() {
-        // RCPI 0 -> -110 dBm, 127 -> -80 dBm per rssi_semantics.md
-        assert!((rcpi_to_dbm(0).unwrap() + 110.0).abs() < 0.01);
-        assert!((rcpi_to_dbm(127).unwrap() + 80.0).abs() < 0.01);
+        // RCPI 0 -> -125 dBm, 127 -> -61.5 dBm (RSSI: -125 + RCPI*0.5)
+        assert!((rcpi_to_dbm(0).unwrap() + 125.0).abs() < 0.01);
+        assert!((rcpi_to_dbm(127).unwrap() + 61.5).abs() < 0.01);
 
-        // A typical strong associated value
+        // The EX520's typical strong associated range (90-110) -> dBm -80..-70
+        assert!((rcpi_to_dbm(90).unwrap() + 80.0).abs() < 0.01);
+        assert!((rcpi_to_dbm(110).unwrap() + 70.0).abs() < 0.01);
+
+        // A typical strong associated value (mid-range, near boundary)
         let db = rcpi_to_dbm(104).unwrap();
-        assert!(db < -80.0 && db > -90.0);
+        assert!(db < -70.0 && db > -80.0);
+
+        // Very close station (RCPI 134, seen live) -> ≈ -58 dBm (near)
+        assert!((rcpi_to_dbm(134).unwrap() + 58.0).abs() < 0.01);
+
+        // Extreme-high RCPI is capped so it never goes above -30 dBm
+        assert_eq!(rcpi_to_dbm(255).unwrap(), -30.0);
     }
 
     #[test]
     fn rcpi_invalid_values_rejected() {
-        assert_eq!(rcpi_to_dbm(-100), None);
-        assert_eq!(rcpi_to_dbm(-1), None);
-        assert_eq!(rcpi_to_dbm(128), None);
+        assert_eq!(rcpi_to_dbm(-100), None);   // sentinel
+        assert_eq!(rcpi_to_dbm(-1), None);     // negative, out of range
+        assert_eq!(rcpi_to_dbm(256), None);    // above RCPI_MAX (255)
         assert_eq!(rcpi_to_dbm(i64::MAX), None);
+        // Values above the OLD 0-127 cap are now valid (live saw 128-134)
+        assert!(rcpi_to_dbm(128).is_some());
+        assert!(rcpi_to_dbm(134).is_some());
     }
 
     #[test]
@@ -667,12 +732,30 @@ mod tests {
 
     #[test]
     fn proximity_bucket_meters() {
-        assert_eq!(proximity_bucket_from_meters(1.5), ModelProximityBucket::VeryNear);
-        assert_eq!(proximity_bucket_from_meters(5.0), ModelProximityBucket::Near);
-        assert_eq!(proximity_bucket_from_meters(15.0), ModelProximityBucket::Medium);
-        assert_eq!(proximity_bucket_from_meters(30.0), ModelProximityBucket::Far);
-        assert_eq!(proximity_bucket_from_meters(100.0), ModelProximityBucket::VeryFar);
-        assert_eq!(proximity_bucket_from_meters(f64::NAN), ModelProximityBucket::Unknown);
+        assert_eq!(
+            proximity_bucket_from_meters(1.5),
+            ModelProximityBucket::VeryNear
+        );
+        assert_eq!(
+            proximity_bucket_from_meters(5.0),
+            ModelProximityBucket::Near
+        );
+        assert_eq!(
+            proximity_bucket_from_meters(15.0),
+            ModelProximityBucket::Medium
+        );
+        assert_eq!(
+            proximity_bucket_from_meters(30.0),
+            ModelProximityBucket::Far
+        );
+        assert_eq!(
+            proximity_bucket_from_meters(100.0),
+            ModelProximityBucket::VeryFar
+        );
+        assert_eq!(
+            proximity_bucket_from_meters(f64::NAN),
+            ModelProximityBucket::Unknown
+        );
     }
 
     #[test]

@@ -1,202 +1,615 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DETECTIC Sensor</title>
-<style>
-:root { color-scheme: dark; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #0f1115;
-  color: #e6e6e6;
-  margin: 0;
-  padding: 1.5rem;
-  line-height: 1.5;
-}
-h1 {
-  font-size: 1.6rem;
-  margin: 0 0 0.5rem 0;
-  color: #fff;
-}
-h2 {
-  font-size: 1.1rem;
-  color: #9aa5b1;
-  border-bottom: 1px solid #2a2f36;
-  padding-bottom: 0.3rem;
-  margin: 1.5rem 0 0.75rem 0;
-}
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 0.75rem;
-}
-.card {
-  background: #1a1d23;
-  border: 1px solid #2a2f36;
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-}
-.card .label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  color: #7d8590;
-  letter-spacing: 0.03em;
-}
-.card .value {
-  font-size: 1.05rem;
-  font-weight: 500;
-  color: #fff;
-  word-break: break-word;
-}
-.ok { color: #3fb950; }
-.err { color: #f85149; }
-.neutral { color: #9aa5b1; }
-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: #1a1d23;
-  border: 1px solid #2a2f36;
-  border-radius: 8px;
-  overflow: hidden;
-}
-th, td {
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #2a2f36;
-  font-size: 0.9rem;
-}
-th {
-  background: #16181d;
-  color: #9aa5b1;
-  font-weight: 500;
-}
-tr:last-child td { border-bottom: none; }
-.mono {
-  font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
-  font-size: 0.85rem;
-}
-#events {
-  background: #1a1d23;
-  border: 1px solid #2a2f36;
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  max-height: 280px;
-  overflow-y: auto;
-  font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
-  font-size: 0.85rem;
-  white-space: pre-wrap;
-}
-#events:empty::before {
-  content: "No events yet";
-  color: #7d8590;
-}
-#refresh-hint {
-  font-size: 0.8rem;
-  color: #7d8590;
-  margin-top: 0.25rem;
-}
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DETECTIC · Sensor</title>
+<meta name="theme-color" content="#0f1115">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DETECTIC">
+<link rel="manifest" href="data:application/manifest+json;base64,eyJuYW1lIjoiREVURUNUSUMgU2Vuc29yIiwic2hvcnRfbmFtZSI6IkRFVEVDVElDIiwiZGVzY3JpcHRpb24iOiJQYW5lbCBkZSBtb25pdG9yZW8gZGVsIHNlbnNvciBERVRFQ1RJQyIsInN0YXJ0X3VybCI6Ii4iLCJzY29wZSI6Ii4iLCJkaXNwbGF5Ijoic3RhbmRhbG9uZSIsIm9yaWVudGF0aW9uIjoicG9ydHJhaXQtcHJpbWFyeSIsImJhY2tncm91bmRfY29sb3IiOiIjMGYxMTE1IiwidGhlbWVfY29sb3IiOiIjMGYxMTE1IiwibGFuZyI6ImVzIiwiaWNvbnMiOlt7InNyYyI6ImRhdGE6aW1hZ2Uvc3ZnK3htbDtiYXNlNjQsUEhOMlp5QjRiV3h1Y3owaWFIUjBjRG92TDNkM2R5NTNNeTV2Y21jdk1qQXdNQzl6ZG1jaUlIWnBaWGRDYjNnOUlqQWdNQ0F4T1RJZ01Ua3lJajRLUEhKbFkzUWdkMmxrZEdnOUlqRTVNaUlnYUdWcFoyaDBQU0l4T1RJaUlISjRQU0l6TmlJZ1ptbHNiRDBpSXpGaE1XUXlNeUl2UGdvOGNtVmpkQ0I0UFNJMklpQjVQU0kySWlCM2FXUjBhRDBpTVRnd0lpQm9aV2xuYUhROUlqRTRNQ0lnY25nOUlqTXdJaUJtYVd4c1BTSnViMjVsSWlCemRISnZhMlU5SWlNeVlUSm1NellpSUhOMGNtOXJaUzEzYVdSMGFEMGlOQ0l2UGdvOFkybHlZMnhsSUdONFBTSTVOaUlnWTNrOUlqVXlJaUJ5UFNJeE1DSWdabWxzYkQwaUl6VTRZVFptWmlJdlBnbzhkR1Y0ZENCNFBTSTVOaUlnZVQwaU1UUXdJaUJtYjI1MExXWmhiV2xzZVQwaUxXRndjR3hsTFhONWMzUmxiU3hUWldkdlpTQlZTU3hTYjJKdmRHOHNjMkZ1Y3kxelpYSnBaaUlnWm05dWRDMXphWHBsUFNJNE5pSWdabTl1ZEMxM1pXbG5hSFE5SWpjd01DSWdabWxzYkQwaUkyWm1abVptWmlJZ2RHVjRkQzFoYm1Ob2IzSTlJbTFwWkdSc1pTSStSRHd2ZEdWNGRENEtQQzl6ZG1jKyIsInNpemVzIjoiMTkyeDE5MiIsInR5cGUiOiJpbWFnZS9zdmcreG1sIiwicHVycG9zZSI6ImFueSJ9LHsic3JjIjoiZGF0YTppbWFnZS9zdmcreG1sO2Jhc2U2NCxQSE4yWnlCNGJXeHVjejBpYUhSMGNEb3ZMM2QzZHk1M015NXZjbWN2TWpBd01DOXpkbWNpSUhacFpYZENiM2c5SWpBZ01DQXhPVElnTVRreUlqNEtQSEpsWTNRZ2QybGtkR2c5SWpFNU1pSWdhR1ZwWjJoMFBTSXhPVElpSUhKNFBTSXpOaUlnWm1sc2JEMGlJekZoTVdReU15SXZQZ284Y21WamRDQjRQU0kySWlCNVBTSTJJaUIzYVdSMGFEMGlNVGd3SWlCb1pXbG5hSFE5SWpFNE1DSWdjbmc5SWpNd0lpQm1hV3hzUFNKdWIyNWxJaUJ6ZEhKdmEyVTlJaU15WVRKbU16WWlJSE4wY205clpTMTNhV1IwYUQwaU5DSXZQZ284WTJseVkyeGxJR040UFNJNU5pSWdZM2s5SWpVeUlpQnlQU0l4TUNJZ1ptbHNiRDBpSXpVNFlUWm1aaUl2UGdvOGRHVjRkQ0I0UFNJNU5pSWdlVDBpTVRRd0lpQm1iMjUwTFdaaGJXbHNlVDBpTFdGd2NHeGxMWE41YzNSbGJTeFRaV2R2WlNCVlNTeFNiMkp2ZEc4c2MyRnVjeTF6WlhKcFppSWdabTl1ZEMxemFYcGxQU0k0TmlJZ1ptOXVkQzEzWldsbmFIUTlJamN3TUNJZ1ptbHNiRDBpSTJabVptWm1aaUlnZEdWNGRDMWhibU5vYjNJOUltMXBaR1JzWlNJK1JEd3ZkR1Y0ZEQ0S1BDOXpkbWMrIiwic2l6ZXMiOiI1MTJ4NTEyIiwidHlwZSI6ImltYWdlL3N2Zyt4bWwiLCJwdXJwb3NlIjoiYW55In1dfQ==">
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj4KPHJlY3Qgd2lkdGg9IjE5MiIgaGVpZ2h0PSIxOTIiIHJ4PSIzNiIgZmlsbD0iIzFhMWQyMyIvPgo8cmVjdCB4PSI2IiB5PSI2IiB3aWR0aD0iMTgwIiBoZWlnaHQ9IjE4MCIgcng9IjMwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyYTJmMzYiIHN0cm9rZS13aWR0aD0iNCIvPgo8Y2lyY2xlIGN4PSI5NiIgY3k9IjUyIiByPSIxMCIgZmlsbD0iIzU4YTZmZiIvPgo8dGV4dCB4PSI5NiIgeT0iMTQwIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSxTZWdvZSBVSSxSb2JvdG8sc2Fucy1zZXJpZiIgZm9udC1zaXplPSI4NiIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iI2ZmZmZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+RDwvdGV4dD4KPC9zdmc+">
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj4KPHJlY3Qgd2lkdGg9IjE5MiIgaGVpZ2h0PSIxOTIiIHJ4PSIzNiIgZmlsbD0iIzFhMWQyMyIvPgo8cmVjdCB4PSI2IiB5PSI2IiB3aWR0aD0iMTgwIiBoZWlnaHQ9IjE4MCIgcng9IjMwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyYTJmMzYiIHN0cm9rZS13aWR0aD0iNCIvPgo8Y2lyY2xlIGN4PSI5NiIgY3k9IjUyIiByPSIxMCIgZmlsbD0iIzU4YTZmZiIvPgo8dGV4dCB4PSI5NiIgeT0iMTQwIiBmb250LWZhbWlseT0iLWFwcGxlLXN5c3RlbSxTZWdvZSBVSSxSb2JvdG8sc2Fucy1zZXJpZiIgZm9udC1zaXplPSI4NiIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iI2ZmZmZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+RDwvdGV4dD4KPC9zdmc+">
+<style>:root{color-scheme:dark;--bg:#0f1115;--surface:#1a1d23;--surface-alt:#16181d;--border:#2a2f36;--text:#e6e6e6;--text-strong:#ffffff;--text-muted:#9aa5b1;--text-dim:#7d8590;--ok:#3fb950;--err:#f85149;--accent:#58a6ff;--radius:10px;--gap:clamp(0.6rem,1.5vw,1rem)}*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:clamp(1rem,4vw,2rem);line-height:1.5;max-width:1100px;margin-inline:auto}header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:0.5rem;margin-bottom:0.25rem}h1{font-size:clamp(1.3rem,3.5vw,1.7rem);margin:0;color:var(--text-strong);letter-spacing:-0.01em}h2{font-size:1rem;color:var(--text-muted);border-bottom:1px solid var(--border);padding-bottom:0.4rem;margin:1.75rem 0 0.85rem 0;text-transform:uppercase;letter-spacing:0.04em}#refresh-hint{font-size:0.8rem;color:var(--text-dim);display:flex;align-items:center;gap:0.4rem}#refresh-hint::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(63,185,80,0.5);animation:pulse 2s infinite;flex-shrink:0}@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,185,80,0.5)}70%{box-shadow:0 0 0 6px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--gap)}.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem 1rem;min-width:0;transition:border-color 0.15s ease}.card:hover{border-color:#3a4048}.card .label{font-size:0.72rem;text-transform:uppercase;color:var(--text-dim);letter-spacing:0.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card .value{font-size:clamp(0.95rem,2.2vw,1.05rem);font-weight:500;color:var(--text-strong);word-break:break-word;margin-top:0.15rem}.ok{color:var(--ok)}.err{color:var(--err)}.neutral{color:var(--text-muted)}.heat-badge{display:inline-flex;align-items:center;justify-content:center;min-width:2.2em;padding:0.1em 0.45em;border-radius:999px;font-weight:600;font-size:0.82em;white-space:nowrap}.proximity-cell{white-space:nowrap}.prox-near{background:#113422;color:#3fb950}.prox-medium{background:#3a2f12;color:#ffd166}.prox-far{background:#3a1414;color:#f85149}.prox-unknown{background:#23272e;color:#9aa5b1}.prox-dbm{margin-left:0.4rem;font-family:ui-monospace,"SF Mono",Monaco,Consolas,monospace;font-size:0.78em;color:var(--text-muted);white-space:nowrap}.trend-up{color:var(--ok);font-weight:600}.trend-down{color:var(--err);font-weight:600}.trend-stable{color:var(--text-muted)}.trend-unknown{color:var(--text-dim)}.prox-unreliable{opacity:0.6;outline:1px dashed var(--text-dim);outline-offset:1px}.prox-stale{font-size:0.75rem;color:var(--text-dim);white-space:nowrap}.host-cell{display:inline-block;vertical-align:top}.status-line{display:block;font-size:0.75rem;font-weight:600;margin-top:0.1rem}.probe-badge{display:inline-block;margin-left:0.3rem;padding:0 0.35rem;border-radius:4px;background:var(--accent);color:#0f1115;font-size:0.68rem;font-weight:700;letter-spacing:0.03em;vertical-align:middle;white-space:nowrap}table{border:1px solid var(--border);border-collapse:collapse;margin:0;padding:0;width:100%;table-layout:fixed;background:var(--surface);border-radius:var(--radius);overflow:hidden}table caption{caption-side:top;text-align:left;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim);padding:0.6rem 0.9rem;border-bottom:1px solid var(--border)}table tr{border-bottom:1px solid var(--border)}table tr:last-child{border-bottom:none}table th,table td{padding:0.6rem 0.9rem;text-align:left;font-size:0.88rem}table th{font-size:0.72rem;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-muted);background:var(--surface-alt);font-weight:500}table td[scope="row"]{color:var(--text-strong);font-weight:500;min-width:0}table td[scope="row"] .idcell{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.empty-row td{color:var(--text-dim);text-align:center;padding:1rem}@media screen and (max-width:640px){table{border:0;background:transparent}table caption{background:var(--surface);border-radius:var(--radius) var(--radius) 0 0}table thead{border:none;clip:rect(0 0 0 0);height:1px;margin:-1px;overflow:hidden;padding:0;position:absolute;width:1px}table tr{display:block;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:0.6rem}table tr.empty-row{text-align:center}table td{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;text-align:right;border-bottom:1px solid var(--border);font-size:0.85rem}table td:last-child{border-bottom:none}table td::before{content:attr(data-label);float:left;font-weight:600;font-size:0.7rem;letter-spacing:0.05em;text-transform:uppercase;color:var(--text-dim)}.empty-row td{display:block;text-align:center}.empty-row td::before{content:none}}.mono{font-family:ui-monospace,"SF Mono",Monaco,Consolas,monospace;font-size:0.83rem}#events{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem 1rem;max-height:280px;overflow-y:auto;font-family:ui-monospace,"SF Mono",Monaco,Consolas,monospace;font-size:0.82rem;white-space:pre-wrap;word-break:break-word}#events:empty::before{content:"Sin eventos por el momento";color:var(--text-dim)}@media (max-width:480px){.status-grid{grid-template-columns:repeat(2,1fr)}h2{margin-top:1.25rem}}body{padding:calc(env(safe-area-inset-top) + clamp(1rem,4vw,2rem)) calc(env(safe-area-inset-right) + clamp(1rem,4vw,2rem)) calc(env(safe-area-inset-bottom) + clamp(1rem,4vw,2rem)) calc(env(safe-area-inset-left) + clamp(1rem,4vw,2rem))}#refresh-hint.offline{color:var(--err)}#refresh-hint.offline::before{background:var(--err);animation:none;box-shadow:none}.toast-container{position:fixed;left:auto;right:calc(env(safe-area-inset-right) + 1rem);bottom:calc(env(safe-area-inset-bottom) + 1rem);display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem;padding:0 1rem;pointer-events:none;z-index:1000}.toast{pointer-events:auto;max-width:min(90vw,420px);width:max-content;background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--ok);border-radius:8px;padding:0.6rem 0.9rem;font-size:0.85rem;color:var(--text);box-shadow:0 6px 20px rgba(0,0,0,0.45);animation:toast-in 0.25s ease}.toast.err{border-left-color:var(--err)}.toast.leaving{animation:toast-out 0.2s ease forwards}@keyframes toast-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}@keyframes toast-out{to{opacity:0;transform:translateY(10px)}}@media (prefers-reduced-motion:reduce){#refresh-hint::before{animation:none}.toast,.toast.leaving{animation:none}.card{transition:none}}.ecg-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem 1rem;margin-bottom:1rem}.ecg-wrap canvas{display:block;width:100%;height:120px;background:#0b0e12;border-radius:calc(var(--radius) - 4px)}.ecg-label{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.5rem;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.04em;color:var(--text-dim)}.ecg-status{display:inline-flex;align-items:center;gap:0.4rem}.ecg-status::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(63,185,80,0.5);animation:pulse 2s infinite}.ecg-status.flat::before{background:var(--err);box-shadow:none;animation:none}@media (prefers-reduced-motion:reduce){.ecg-status::before{animation:none}}#countdown{color:var(--accent);font-variant-numeric:tabular-nums;white-space:nowrap}</style>
 </head>
 <body>
-<h1>DETECTIC Sensor</h1>
-<p id="refresh-hint">Auto-refresh every 2s</p>
 
-<h2>Status</h2>
+<header>
+  <h1>DETECTIC · Sensor</h1>
+  <p id="refresh-hint"><span id="hint-text">Actualización automática cada 2 s</span> <span id="countdown" style="display:none">· próxima en <span id="countdown-value"></span> ms</span></p>
+</header>
+
+<h2>Estado</h2>
 <div class="status-grid" id="status-grid">
-  <div class="card"><div class="label">Sensor ID</div><div class="value">__SENSOR_ID__</div></div>
-  <div class="card"><div class="label">Version</div><div class="value">__VERSION__</div></div>
-  <div class="card"><div class="label">Uptime</div><div class="value">__UPTIME__s</div></div>
-  <div class="card"><div class="label">Healthy</div><div class="value __HEALTHY_CLASS__">__HEALTHY_TEXT__</div></div>
-  <div class="card"><div class="label">Ready</div><div class="value __READY_CLASS__">__READY_TEXT__</div></div>
-  <div class="card"><div class="label">Devices</div><div class="value" id="device-count">__DEVICE_COUNT__</div></div>
+  <div class="card"><div class="label">ID del sensor</div><div class="value">__SENSOR_ID__</div></div>
+  <div class="card"><div class="label">Versión</div><div class="value">__VERSION__</div></div>
+  <div class="card"><div class="label">Tiempo activo</div><div class="value">__UPTIME__ s</div></div>
+  <div class="card"><div class="label">Dispositivos conectados</div><div class="value" id="dev-connected">0</div></div>
+  <div class="card"><div class="label">Dispositivos desconectados</div><div class="value" id="dev-disconnected">0</div></div>
+  <div class="card"><div class="label">Dispositivos en total</div><div class="value" id="dev-total">0</div></div>
+  <div class="card"><div class="label">Dispositivos cercanos</div><div class="value" id="dev-near">0</div></div>
   <div class="card"><div class="label">GTPR</div><div class="value" id="gtpr-status">__GTPR_STATUS__</div></div>
-  <div class="card"><div class="label">Backend</div><div class="value" id="backend-status">__BACKEND_STATUS__</div></div>
-  <div class="card"><div class="label">mDNS</div><div class="value" id="mdns-status">__MDNS_STATUS__</div></div>
-  <div class="card"><div class="label">Last Poll</div><div class="value" id="last-poll">__LAST_POLL__</div></div>
-  <div class="card"><div class="label">Last Upload</div><div class="value" id="last-upload">__LAST_UPLOAD__</div></div>
+  <div class="card"><div class="label">Última consulta</div><div class="value" id="last-poll">__LAST_POLL__</div></div>
+  <div class="card"><div class="label">Última carga</div><div class="value" id="last-upload">__LAST_UPLOAD__</div></div>
 </div>
 
-<h2>Devices</h2>
+<h2>Latido del sensor</h2>
+<div class="ecg-wrap">
+  <div class="ecg-label">
+    <span>Monitor de conexión</span>
+    <span class="ecg-status" id="ecg-status">En vivo</span>
+  </div>
+  <canvas id="ecg"></canvas>
+</div>
+
+<h2>Dispositivos</h2>
 <table>
+  <caption>Dispositivos detectados</caption>
   <thead>
-    <tr><th>MAC / Identity</th><th>Hostname</th><th>IP</th><th>Active</th><th>RSSI</th><th>Std</th></tr>
+    <tr>
+      <th scope="col">MAC / Identidad</th>
+      <th scope="col">Nombre de host</th>
+      <th scope="col">IP</th>
+      <th scope="col">Proximidad</th>
+      <th scope="col">Tendencia</th>
+      <th scope="col">Última conexión</th>
+    </tr>
   </thead>
-  <tbody id="devices-body">
-  </tbody>
+  <tbody id="devices-body"></tbody>
 </table>
 
-<h2>Recent Events</h2>
+<h2>Eventos recientes</h2>
 <div id="events"></div>
 
+<div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
+
 <script>
-const initialDevices = __DEVICES_JSON__;
-const initialEvents = __EVENTS_JSON__;
+(() => {
+  const REFRESH_MS = 2000;
+  const MAX_REFRESH_MS = 16000; // techo del backoff cuando el sensor no responde
+  const HEARTBEAT_MS = 30000;   // latido de respaldo si el SSE se cae; con SSE, refresca por push
+  const FETCH_TIMEOUT_MS = 4000;
+  const MAX_EVENTS = 50;
+  const STORAGE_KEY = 'detectic:lastState';
+  const BASE_TITLE = document.title;
 
-function renderDevices(devices) {
-  const tbody = document.getElementById('devices-body');
-  if (!devices || devices.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:#7d8590">No devices seen yet</td></tr>';
-    return;
+  // Referencias al DOM cacheadas una sola vez (evita getElementById repetidos en cada ciclo)
+  const els = {
+    devConnected: document.getElementById('dev-connected'),
+    devDisconnected: document.getElementById('dev-disconnected'),
+    devTotal: document.getElementById('dev-total'),
+    devNear: document.getElementById('dev-near'),
+    gtpr: document.getElementById('gtpr-status'),
+    lastPoll: document.getElementById('last-poll'),
+    lastUpload: document.getElementById('last-upload'),
+    devicesBody: document.getElementById('devices-body'),
+    events: document.getElementById('events'),
+    refreshHint: document.getElementById('refresh-hint'),
+    hintText: document.getElementById('hint-text'),
+    countdown: document.getElementById('countdown'),
+    countdownValue: document.getElementById('countdown-value'),
+    ecg: document.getElementById('ecg'),
+    ecgStatus: document.getElementById('ecg-status'),
+    toastContainer: document.getElementById('toast-container'),
+  };
+  const refreshHintDefaultText = els.hintText ? els.hintText.textContent : '';
+
+  // Última carga renderizada, para saltar el re-render si los datos no cambiaron
+  let lastDevicesSig = null;
+  let lastEventsSig = null;
+  let inFlightController = null;
+  let refreshTimer = null;
+  let consecutiveFailures = 0;
+  let lastDeviceStates = new Map(); // id -> valor de "active" visto en el ciclo anterior
+  let lastDeviceLabels = new Map(); // id -> etiqueta (hostname) para el toast
+  let hasDeviceBaseline = false;    // evita disparar toasts con la primera carga
+  let sensorUnreachable = false;    // el sensor no responde (distinto de "sin red")
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
   }
-  tbody.innerHTML = devices.map(d => {
-    const id = d.mac || d.ip || d.hostname || 'unknown';
+
+  function setText(el, value) {
+    if (!el || value === undefined) return;
+    const str = String(value);
+    if (el.textContent !== str) el.textContent = str; // evita reflow si no cambió
+  }
+
+  function deviceRowHtml(d) {
+    const id = d.mac || d.ip || d.hostname || 'desconocido';
     const activeClass = d.active === '1' ? 'ok' : (d.active === '0' ? 'err' : 'neutral');
-    const activeText = d.active === '1' ? 'yes' : (d.active === '0' ? 'no' : '-');
+    const activeText = d.active === '1' ? 'Sí' : (d.active === '0' ? 'No' : '-');
+    const p = d.proximity_zone ? d : null;
+    const zone = p ? (d.proximity_zone_label || d.proximity_zone || '-') : '-';
+    const trend = p ? (d.proximity_trend_label || d.proximity_trend || '-') : '-';
+    const heat = p && typeof d.heat === 'number' ? d.heat : '-';
+    const dbm = p && typeof d.rssi_dbm === 'number' ? d.rssi_dbm.toFixed(0) : null;
+    const reliable = p && d.proximity_reliable !== false;
+    const zc = p ? ('heat-badge ' + zoneClass(d) + (reliable ? '' : ' prox-unreliable')) : '';
     return `<tr>
-      <td class="mono">${id}</td>
-      <td>${d.hostname || '-'}</td>
-      <td>${d.ip || '-'}</td>
-      <td class="${activeClass}">${activeText}</td>
-      <td>${d.rssi ?? '-'}</td>
-      <td>${d.standard || '-'}</td>
+      <td scope="row" class="mono" data-label="MAC / Identidad"><span class="idcell">${escapeHtml(id)}</span></td>
+      <td data-label="Nombre de host"><span class="host-cell">${escapeHtml(hostDisplay(d))}<span class="status-line ${activeClass}">${activeText}</span>${d.source === 'probe' ? '<span class="probe-badge">RF</span>' : ''}</span></td>
+      <td data-label="IP">${escapeHtml(d.ip || '-')}</td>
+      <td class="proximity-cell" data-label="Proximidad"><span class="${zc}">${escapeHtml(zone)} ${heat !== '-' ? '<span class="heat-badge ' + zoneClass(d) + '">' + heat + '</span>' : ''}</span>${dbm !== null ? '<span class="prox-dbm"> ' + dbm + ' dBm</span>' : ''}${p && !reliable ? '<span class="prox-stale"> · sin actividad</span>' : ''}</td>
+      <td data-label="Tendencia"><span class="${p ? trendClass(d) : ''}">${escapeHtml(trend)}${p ? ' ' + (d.trend_arrow || '') : ''}</span></td>
+      <td data-label="Última conexión">${fmtAssoc(d.assoc_time)}</td>
     </tr>`;
-  }).join('');
-}
-
-function renderEvents(events) {
-  const el = document.getElementById('events');
-  if (!events || events.length === 0) {
-    el.textContent = '';
-    return;
   }
-  el.textContent = events.slice(0, 50).join('\n');
-  el.scrollTop = el.scrollHeight;
-}
 
-function renderHealth(h) {
-  if (h.devices !== undefined) document.getElementById('device-count').textContent = h.devices;
-  if (h.gtpr !== undefined) document.getElementById('gtpr-status').textContent = h.gtpr;
-  if (h.backend !== undefined) document.getElementById('backend-status').textContent = h.backend;
-  if (h.mdns !== undefined) document.getElementById('mdns-status').textContent = h.mdns;
-}
+  // Clase de color por zona: cerca=verde, medio=amarillo, lejos=rojo, desconocido=gris.
+  function zoneClass(d) {
+    switch (d && d.proximity_zone) {
+      case 'immediate': case 'near': return 'prox-near';
+      case 'medium': return 'prox-medium';
+      case 'far': case 'edge': return 'prox-far';
+      default: return 'prox-unknown';
+    }
+  }
 
-function renderMetrics(m) {
-  if (m.last_poll_ago !== undefined) document.getElementById('last-poll').textContent = m.last_poll_ago;
-  if (m.last_upload_ago !== undefined) document.getElementById('last-upload').textContent = m.last_upload_ago;
-}
+  // Clase de color por tendencia: acercándose=verde, alejándose=rojo,
+  // estable=gris, desconocido=tenue.
+  function trendClass(d) {
+    switch (d && d.proximity_trend) {
+      case 'approaching': return 'trend-up';
+      case 'away': return 'trend-down';
+      case 'stable': return 'trend-stable';
+      default: return 'trend-unknown';
+    }
+  }
 
-async function refresh() {
-  try {
-    const [health, devices, events, metrics] = await Promise.all([
-      fetch('/health').then(r => r.json()).catch(() => ({})),
-      fetch('/devices').then(r => r.json()).catch(() => []),
-      fetch('/events').then(r => r.json()).catch(() => []),
-      fetch('/metrics').then(r => r.json()).catch(() => ({})),
+  function renderDevices(devices) {
+    const list = Array.isArray(devices) ? devices : [];
+    const sig = JSON.stringify(list);
+    if (sig === lastDevicesSig) return; // sin cambios: no tocar el DOM
+    lastDevicesSig = sig;
+
+    // El EX520 mantiene en la tabla estaciones obsoletas con active="0"
+    // Se listan todos los dispositivos (activos y desconectados); el estado
+    // conectado/desconectado se muestra bajo el nombre de host.
+    els.devicesBody.innerHTML = list.length
+      ? list.map(deviceRowHtml).join('')
+      : '<tr class="empty-row"><td colspan="6">Aún no se detectaron dispositivos</td></tr>';
+    renderSummary(list);
+  }
+
+  // ¿El dispositivo está dentro del radio "cerca"? (zone near o immediate)
+  function isNearDevice(d) {
+    const z = d && d.proximity_zone;
+    return z === 'immediate' || z === 'near';
+  }
+
+  // Tarjetas numéricas del resumen de dispositivos (derivadas del listado /devices).
+  function renderSummary(list) {
+    const connected = list.filter(d => d.active === '1').length;
+    const disconnected = list.filter(d => d.active === '0').length;
+    const total = list.length;
+    const near = list.filter(d => d.active === '1' && isNearDevice(d)).length;
+    setText(els.devConnected, connected);
+    setText(els.devDisconnected, disconnected);
+    setText(els.devTotal, total);
+    setText(els.devNear, near);
+  }
+
+  function renderEvents(events) {
+    const list = Array.isArray(events) ? events.slice(0, MAX_EVENTS) : [];
+    const sig = list.join('\n');
+    if (sig === lastEventsSig) return; // sin cambios: no tocar el DOM
+    lastEventsSig = sig;
+
+    els.events.textContent = sig;
+    els.events.scrollTop = els.events.scrollHeight;
+  }
+
+  function renderHealth(h) {
+    setText(els.gtpr, h.gtpr);
+  }
+
+  function renderMetrics(m) {
+    setText(els.lastPoll, m.last_poll_ago);
+    setText(els.lastUpload, m.last_upload_ago);
+  }
+
+  function deviceId(d) {
+    return d.mac || d.ip || d.hostname || 'desconocido';
+  }
+
+  // Muestra el nombre de host para la celda de la tabla: "Unknown" y vacíos se
+  // traducen coherentemente ("desconocido" / "-").
+  function hostDisplay(d) {
+    const hn = (d && d.hostname) ? d.hostname.trim() : '';
+    if (!hn) return '-';
+    return hn.toLowerCase() === 'unknown' ? 'desconocido' : hn;
+  }
+
+  // Identificador legible para usar en los toasts: prioriza el hostname sobre el MAC.
+  function toastLabel(d) {
+    const hn = (d && d.hostname) ? d.hostname.trim() : '';
+    if (!hn) return 'desconocido';
+    return hn.toLowerCase() === 'unknown' ? 'desconocido' : hn;
+  }
+
+  // Formatea un epoch (asoc_time) como dd-mm-yyyy HH:MM:SS en la zona
+  // America/Sao_Paulo, independiente de la timezone del navegador.
+  function fmtAssoc(t) {
+    if (t === null || t === undefined || t === '') return '-';
+    const d = new Date(Number(t) * 1000);
+    if (isNaN(d.getTime())) return '-';
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      }).formatToParts(d);
+      const m = {};
+      parts.forEach(p => { m[p.type] = p.value; });
+      return `${m.day}-${m.month}-${m.year} ${m.hour}:${m.minute}:${m.second}`;
+    } catch (e) {
+      return d.toLocaleString();
+    }
+  }
+
+  function showToast(message, type) {
+    if (!els.toastContainer) return;
+    const el = document.createElement('div');
+    el.className = type === 'err' ? 'toast err' : 'toast';
+    el.textContent = message;
+    els.toastContainer.appendChild(el);
+    setTimeout(() => {
+      el.classList.add('leaving');
+      const remove = () => el.remove();
+      el.addEventListener('animationend', remove, { once: true });
+      setTimeout(remove, 250); // red de seguridad si prefers-reduced-motion desactivó la animación
+    }, 6000);
+  }
+
+  // Compara el estado "active" de cada dispositivo contra el ciclo anterior y muestra
+  // un toast cuando alguno se conecta, se desconecta, o desaparece de la lista
+  function detectDeviceChanges(devices) {
+    const list = Array.isArray(devices) ? devices : [];
+    const byId = new Map();
+    const currentStates = new Map();
+    list.forEach(d => {
+      const id = deviceId(d);
+      byId.set(id, d);
+      currentStates.set(id, d.active);
+    });
+
+    if (hasDeviceBaseline) {
+      currentStates.forEach((active, id) => {
+        const prevActive = lastDeviceStates.get(id);
+        const wasConnected = prevActive === '1';
+        const isConnected = active === '1';
+        if (isConnected && !wasConnected) {
+          showToast(`${prevActive === undefined ? 'Nuevo dispositivo' : 'Dispositivo reconectado'}: ${toastLabel(byId.get(id))}`, 'ok');
+        } else if (!isConnected && wasConnected) {
+          showToast(`Dispositivo desconectado: ${toastLabel(byId.get(id))}`, 'err');
+        }
+      });
+      lastDeviceStates.forEach((active, id) => {
+        if (active === '1' && !currentStates.has(id)) {
+          showToast(`Dispositivo desconectado: ${lastDeviceLabels.get(id) || 'desconocido'}`, 'err');
+        }
+      });
+    }
+
+    lastDeviceStates = currentStates;
+    lastDeviceLabels = new Map();
+    byId.forEach((d, id) => lastDeviceLabels.set(id, toastLabel(d)));
+    hasDeviceBaseline = true;
+  }
+
+  // fetch que RECHAZA en fallo (en vez de tragarse el error), para poder detectar
+  // caídas de red reales y aplicar backoff en lugar de seguir insistiendo cada 2s
+  function fetchJson(url, signal) {
+    return fetch(url, { signal, cache: 'no-store' }).then(r => {
+      if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+      return r.json();
+    });
+  }
+
+  function updateStatus() {
+    if (!els.refreshHint || !els.hintText) return;
+    if (!navigator.onLine) {
+      els.refreshHint.classList.add('offline');
+      els.hintText.textContent = 'Sin red — revisá tu conexión Wi-Fi';
+      hideCountdown();
+      setEcgStatus(false);
+    } else if (sensorUnreachable) {
+      els.refreshHint.classList.add('offline');
+      els.hintText.textContent = 'Sin conexión con el sensor — reintentando…';
+      hideCountdown();
+      setEcgStatus(false);
+    } else {
+      els.refreshHint.classList.remove('offline');
+      els.hintText.textContent = refreshHintDefaultText;
+      setEcgStatus(true);
+    }
+    updateTitle();
+  }
+
+  // Refleja el estado en el título de la pestaña: útil si el operador la deja de fondo
+  function updateTitle() {
+    if (!navigator.onLine) {
+      document.title = `🔴 Sin red · ${BASE_TITLE}`;
+      return;
+    }
+    if (sensorUnreachable) {
+      document.title = `🔴 Sensor caído · ${BASE_TITLE}`;
+      return;
+    }
+    const total = lastDeviceStates.size;
+    const inactive = [...lastDeviceStates.values()].filter(a => a !== '1').length;
+    document.title = inactive > 0
+      ? `🟠 ${inactive}/${total} inactivos · ${BASE_TITLE}`
+      : BASE_TITLE;
+  }
+
+  function setOffline(isOffline) {
+    sensorUnreachable = isOffline;
+    updateStatus();
+  }
+
+  // ---------- Countdown hasta la próxima consulta (solo cambia el número) ----------
+  let nextRefreshAt = 0;
+  let countdownTimer = null;
+  let lastCdShown = null;
+  function setCountdownValue(n) {
+    if (!els.countdownValue) return;
+    const s = String(n);
+    if (els.countdownValue.textContent !== s) els.countdownValue.textContent = s;
+  }
+  function hideCountdown() {
+    if (els.countdown) els.countdown.style.display = 'none';
+  }
+  function updCountdown() {
+    if (nextRefreshAt <= 0) return;
+    const v = Math.max(0, Math.ceil(nextRefreshAt - Date.now()));
+    if (lastCdShown !== v) { setCountdownValue(v); lastCdShown = v; }
+  }
+  function startCountdown(ms) {
+    nextRefreshAt = Date.now() + ms;
+    if (els.countdown) els.countdown.style.display = '';
+    if (countdownTimer) clearInterval(countdownTimer);
+    lastCdShown = null;
+    updCountdown();
+    countdownTimer = setInterval(updCountdown, 200);
+  }
+
+  // ---------- Monitor cardíaco (ECG) — canvas puro ----------
+  const ecg = {
+    ctx: null, W: 0, H: 0, now: 0, speed: 1.4, beats: [],
+    lastBeatAt: -Infinity, raf: null,
+  };
+  function beatWave(u) {
+    const G = (mu, sig, amp) => amp * Math.exp(-Math.pow((u - mu) / sig, 2));
+    // PQRST: P y T suben suave, R sube fuerte, Q y S caen. Negativo = hacia arriba.
+    return G(0.16, 0.040, -0.16)
+         + G(0.34, 0.012,  0.14)
+         + G(0.42, 0.006, -1.00)
+         + G(0.48, 0.012,  0.40)
+         + G(0.74, 0.050, -0.28);
+  }
+  function drawEcg() {
+    const g = ecg.ctx; if (!g) return;
+    const W = ecg.W, H = ecg.H;
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = 'rgba(88,166,255,0.06)';
+    g.lineWidth = 1;
+    for (let x = 0.5; x < W; x += 14) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+    for (let y = 0.5; y < H; y += 14) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    const baseline = H * 0.62;
+    const amp = H * 0.34;
+    const alive = !sensorUnreachable;
+    const cutoff = ecg.now - W - 80;
+    ecg.beats = ecg.beats.filter(t => t >= cutoff);
+    g.strokeStyle = alive ? '#58a6ff' : '#f85149';
+    g.lineWidth = 2;
+    g.beginPath();
+    for (let x = 0; x <= W; x += 1) {
+      const t = ecg.now - (W - x);
+      let y = baseline;
+      if (alive) {
+        for (const bt of ecg.beats) {
+          const u = (t - bt) / 90;
+          if (u > -0.5 && u < 1.5) y += amp * beatWave(u);
+        }
+      }
+      if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+  function ecgLoop() {
+    ecg.now += ecg.speed;
+    drawEcg();
+    ecg.raf = requestAnimationFrame(ecgLoop);
+  }
+  function initEcg() {
+    const c = els.ecg; if (!c || !c.getContext) return;
+    const resize = () => {
+      const w = c.parentElement ? c.parentElement.clientWidth : c.clientWidth;
+      const dpr = window.devicePixelRatio || 1;
+      c.width = Math.max(10, Math.floor(w * dpr));
+      c.height = Math.floor(120 * dpr);
+      ecg.W = c.width; ecg.H = c.height;
+      drawEcg();
+    };
+    ecg.ctx = c.getContext('2d');
+    resize();
+    window.addEventListener('resize', resize);
+    ecgLoop();
+  }
+  function heartbeat() {
+    const now = Date.now();
+    if (now - ecg.lastBeatAt < 350) return; // evita latido duplicado en un mismo ciclo
+    ecg.lastBeatAt = now;
+    ecg.beats.push(ecg.now);
+  }
+  function setEcgStatus(alive) {
+    if (!els.ecgStatus) return;
+    els.ecgStatus.classList.toggle('flat', !alive);
+    els.ecgStatus.textContent = alive ? 'En vivo' : 'Sin señal';
+  }
+
+  // Guarda el último estado bueno para pintar al instante en la próxima carga de página
+  function persistState(state) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, ts: Date.now() }));
+    } catch (e) { /* almacenamiento lleno o deshabilitado: no es crítico */ }
+  }
+
+  // Pinta de inmediato con el último dato conocido mientras llega la primera respuesta real
+  function hydrateFromCache() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const cached = JSON.parse(raw);
+      renderHealth(cached.health || {});
+      renderDevices(cached.devices || []);
+      renderEvents(cached.events || []);
+      renderMetrics(cached.metrics || {});
+      if (els.hintText) els.hintText.textContent = 'Mostrando últimos datos guardados…';
+    } catch (e) { /* caché corrupta: se ignora y se espera el fetch real */ }
+  }
+
+  async function refresh() {
+    // Pausar mientras la pestaña está en segundo plano: ahorra red y CPU
+    if (document.hidden) {
+      scheduleNext();
+      return;
+    }
+
+    // Sin red a nivel del sistema: ni vale la pena intentar el fetch
+    if (!navigator.onLine) {
+      updateStatus();
+      scheduleNext();
+      return;
+    }
+
+    // Cancela cualquier petición previa que siga colgada antes de lanzar otra
+    if (inFlightController) inFlightController.abort();
+    inFlightController = new AbortController();
+    const { signal } = inFlightController;
+    const timeoutId = setTimeout(() => inFlightController.abort(), FETCH_TIMEOUT_MS);
+
+    const results = await Promise.allSettled([
+      fetchJson('/health', signal),
+      fetchJson('/devices', signal),
+      fetchJson('/events', signal),
+      fetchJson('/metrics', signal),
     ]);
+    clearTimeout(timeoutId);
+
+    const [healthR, devicesR, eventsR, metricsR] = results;
+    const anyFailed = results.some(r => r.status === 'rejected');
+    const health = healthR.status === 'fulfilled' ? healthR.value : {};
+    const devices = devicesR.status === 'fulfilled' ? devicesR.value : [];
+    const events = eventsR.status === 'fulfilled' ? eventsR.value : [];
+    const metrics = metricsR.status === 'fulfilled' ? metricsR.value : {};
+
     renderHealth(health);
     renderDevices(devices);
     renderEvents(events);
     renderMetrics(metrics);
-  } catch (e) {
-    console.error('refresh failed', e);
-  }
-}
 
-renderDevices(initialDevices);
-renderEvents(initialEvents);
-refresh();
-setInterval(refresh, 2000);
+    if (!anyFailed) detectDeviceChanges(devices); // solo diffea contra datos frescos y válidos
+
+    if (anyFailed) {
+      consecutiveFailures++;
+      setOffline(true);
+      setEcgStatus(false);
+    } else {
+      consecutiveFailures = 0;
+      setOffline(false);
+      setEcgStatus(true);
+      heartbeat();
+      persistState({ health, devices, events, metrics });
+    }
+
+    scheduleNext();
+  }
+
+  function scheduleNext() {
+    clearTimeout(refreshTimer);
+    // Backoff exponencial mientras el sensor no responde; con SSE en vivo el
+    // refresco llega por push, así que el temporizador solo es un latido de
+    // respaldo (HEARTBEAT_MS). Si el SSE no está activo, el countdown se muestra.
+    const delay = consecutiveFailures > 0
+      ? Math.min(REFRESH_MS * (2 ** consecutiveFailures), MAX_REFRESH_MS)
+      : HEARTBEAT_MS;
+    if (sseActive) {
+      hideCountdown();
+    } else {
+      startCountdown(delay);
+    }
+    refreshTimer = setTimeout(refresh, delay);
+  }
+
+  function refreshNow() {
+    clearTimeout(refreshTimer);
+    refresh();
+  }
+
+  // Canal SSE del sensor: refresca al instante cuando hay un snapshot nuevo
+  // (el router empuja `event: change` en cada poll), sin sondear cada 2s.
+  let sse = null;
+  let sseActive = false;
+  function openStream() {
+    if (typeof EventSource === 'undefined') return; // sin SSE: queda el latido de respaldo
+    try {
+      sse = new EventSource('/stream');
+      sse.onopen = () => { sseActive = true; refreshNow(); };
+      sse.addEventListener('change', () => { sseActive = true; refreshNow(); });
+      sse.onerror = () => { sseActive = false; scheduleNext(); };
+    } catch (e) { /* mantiene el latido de respaldo */ }
+  }
+
+  // Al volver a primer plano, refresca de inmediato en vez de esperar el próximo ciclo
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      clearTimeout(refreshTimer);
+      refresh();
+    }
+  });
+
+  // El navegador avisa cambios de red al instante, sin necesidad de sondear
+  window.addEventListener('online', () => {
+    updateStatus();
+    clearTimeout(refreshTimer);
+    refresh();
+  });
+  window.addEventListener('offline', updateStatus);
+
+  // Si hay otra pestaña/ventana de este dashboard abierta, la que actualiza su localStorage
+  // dispara este evento en las demás al instante — no hace falta esperar su propio ciclo de fetch
+  window.addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY || !e.newValue) return;
+    try {
+      const state = JSON.parse(e.newValue);
+      renderHealth(state.health || {});
+      renderDevices(state.devices || []);
+      renderEvents(state.events || []);
+      renderMetrics(state.metrics || {});
+      detectDeviceChanges(state.devices || []);
+      updateTitle();
+    } catch (err) { /* estado corrupto en otra pestaña: se ignora */ }
+  });
+
+  updateStatus();
+  initEcg();
+  setEcgStatus(navigator.onLine && !sensorUnreachable);
+  hydrateFromCache();
+  const initialDevices = typeof __DEVICES_JSON__ !== 'undefined' ? __DEVICES_JSON__ : [];
+  const initialEvents = typeof __EVENTS_JSON__ !== 'undefined' ? __EVENTS_JSON__ : [];
+  renderDevices(initialDevices);
+  renderEvents(initialEvents);
+  detectDeviceChanges(initialDevices); // fija la línea base sin disparar toasts
+  updateTitle();
+  openStream();
+  refresh();
+})();
 </script>
 </body>
 </html>

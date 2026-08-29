@@ -19,8 +19,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/_fw_build/package"
+# The package server serves this exact directory, so the package is built
+# straight into the served root (no separate _fw_build staging that would
+# drift out of sync with what the EX520 actually downloads).
+BUILD_DIR="${PACKAGE_ROOT:-$SCRIPT_DIR}"
+# Binary source: prefer the freshly cross-compiled binary under dist/, then
+# fall back to a copy already present in the package dir.
 DETECTIC_BIN="$PROJECT_ROOT/dist/detectic-aarch64-musl"
+[ -f "$DETECTIC_BIN" ] || DETECTIC_BIN="$SCRIPT_DIR/detectic-aarch64-musl"
 
 # Detectic runtime env file: prefer a real one if the operator supplied it,
 # otherwise fall back to the documented example and warn.
@@ -44,15 +50,20 @@ echo ""
 # --- Verify prerequisites ---
 if [ ! -f "$DETECTIC_BIN" ]; then
     echo "ERROR: Detectic binary not found: $DETECTIC_BIN"
-    echo "  Build with: docker run --rm -v \"\$PWD:/home/rust/src\" messense/rust-musl-cross:aarch64-musl cargo build --release --features tls"
-    echo "  Then: cp target/aarch64-unknown-linux-musl/release/detectic dist/detectic-aarch64-musl"
+    echo "  Build with: make router  (cross-compiles to target/aarch64-unknown-linux-musl)"
+    echo "  Then:       cp target/aarch64-unknown-linux-musl/release/detectic dist/detectic-aarch64-musl"
     exit 1
 fi
 
 mkdir -p "$BUILD_DIR"
-rm -rf "$BUILD_DIR"/*
+# Clean ONLY regenerable split/checksum artifacts — never delete the source
+# scripts (bootstart.sh, launcher.sh) or detectic.env that live in this dir.
+rm -f "$BUILD_DIR"/detectic.?? "$BUILD_DIR"/detectic.??.sha256 \
+      "$BUILD_DIR"/detectic.sha256 "$BUILD_DIR"/manifest.json "$BUILD_DIR"/version
 
 echo "Detectic binary: $DETECTIC_BIN ($(ls -la "$DETECTIC_BIN" | awk '{print $5}') bytes)"
+echo "Package root:    $BUILD_DIR (served by package_server.py)"
+echo ""
 
 # --- Split binary ---
 echo "[1/4] Splitting binary..."
@@ -61,11 +72,12 @@ split -b "$SPLIT_SIZE" "$DETECTIC_BIN" "$BUILD_DIR/detectic."
 ls -la "$BUILD_DIR"/detectic.*
 echo ""
 
-# --- Copy launcher and config ---
+# --- Copy launcher and config (idempotent; skip when src==dest) ---
 echo "[2/4] Copying launcher and config..."
-cp "$SCRIPT_DIR/bootstart.sh" "$BUILD_DIR/"
-cp "$SCRIPT_DIR/launcher.sh" "$BUILD_DIR/"
-if [ -n "$ENV_FILE" ]; then
+for f in bootstart.sh launcher.sh detectic_watchdog.sh; do
+    [ "$SCRIPT_DIR/$f" != "$BUILD_DIR/$f" ] && cp "$SCRIPT_DIR/$f" "$BUILD_DIR/"
+done
+if [ -n "$ENV_FILE" ] && [ "$ENV_FILE" != "$BUILD_DIR/detectic.env" ]; then
     cp "$ENV_FILE" "$BUILD_DIR/detectic.env"
 fi
 if [ -f "$PROJECT_ROOT/VERSION" ]; then
@@ -79,11 +91,11 @@ echo ""
 echo "[3/4] Generating SHA-256 checksums..."
 cd "$BUILD_DIR"
 
-# Compute per-part checksums for every detectic.* file that is a data part.
-for part in detectic.*; do
-    if [[ "$part" == *.sha256 ]] || [[ "$part" == manifest.json ]] || [ ! -f "$part" ]; then
-        continue
-    fi
+# Compute per-part checksums for every split data part (detectic.aa, .ab, .ac…).
+# Only two-letter lowercase suffixes are parts; detectic.env / .example / other
+# files in this dir must never be treated as parts.
+for part in detectic.[a-z][a-z]; do
+    [ -f "$part" ] || continue
     sha256sum -b "$part" | awk '{print $1}' > "$part.sha256"
 done
 
@@ -96,25 +108,21 @@ rm -f .detectic.full.tmp
 
 VERSION="$(cat version)"
 
-# Build the manifest files object dynamically, one real newline per entry.
+# Build a FLAT manifest that bootstart.sh's BusyBox-safe `sed` parser expects.
+# bootstart.sh extracts:
+#   MANIFEST_VERSION = "version"
+#   MANIFEST_FULL    = "detectic"        (top-level full-binary hash)
+#   PARTS            = "detectic.XX"     -> "<part hash>"  (flat keys)
+#
+# IMPORTANT: do NOT nest under "files". bootstart.sh greps for flat keys and
+# will fail with "manifest_full_hash_missing" if the top-level "detectic" is
+# missing. The `version` file must equal MANIFEST_VERSION (self-consistency).
 {
-    echo "{"
-    echo '  "version": "'"$VERSION"'",'
-    echo '  "files": {'
-    _first=1
+    printf '{"version":"%s","detectic":"%s"' "$VERSION" "$(cat detectic.sha256)"
     for part in "${SORTED_PARTS[@]}"; do
-        hash="$(cat "$part.sha256")"
-        [ "$_first" -eq 1 ] || echo ","
-        printf '    "%s": "%s"' "$part" "$hash"
-        _first=0
+        printf ',"%s":"%s"' "$part" "$(cat "$part.sha256")"
     done
-    hash="$(cat detectic.sha256)"
-    [ "$_first" -eq 1 ] || echo ","
-    printf '    "detectic": "%s"' "$hash"
-    echo ""
-    echo "  },"
-    echo '  "generated_at": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"'
-    echo "}"
+    printf '}\n'
 } > manifest.json
 
 echo "  $(cat detectic.sha256)  detectic (full)"

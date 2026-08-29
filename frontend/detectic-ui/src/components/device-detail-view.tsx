@@ -93,7 +93,8 @@ export function DeviceDetailView() {
   }
 
   const name = detail?.hostname || liveDev?.hostname || deviceId;
-  const isConnected = liveDev?.connected ?? detail?.status === "connected";
+  const deviceState = liveDev?.state ?? (detail?.status === "connected" ? "CONNECTED" : "ABSENT");
+  const isConnected = deviceState !== "ABSENT" && deviceState !== "DISCONNECTED";
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -125,20 +126,20 @@ export function DeviceDetailView() {
               : "ml-auto bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
           }
         >
-          {isConnected ? "connected" : "disconnected"}
+          {deviceState === "RF_PRESENT" ? "RF presente" : isConnected ? "conectado" : deviceState ? deviceState.toLowerCase() : "desconectado"}
         </Badge>
       </div>
 
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Current State
+            Estado actual
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
             <Field
-              label="Status"
+              label="Estado"
               value={
                 <Badge
                   variant="outline"
@@ -148,12 +149,12 @@ export function DeviceDetailView() {
                       : "bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
                   }
                 >
-                  {isConnected ? "Connected" : "Disconnected"}
+                  {deviceState === "RF_PRESENT" ? "RF presente" : deviceState ? deviceState.charAt(0).toUpperCase() + deviceState.slice(1).toLowerCase() : "Desconectado"}
                 </Badge>
               }
             />
             <Field
-              label="Signal"
+              label="Señal"
               value={
                 liveDev?.last_signal != null
                   ? `${liveDev.last_signal} dBm`
@@ -163,31 +164,31 @@ export function DeviceDetailView() {
               }
             />
             <Field
-              label="Band"
+              label="Banda"
               value={liveDev?.band || detail?.band || "—"}
             />
             <Field
               label="AP"
               value={detail?.bssid_pseudonym || detail?.bssid_manufacturer || "—"}
             />
-            <Field label="First Seen" value={fmtDate(detail?.first_seen)} />
-            <Field label="Last Seen" value={timeAgo(liveDev?.last_seen || detail?.last_seen)} />
+            <Field label="Primera vez" value={fmtDate(detail?.first_seen)} />
+            <Field label="Última vez" value={timeAgo(liveDev?.last_seen || detail?.last_seen)} />
             <Field
-              label="Observations"
+              label="Observaciones"
               value={liveDev?.event_count ?? detail?.observations ?? "—"}
             />
             <Field
-              label="Manufacturer"
-              value={detail?.manufacturer || detail?.brand || "Unknown"}
+              label="Fabricante"
+              value={detail?.manufacturer || detail?.brand || "Desconocido"}
             />
-            <Field label="Class" value={detail?.device_class || "Unknown"} />
-            <Field label="MAC type" value={detail?.mac_type || "—"} />
+            <Field label="Clase" value={detail?.device_class || "Desconocido"} />
+            <Field label="Tipo de MAC" value={detail?.mac_type || "—"} />
             <Field
-              label="Fingerprint"
+              label="Huella"
               value={detail?.fingerprint_model || "—"}
             />
             <Field
-              label="Confidence"
+              label="Confianza"
               value={detail?.confidence_label || "—"}
             />
           </div>
@@ -199,13 +200,13 @@ export function DeviceDetailView() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Session History
+            Historial de sesiones
           </CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Session history requires backend support. Currently showing signal
-            history as a proxy for observed activity.
+            El historial de sesiones requiere soporte del backend. Se muestra el
+            historial de señal como referencia de la actividad observada.
           </p>
         </CardContent>
       </Card>

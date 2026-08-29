@@ -1,5 +1,14 @@
 # Detectic — AGENTS.md
 
+> **⚠️ SAFETY PROTOCOLS — MANDATORY READ:** Before ANY operation on the EX520
+> router, read and follow `docs/EX520_SAFETY_PROTOCOLS.md`.  That document
+> defines the risk classification matrix (GREEN/YELLOW/ORANGE/RED), router
+> reboot protocol, service preservation rules, and forbidden actions.
+> **Never reboot the router, modify router configuration, or trigger Phoenix
+> without classifying the operation and obtaining authorization per the
+> protocol.**  Violations can disrupt DHCP, DNS, WiFi, and internet for all
+> LAN devices.
+
 > **Project status:** Production implementation — see `docs/EX520_PRODUCTION_DEPLOYMENT.md`,
 > `docs/EX520_DEPLOYMENT.md`, `docs/EX520_OPERATIONS.md`, and `docs/EX520_TEST_PLAN.md`
 > for the canonical deployment and test plan.
@@ -668,6 +677,57 @@ GTPR so DEV2_LIFEMOTE_AGENT {enable:1, URL:...}
 * AUTOSTART: **MANUAL ONLY** — `rsl_set` is triggered by a GTPR `so`, NOT at boot
 * Status: **PROVEN-LIVE** (PHASE 16–21)
 
+### Path 2.A — Runtime re-trigger requires enable 0→1 toggle (PROVEN-LIVE 2026-08-28)
+
+> **VERIFIED LIVE on the real EX520, not assumed.**  This is a critical
+> operational finding for redeployment without a cold boot.
+
+When `DEV2_LIFEMOTE_AGENT` already has `enable:1` (the steady state after a
+successful deploy), sending another `so` with `enable:1` and a new URL does
+**NOT** re-trigger `phoenix.sh`.  The data-model object is updated (the URL
+changes, `success:true` is returned), but `cos` does **not** re-invoke
+`rsl_setDev2LifemoteAgentObj` for a same-value update, so `phoenix.sh` is never
+spawned.  The router never downloads the new payload.
+
+The reliable runtime re-trigger is a **state transition** `enable:0 → enable:1`:
+
+```
+Step 1:  so DEV2_LIFEMOTE_AGENT {enable:0, URL:""}          # disable
+Step 2:  so DEV2_LIFEMOTE_AGENT {enable:1, URL:<new URL>}   # re-enable
+           ↓
+         cos detects enable changed 0→1
+           ↓
+         rsl_setDev2LifemoteAgentObj fires
+           ↓
+         /usr/bin/phoenix.sh <URL>
+           ↓
+         downloads + executes payload as root
+```
+
+**Evidence (2026-08-28 session):**
+
+| Action | Phoenix fired? | Payload downloaded? |
+|--------|---------------|---------------------|
+| `so {enable:1, URL:probe.sh}` while already `enable:1` | NO | NO (0 GETs in server log) |
+| `so {enable:1, URL:bootstart.sh}` while already `enable:1` | NO | NO |
+| `so {enable:0}` then `so {enable:1, URL:bootstart.sh}` | **YES** | **YES** (full download chain observed) |
+
+The toggle re-deploy was confirmed by: `GET /bootstart.sh`, `GET /detectic.aa/.ab/.ac`,
+`GET /launcher.sh`, `done?status=ok&version=dev-20260828`, and the sensor binding
+`:::8787 LISTEN` — all within seconds of the `enable:0→1` transition.
+
+**Do NOT confuse with cold-boot autostart.**  This toggle mechanism is for
+*runtime re-triggering* of the Phoenix chain (redeployment without a reboot).
+Cold-boot autostart is a separate claim that must be verified independently
+(see Path 4 and the cold-boot verification checklist).  The toggle does NOT
+prove that `cos` launches `phoenix.sh` at boot; it only proves that the
+`rsl_set` apply handler fires on an `enable` state transition at runtime.
+
+**Implication for the watchdog / Edge Supervisor:**  if the supervisor needs to
+re-trigger Phoenix at runtime (sensor unhealthy, new binary version), it must
+send `enable:0` first, then `enable:1` with the URL — a single `enable:1` `so`
+is a no-op when the object is already enabled.
+
 ## Path 3 — bootstart.sh resident bootstrap (PROVEN-LIVE)
 
 `phoenix.sh` is pointed at a host-served `bootstart.sh` that downloads the
@@ -693,7 +753,7 @@ EX520 phoenix -> bootstart.sh (root)
 * AUTOSTART: requires Path 4
 * Status: **PROVEN-LIVE** (PHASE 21)
 
-## Path 4 — Cold-boot watchdog autostart (PROVEN-LIVE)
+## Path 4 — Cold-boot watchdog autostart and crash recovery (PROVEN-LIVE)
 
 A host-side Edge Supervisor (`deploy/ex520_package/watchdog.py`) monitors the
 router with a state machine (UNKNOWN → ROUTER_DOWN → ROUTER_UP → GTPR_READY →
@@ -701,25 +761,54 @@ SENSOR_STARTING → SENSOR_HEALTHY).  It uses IPv6 ping and GTPR queries for
 reachability, verifies GTPR readiness, avoids duplicate Phoenix triggers with a
 `min_boot_interval` guard, and re-triggers with exponential backoff if the
 sensor becomes unhealthy.  After a sustained DOWN (>= DOWN_THRESHOLD) it sends
-a `so DEV2_LIFEMOTE_AGENT` with the bootstart URL, re-triggering Path 3 after
-a cold boot.
+a `so DEV2_LIFEMOTE_AGENT` toggle (enable:0 → enable:1) with the bootstart URL,
+re-triggering Path 3 after a cold boot.
+
+**On-router crash recovery watchdog** (`deploy/ex520_package/detectic_watchdog.sh`):
+A lightweight BusyBox shell script that runs entirely on the router.  It monitors
+the sensor process + health endpoint (http://127.0.0.1:8787/health) every 30s,
+and restarts the sensor via `launcher.sh` if 3 consecutive health checks fail.
+This handles crash recovery autonomously — no host involvement needed.
 
 ```
 Host watchdog.py / Edge Supervisor (poll 10s)
   -> ping6 / GTPR query
   -> state machine: UNKNOWN -> ROUTER_DOWN -> ARMED -> ROUTER_UP -> GTPR_READY
-  -> GTPR so DEV2_LIFEMOTE_AGENT (phoenix)
-  -> phoenix -> bootstart.sh (SHA-256 verify, atomic reassembly) -> launcher.sh
-  -> detectic sensor
+  -> GTPR so DEV2_LIFEMOTE_AGENT toggle (enable:0 -> enable:1)
+  -> phoenix -> bootstart.sh (SHA-256 verify, atomic reassembly)
+  -> launcher.sh start (sensor)
+  -> detectic_watchdog.sh (on-router crash recovery watchdog)
   -> health checks via callbacks / sensor_log
+
+On-router detectic_watchdog.sh (poll 30s)
+  -> process check: /proc/*/cmdline scan for detectic*sensor
+  -> health check: wget http://127.0.0.1:8787/health
+  -> 3 consecutive failures -> launcher.sh stop + start
+  -> exponential backoff: 30s -> 60s -> 120s -> 240s -> 300s
+  -> max 10 restarts before giving up
 ```
 
 * DEPLOY: **PROVEN-LIVE**
 * PERSIST: **PROVEN-LIVE**
 * EXECUTE: **PROVEN-LIVE**
-* AUTOSTART: **PROVEN-LIVE** (cold boot: DOWN → UP → trigger → sensor running)
+* AUTOSTART (cold boot with host): **PROVEN-LIVE** (Tests 3+4: DOWN → UP → toggle → sensor running)
+* CRASH RECOVERY (on-router, no host): **PROVEN-LIVE** (Tests 2+6: kill sensor → watchdog restarts via launcher.sh)
+* COLD-BOOT AUTOSTART (no host): **BLOCKED** — no stock firmware mechanism starts misc_rw scripts at boot
+* IDEMPOTENCY: **PROVEN-LIVE** (Test 5: duplicate trigger safe)
 * HEALTH: **PROVEN-FROM-SOURCE** (supervisor state machine and health checks)
-* Status: **PROVEN-LIVE** (PHASE 21 second cold-boot proof)
+* Status: **PROVEN-LIVE** (2026-08-28: 6 tests passed, see `firmware_forensics/path4_watchdog_coldboot.md`)
+
+### Path 2.A nuance: URL change trigger
+
+After Phoenix completes (state resets to 0), sending `enable:1` with a different
+URL DOES trigger Phoenix again.  This is because cos sees `state:0, enable:1` as
+a trigger condition, regardless of whether `enable` changed.
+
+| Action | Phoenix fires? | Condition |
+|--------|---------------|-----------|
+| `so {enable:1, URL:X}` while `enable:1, state:1` | NO | Same enable, phoenix running |
+| `so {enable:1, URL:Y}` while `enable:1, state:0` | **YES** | State reset after phoenix completed |
+| `so {enable:0}` then `so {enable:1, URL:X}` | **YES** | State transition 0→1 (reliable toggle) |
 
 ## Path 5 — Native firmware autostart (NOT AVAILABLE)
 
@@ -771,6 +860,230 @@ deploy/ex520_package/emaild.py        # SMTP notifications from router
 python/detectic_client.py             # Path 1 external client (reference)
 src/transport.rs                      # Rust GTPR client (GtprClient)
 ```
+
+## ⚠️ COLD-BOOT TESTING IMPACT ON ROUTER SERVICES — MANDATORY READ
+
+> **NEVER reboot the EX520 router without explicit user authorization.**
+> Router reboots disrupt DHCP, DNS, and internet connectivity for ALL devices
+> on the LAN.  This is not a Detectic issue — it is the normal behavior of any
+> router during a cold boot.
+
+### What happens during a router reboot
+
+When the EX520 reboots (via `ACT_REBOOT`, power cycle, or `sysrq`):
+
+1. **All LAN devices lose connectivity** (0-60s while the router boots).
+2. **DHCP leases are interrupted**: devices with active leases keep their IP
+   during the outage, but new devices cannot get an IP until the DHCP server
+   restarts (~30-60s after boot).
+3. **DNS Relay takes 1-3 minutes to initialize**: after the router comes back
+   UP, `dnsmasq` needs time to start and populate its forwarding rules.  During
+   this window, `dig @192.168.0.1 <domain>` returns `SERVFAIL` and all devices
+   using `192.168.0.1` as DNS resolver lose name resolution.
+4. **WiFi clients disconnect**: all WiFi stations lose association and must
+   reconnect.  Some devices (especially Android) may not reconnect
+   automatically if the SSID was hidden or the signal is weak.
+5. **NTP resynchronizes**: the router's clock may drift during the outage,
+   which can cause TLS certificate validation failures on the router itself
+   (affecting the sensor's backend connectivity).
+
+### Observed timeline (2026-08-28 incident)
+
+During Path 4 cold-boot testing, the router was rebooted **twice in 30 minutes**
+(Test 3 at ~21:32 UTC, Test 4 at ~21:43 UTC).  After the second reboot:
+
+- Router came back UP in ~30s (ping responded)
+- DHCP server was available within ~60s
+- **DNS Relay took ~2-3 minutes to start resolving** (`status: "Disabled"` in
+  GTPR even though `enable: "1"`)
+- 2 of 5 WiFi devices did not reconnect automatically
+- The user reported "no DHCP, no internet" — caused by the DNS Relay startup
+  delay, not by a persistent configuration problem
+
+### Mandatory rules for any test that requires a router reboot
+
+1. **Ask the user first.**  Never send `ACT_REBOOT` or `sysrq` without explicit
+   confirmation.  State clearly: "This will reboot the router and disconnect
+   all devices for 1-3 minutes.  Proceed?"
+
+2. **Warn about the DNS delay.**  After a reboot, DNS may take 1-3 minutes to
+   start working.  This is normal.  Do not report it as a bug unless it
+   persists for more than 5 minutes.
+
+3. **Wait for full recovery before testing.**  After a reboot, wait at least
+   120s before declaring the router "UP" or running any health checks.  The
+   sequence is:
+   ```
+   0s:    reboot sent
+   30s:   router responds to ping (kernel up)
+   60s:   DHCP server available
+   90s:   WiFi APs broadcasting
+   120s:  DNS Relay forwarding (dnsmasq fully initialized)
+   180s:  all services stable
+   ```
+
+4. **Do not reboot more than once every 10 minutes.**  Multiple rapid reboots
+   compound the disruption and may cause WiFi clients to enter a backoff state
+   where they refuse to reconnect for extended periods.
+
+5. **After testing, verify all services are restored**:
+   ```bash
+   # DHCP
+   curl -sS http://192.168.0.1:8787/devices | python3 -m json.tool
+   # DNS
+   dig @192.168.0.1 google.com +short
+   # Internet
+   curl -sS -m 5 -o /dev/null -w "%{http_code}" http://example.com
+   # WiFi clients
+   curl -sS http://192.168.0.1:8787/devices | python3 -c "
+   import json,sys
+   for d in json.load(sys.stdin):
+       print(f\"{d.get('hostname','?'):20s} active={d.get('active','?')}\")"
+   ```
+
+6. **If the user reports "no internet" after a reboot**, check DNS first:
+   ```bash
+   dig @192.168.0.1 google.com +short
+   ```
+   If it returns `SERVFAIL`, wait 60s and retry.  If it still fails after 5
+   minutes, try re-enabling DNS Relay via GTPR:
+   ```bash
+   ./target/release/detectic --url "http://[fe80::3e6a:d2ff:fe5f:abc1%25enp2s0]" \
+     --user user set DEV2_DNS_RELAY '{"enable":"1","stack":"0,0,0,0,0,0"}'
+   ```
+
+7. **Production deployments**: the host-side watchdog (`watchdog.py`) should
+   only trigger a reboot of the *router* when the router is already
+   unreachable (ROUTER_DOWN state).  It must NOT reboot the router
+   proactively or on a schedule.  The watchdog's job is to detect router
+   reboots and recover the sensor — not to cause router reboots.
+
+---
+
+## EX520 Safety Protocols — Mandatory Rules Summary
+
+> **Full document:** `docs/EX520_SAFETY_PROTOCOLS.md`
+>
+> The following is a quick-reference summary.  The full document is canonical
+> and must be read before any router operation.
+
+### Risk classification (all operations MUST be classified before execution)
+
+| Level | Authorization | Examples |
+|-------|--------------|----------|
+| **GREEN** | None needed | GTPR queries, sensor health checks, kill/restart sensor, host-side builds |
+| **YELLOW** | Notify user | Phoenix toggle, bootstart re-deploy, firewall rule add, modify Detectic scripts |
+| **ORANGE** | User MUST confirm | Router reboot, modify DNS/DHCP/WiFi/WAN/LAN settings |
+| **RED** | Forbidden | Firmware flash, misc_rw overwrite, modify stock binaries, factory reset, `iptables -F` |
+
+### Top 10 rules (memorize these)
+
+1. **Never reboot the router without asking the user.**  State: "This will
+   reboot the router and disconnect all devices for 1-3 minutes. Proceed?"
+2. **Wait 180s after a reboot before declaring the router operational.**  DNS
+   Relay takes 1-3 minutes to initialize.
+3. **Never reboot more than once every 10 minutes.**  WiFi clients enter
+   backoff if rapid reboots.
+4. **Never flush firewall rules** (`iptables -F`, `ip6tables -F`).  Only add
+   Detectic rules (TCP/8787 on br0).
+5. **Never modify stock router services** (cos, httpd, dnsmasq, busybox).
+6. **Never serve Phoenix scripts from external URLs.**  Only from
+   `http://192.168.0.27:8080/`.
+7. **Never deploy unverified binaries.**  SHA-256 checksums must match the
+   manifest.
+8. **Always set DEV2_LIFEMOTE_AGENT URL back to bootstart.sh after testing.**
+   Never leave test scripts (kill_sensor.sh) as the URL.
+9. **The watchdog detects reboots, it does NOT cause them.**  The host-side
+   watchdog must never proactively reboot the router.
+10. **After any test, verify all 9 baseline services** (DHCP, DNS, WAN, WiFi
+    2.4/5GHz, Web UI IPv4/IPv6, GTPR, sensor) are operational.
+
+### Service baseline (must remain operational)
+
+```bash
+# Quick check — all services
+dig @192.168.0.1 google.com +short                    # DNS
+curl -sS -m 5 -o /dev/null -w "%{http_code}" http://example.com  # Internet
+curl -sS http://192.168.0.1:8787/devices              # DHCP + WiFi
+curl -sS http://192.168.0.1:8787/health               # Sensor
+curl -sS -o /dev/null -w "%{http_code}" http://192.168.0.1/  # Web UI
+```
+
+### Incident response: "no internet"
+
+1. Check DNS first: `dig @192.168.0.1 google.com +short`
+2. If SERVFAIL and router was recently rebooted (< 5 min): **wait 180s**, it's
+   normal DNS Relay startup delay.
+3. If SERVFAIL after 5 min: re-enable DNS Relay via GTPR
+   (`set DEV2_DNS_RELAY '{"enable":"1"}'`).
+4. If DNS works but no internet: check WAN (`curl http://example.com`).
+5. If no DHCP: check `DEV2_DHCPV4_SERVER` enable status.
+
+---
+
+## Cold-boot autostart verification checklist (2026-08-28)
+
+> The toggle trigger (Path 2.A) proves *runtime* re-triggering, NOT cold-boot
+> autostart.  Cold-boot autostart must be verified independently with a
+> controlled reboot and **no manual `enable:0→1` after the reboot**.
+
+### COLD-BOOT TEST RESULT (2026-08-28): FAILED — native autostart does NOT work
+
+A controlled cold-boot test was performed with the watchdog **NOT running**.
+Result:
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | EX520 rebooted (ACT_REBOOT) and came back UP | **PASS** (DOWN 3s, UP 30s) |
+| 2 | `DEV2_LIFEMOTE_AGENT` persisted (`enable:1`, URL=bootstart.sh) | **PASS** |
+| 3 | `phoenix.sh` executed without manual `so` | **FAIL** — 0 GETs in server log |
+| 4 | `bootstart.sh` downloaded | **FAIL** |
+| 5 | Sensor started | **FAIL** |
+| 6 | `192.168.0.1:8787` reachable | **FAIL** |
+| 7 | Sensor uptime compatible with fresh boot | N/A |
+| 8 | No `enable:0→1` toggle sent after reboot | **PASS** (confirmed) |
+
+**Conclusion: `cos` does NOT launch `phoenix.sh` at boot**, even when
+`DEV2_LIFEMOTE_AGENT.enable=1` and `URL` are set and persisted.  This confirms
+the Phase 16 static-analysis finding: `rsl_initDev2LifemoteAgentObj` is NOT in
+the boot init function table; it is only called when a GTPR `so` command is
+received at runtime.
+
+**The "cold boot = PROVEN-LIVE" verdict above refers to the watchdog path
+(Path 4), where the host-side Edge Supervisor detects the router coming back
+UP and sends the `so` trigger.  Without the watchdog running, there is NO
+autostart after a cold boot.**
+
+Service was restored after the test via the `enable:0→1` toggle (Path 2.A),
+which re-triggered phoenix and brought the sensor back to healthy
+(`uptime=42s, status=healthy, 192.168.0.1:8787 → 200`).
+
+### What WOULD constitute native cold-boot autostart
+
+A controlled cold-boot test must confirm ALL of the following **with the
+watchdog NOT running**:
+
+1. EX520 reboots (ACT_REBOOT or power cycle) and comes back UP.
+2. `DEV2_LIFEMOTE_AGENT` still has `enable:1` + bootstart URL after reboot
+   (persisted in misc_rw data model — no re-configuration needed).
+3. `phoenix.sh` executes **without any manual GTPR `so`** after the reboot.
+4. `bootstart.sh` is downloaded and executed (observed as `GET /bootstart.sh`
+   in the package server log).
+5. The Detectic binary is reassembled and `launcher.sh` starts the sensor.
+6. `192.168.0.1:8787/health` responds 200 (IPv4) AND
+   `[fe80::...]:8787/health` responds 200 (IPv6).
+7. The sensor's `uptime` is compatible with a fresh boot (low seconds, not
+   thousands).
+8. No `enable:0→1` toggle was sent after the reboot — the chain must be
+   purely: cold boot → cos init → phoenix → bootstart → launcher → detectic.
+
+If all 8 pass, then: **Detectic is natively installed on the EX520, on stock
+firmware without modification, with persistent configuration and autostart
+after cold boot.**  The CWMP/ACS line remains a separate experimental track,
+not a requirement for Detectic persistence.
+
+**Current status: native cold-boot autostart is NOT available on stock
+firmware.  The watchdog (Path 4) is REQUIRED for autostart after cold boot.**
 
 ## Agent fast-path: build + deploy in one command (2026-08-27)
 
@@ -1039,8 +1352,8 @@ arbitrary execution   = PROVEN-LIVE (via DEV2_LIFEMOTE_AGENT /usr/bin/phoenix.sh
 persistence           = PROVEN-LIVE (split Detectic binary in misc_rw + misc_rw_bak)
 manual autostart      = PROVEN-LIVE (phoenix downloads and executes bootstart.sh)
 watchdog trigger      = PROVEN-LIVE (cold boot: DOWN -> UP -> GTPR so SENT; manual trigger verified)
-cold boot             = PROVEN-LIVE (watchdog -> phoenix -> bootstart -> detectic; done?status=ok&ret=0)
-sensor HTTP/8787      = PROVEN-LIVE (curl /health and /devices from host)
+cold boot             = PROVEN-LIVE ONLY WITH WATCHDOG (watchdog -> so -> phoenix -> bootstart -> detectic); WITHOUT watchdog, native autostart FAILS (verified 2026-08-28: cos does not launch phoenix.sh at boot)
+sensor HTTP/8787      = PROVEN-LIVE (curl /health and /devices from host; IPv4 192.168.0.1:8787 + IPv6 fe80::...:8787 both 200 OK after dual-stack bind fix + firewall open)
 sensor GTPR collection = PROVEN-LIVE (sensor populated 6 Wi-Fi devices via DEV2_WIFI_APDEV_ASSOCDEV gl)
 Edge Supervisor health = PROVEN-LIVE (watchdog reached SENSOR_HEALTHY via TCP 8787 probe)
 SHA-256 verify         = PROVEN-LIVE (OpenSSL dgst -sha256; BusyBox sha256sum applet is non-functional)
@@ -3386,3 +3699,194 @@ Health and snapshots are available on `http://127.0.0.1:8787` (`/health`,
 Caution: only one sensor should use `sensor_id=ex520-001` at a time against the
 same backend, or events will be attributed twice. For parallel testing, override
 `DETECTIC_SENSOR_ID`.
+
+---
+
+# 57. Production Hardening — Security & Robustness (2026-08-28)
+
+This section documents the production-hardening pass. Every behavior below is
+covered by an automated test or an explicit configuration check. **Nothing here
+is claimed PROVEN-LIVE unless it has actually been demonstrated in the running
+environment.** The hardening protects protocol semantics without changing the
+event envelope, the pseudonymization algorithm, or the WSS production
+architecture.
+
+## 57.1 WSS sensor authentication (PROVEN-BY-TEST)
+
+**Problem:** `/ws` previously accepted `role=sensor&sensor_id=X` with no
+credential, so any peer could inject events or read telemetry.
+
+**Protocol (unchanged transport, added credential):**
+1. Sensor opens `wss://…/ws?role=sensor&sensor_id=<id>` (the token is NEVER in
+   the URL).
+2. The Durable Object stores the socket as unauthenticated
+   (`sensor_authed:false`) and sends a non-sensitive greeting.
+3. Sensor sends `{"type":"hello","protocol":1,"token":"<secret>"}`.
+4. The DO validates `token` against `DETECTIC_SENSORS[<sensor_id>]` with
+   **constant-time** comparison (`protocol.ts: constantTimeEqual`). The
+   `sensor_id` is only ever used as a registry key — it is never trusted on its
+   own.
+5. On success the DO marks the socket authenticated and replies `hello_ack`
+   (then `GET_STATUS`). On any failure it replies `auth_error` and closes.
+
+**Rules enforced:**
+- Missing token → reject.
+- Invalid token → reject.
+- Unknown `sensor_id` → reject.
+- Malformed handshake → reject.
+- `sensor A` cannot authenticate as `sensor B` (its token must match A's).
+- Only authenticated sensor sockets may send `type:"event"`. For those, the
+  attribution `sensor_id` is the one bound at handshake time — never the one in
+  the message body, so a sensor cannot impersonate another.
+- Token/secret is never logged, never placed in the URL, and never echoed.
+
+**Credential wiring:**
+- The sensor presents its existing `DETECTIC_SECRET`. This value MUST equal
+  `DETECTIC_SENSORS[<sensor_id>]` on the Worker — the same contract already used
+  for HTTP HMAC uploads, so **no new sensor env variable is required**.
+- Rebuild + redeploy the on-router binary (`make package`) so `WssEventTransport`
+  sends the token. Until then, a sensor that sends no token is rejected.
+
+**Tests:** `backend/cf-worker/tests/protocol.test.ts` (Node, `npm run test:unit`):
+`# WSS sensor authentication` covers authenticated accepted, missing/invalid
+token, unknown sensor, cross-sensor impersonation, and malformed handshake.
+Status: **PROVEN-BY-TEST**; live confirmation requires a redeployed sensor plus a
+registered secret (see the ignored live test `wss_transport::test_wss_roundtrip`
+which now requires `WSS_TEST_TOKEN`).
+
+## 57.2 CORS policy (PROVEN-BY-TEST)
+
+**Problem:** `Access-Control-Allow-Origin` fell back to `*`, letting any web
+origin read the API.
+
+**Policy:** `Access-Control-Allow-Origin` is emitted ONLY for:
+- an explicit allowed origin from `DETECTIC_ALLOWED_ORIGINS` (comma separated),
+  or
+- the worker's own origin (same-origin dashboard).
+
+It is never `*`. Absent Origin, disallowed origins, and non-dashboard clients
+receive **no ACAO header** (browsers block cross-origin reads). Non-browser
+sensors are unaffected (server-to-server, no CORS). OPTIONS preflight reflects
+the allowed origin only.
+
+**Tests:** `protocol.test.ts` `# CORS policy` (allowed/self origin reflected;
+disallowed and absent Origin → null). Status: **PROVEN-BY-TEST**.
+
+## 57.3 Canonical event ACK contract + duplicate semantics (PROVEN-BY-TEST)
+
+**Problem:** Rust `parse_ack` expected `accepted_ids`, but the Worker returned
+`{accepted, duplicates}`; HTTP 200 parsed to an empty accepted set, so the
+`ReliableQueue`/spool could grow indefinitely over the HTTP path.
+
+**Contract (canonical, ID-keyed, never positional):**
+```
+POST /api/v1/events  (batch) -> 202
+{
+  "accepted_ids":  [<event_id>, ...],   // newly persisted
+  "duplicate_ids": [<event_id>, ...],   // already known (events.event_id UNIQUE)
+  "rejected_ids":  [<event_id>, ...],   // un-insertable (retained on sensor)
+  "accepted": N, "duplicates": M, "rejected": K
+}
+```
+- Rust `HttpEventTransport` resolves **accepted_ids ∪ duplicate_ids** as
+  "done" (removed from queue/spool). Rejected IDs are NOT resolved, so they
+  stay queued for retry (never silently dropped).
+- Duplicates (re-sent events) are resolved by the backend, so the queue does
+  **not** retain them forever.
+
+**Tests (Rust):** `parse_ack_body_maps_worker_contract`,
+`parse_ack_body_empty_on_malformed_or_legacy`, `queue_removes_both_accepted_and_duplicate`,
+`rejected_event_survives_retry`. Status: **PROVEN-BY-TEST**.
+
+### Duplicate semantics
+- `events.event_id` is `UNIQUE`. A re-delivered event that already exists is
+  reported as a **duplicate** (not a second accepted event) and is resolved.
+- Accepted events are selected **by stable event_id** (not array position), via
+  `protocol.ts: selectAcceptedEvents`. Duplicates and rejections can never be
+  misattributed as accepted regardless of their position in the batch.
+- Regression tests (protocol.ts, `# ID-keyed accepted-event selection`): all
+  unique, duplicate in first/middle/end, and
+  mixed accepted/duplicate/rejected.
+
+## 57.4 Removed dead `pseudoHmac()` (PROVEN-BY-CLEAN)
+
+The weak, non-deterministic djb2-style `pseudoHmac()` in `index.ts` was dead
+code and has been **removed**. Repository-wide search finds no remaining
+references. The only pseudonymization path is `crypto.subtle`-based HMAC-SHA256
+(`pseudonymize()`), which is MCV1 cross-language compatible.
+
+## 57.5 Production-safe 500 responses (PROVEN-BY-TEST)
+
+**Problem:** the global handler returned `error.message`, `path`, and up to 5
+stack frames to any caller.
+
+**Now:** the client receives only `{"error":"internal_error","request_id":"<uuid>"}`.
+The full stack/message go to server logs (`console.error("REQUEST_ERROR", …)`).
+No filesystem paths, function names, stack frames, secrets, or env vars reach
+the client.
+
+**Test:** `protocol.test.ts` `# production-safe 500 error body` (no stack, no
+path, no secret). Status: **PROVEN-BY-TEST**.
+
+## 57.6 `/devices` privacy (PROVEN-BY-TEST)
+
+**Problem:** the sensor HTTP control plane (`TCP/8787`, reachable on the LAN)
+serialized `Device` structs verbatim, exposing raw `mac`, `ip`, `hostname`.
+
+**Now:** `src/http_server.rs` masks every station before serialization:
+- raw MAC is replaced by the stable HMAC pseudonym (`crypto::pseudonymize` with
+  the per-sensor secret) — raw MACs never leave the sensor.
+- hostname/IP and RSSI/standard/active are retained for control-plane/debugging.
+- `/devices/<id>` matches by either the raw identity or the pseudonym.
+- The on-router dashboard (same-origin `http://…:8787/`) continues to render the
+  pseudonym as the device identity.
+
+**Constraint preserved:** the `EventEnvelope` emitted to the backend is
+unchanged (it already carried pseudonyms); only the LAN-facing HTTP response was
+hardened.
+
+**Tests (Rust):** `masked_device_replaces_raw_mac_and_is_stable`,
+`masked_device_varies_with_secret`, `masked_device_keeps_non_mac_fields`,
+`mask_stations_preserves_order_and_len`. Status: **PROVEN-BY-TEST**.
+
+## 57.7 Production vs development credentials (PROVEN-BY-TEST)
+
+**Policy:** production must fail closed rather than silently accept the
+well-known development credentials.
+
+- `backend/server.py`: sensor registry comes from `DETECTIC_SENSORS` or
+  `sensors.json`. If neither exists it **raises**, unless
+  `DETECTIC_ALLOW_DEV_FALLBACK=1` (writes/uses `DEV_SENSORS` with a warning).
+  The `--master-secret` arg now fails closed unless
+  `DETECTIC_MASTER_SECRET`/flag is set.
+- `autonomous/collector.py` and `autonomous/event_reporter.py`: without a
+  secret they now **raise** unless `AUTONOMOUS_ALLOW_DEV_SECRET=1`. A
+  non-hex `AUTONOMOUS_SECRET` is a hard error (no silent dev fallback).
+- Secrets are never logged; the dev warnings print only an indicator.
+
+**Tests (Python):** `backend/tests/test_secret_gating.py`,
+`autonomous/tests/test_secret_gating.py` (run via
+`python3 -m unittest ...`). Status: **PROVEN-BY-TEST**.
+
+## 57.8 Full regression (2026-08-28)
+
+- `cargo test --release` → **228 passed, 0 failed, 1 ignored** (lib) + **5 passed** (bin).
+- `npx tsc -p tsconfig.json --noEmit` → clean.
+- `node --experimental-strip-types tests/protocol.test.ts` → all pass.
+- `python3 -m unittest backend.tests.test_secret_gating autonomous.tests.test_secret_gating` → all pass.
+- Router cross-build (`messense/rust-musl-cross:aarch64-musl cargo build --no-default-features --features wss,tls`) → clean.
+
+## 57.9 Remaining risks
+
+- **WSS live validation pending**: the authentication is proven by unit tests.
+  Live confirmation requires redeploying the sensor binary (which now sends
+  `DETECTIC_SECRET`) and having `DETECTIC_SENSORS["ex520-001"]` equal that
+  secret. Until the on-router binary is rebuilt+redeployed, existing deployed
+  sensors will be rejected at the WSS handshake (fail-closed by design).
+- **Frontend WebSocket** (`role=frontend`) remains unauthenticated (read-only
+  dashboards); it cannot inject events because the `event` path is gated to
+  authenticated sensor sockets. If push subscriptions must be protected, add a
+  frontend token.
+- **HTTP event path** (`HttpEventTransport`) now resolves duplicates correctly,
+  but the primary production transport is WSS; the HTTP path is a fallback.
+

@@ -27,7 +27,7 @@ export function HistoryView() {
   return (
     <div className="space-y-4 md:space-y-6">
       <PageHeader
-        title="History"
+        title="Historial"
         description="Observaciones históricas de RSSI y actividad"
       />
       <RssiTimelineChart points={points} />

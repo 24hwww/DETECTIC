@@ -33,27 +33,35 @@ const columns = [
     ),
   }),
   columnHelper.accessor("hostname", {
-    header: "Hostname",
+    header: "Nombre de host",
     cell: (info) => info.getValue() || "—",
   }),
-  columnHelper.accessor("connected", {
+  columnHelper.accessor("state", {
+    id: "state",
     header: "Estado",
-    cell: (info) =>
-      info.getValue() ? (
-        <Badge
-          variant="default"
-          className="bg-[var(--color-online)]/10 text-[var(--color-online)] hover:bg-[var(--color-online)]/10"
-        >
-          connected
-        </Badge>
-      ) : (
+    cell: (info) => {
+      const state = info.getValue() as string | undefined;
+      const online = state === "CONNECTED" || state === "RF_PRESENT";
+      const nearby = state === "PRESENT";
+      if (online || nearby) {
+        return (
+          <Badge
+            variant="default"
+            className="bg-[var(--color-online)]/10 text-[var(--color-online)] hover:bg-[var(--color-online)]/10"
+          >
+            {state === "RF_PRESENT" ? "RF presente" : "conectado"}
+          </Badge>
+        );
+      }
+      return (
         <Badge
           variant="secondary"
           className="bg-[var(--color-offline)]/10 text-[var(--color-offline)] hover:bg-[var(--color-offline)]/10"
         >
-          offline
+          {state === "RF_PRESENT" ? "RF presente" : state ? state.toLowerCase() : "desconectado"}
         </Badge>
-      ),
+      );
+    },
   }),
   columnHelper.accessor("last_signal", {
     header: "RSSI",
@@ -105,7 +113,7 @@ export function DeviceTable({
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Dispositivos
+          Dispositivos detectados
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">

@@ -100,9 +100,7 @@ impl ParsedUrl {
                     .as_deref()
                     .ok_or("IPv6 link-local address requires a scope ID (e.g. %enp2s0)")?;
                 let ifindex = interface_index(scope)?;
-                return Ok(SocketAddr::V6(SocketAddrV6::new(
-                    ip, self.port, 0, ifindex,
-                )));
+                return Ok(SocketAddr::V6(SocketAddrV6::new(ip, self.port, 0, ifindex)));
             }
             return Ok(SocketAddr::V6(SocketAddrV6::new(ip, self.port, 0, 0)));
         }
@@ -126,8 +124,8 @@ impl ParsedUrl {
 fn interface_index(name: &str) -> Result<u32, String> {
     // Read /sys/class/net/<name>/ifindex
     let path = format!("/sys/class/net/{}/ifindex", name);
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("cannot read {}: {}", path, e))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {}", path, e))?;
     content
         .trim()
         .parse::<u32>()
@@ -181,14 +179,13 @@ impl HttpClient {
         let parsed = ParsedUrl::parse(url)?;
         let addr = parsed.to_socket_addr()?;
 
-        let mut stream =
-            TcpStream::connect_timeout(&addr, self.connect_timeout).map_err(|e| {
-                format!(
-                    "Connection Failed: Connect error: {} (os error {})",
-                    e,
-                    e.raw_os_error().unwrap_or(0)
-                )
-            })?;
+        let mut stream = TcpStream::connect_timeout(&addr, self.connect_timeout).map_err(|e| {
+            format!(
+                "Connection Failed: Connect error: {} (os error {})",
+                e,
+                e.raw_os_error().unwrap_or(0)
+            )
+        })?;
         stream
             .set_read_timeout(Some(self.read_timeout))
             .map_err(|e| format!("set_read_timeout: {}", e))?;

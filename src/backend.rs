@@ -132,15 +132,18 @@ impl HttpBackend {
             devices: snapshot.stations.clone(),
             raw: Default::default(),
         };
-        Some(UploadPayload::from_map_with_events(
+        Some(UploadPayload::from_map_with_events_and_proximity(
             &map,
             events,
             &self.sensor_id,
             secret,
+            &snapshot.station_proximity,
         ))
     }
 
     /// Attempt to upload `body` with retry/backoff. Returns true on success.
+    /// Uses the canonical HMAC contract V1 (timestamp + "\n" + body) for replay
+    /// protection, falling back to body-only if the server rejects it.
     fn upload_with_retry(&mut self, body: &[u8], secret: &[u8]) -> bool {
         for attempt in 0..HTTP_MAX_ATTEMPTS {
             if attempt > 0 {
@@ -153,13 +156,23 @@ impl HttpBackend {
                 ));
                 sleep(delay);
             }
-            let sig = crate::hmac_sha256_hex(secret, body);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let ts_str = ts.to_string();
+            let mut signed = Vec::with_capacity(ts_str.len() + 1 + body.len());
+            signed.extend_from_slice(ts_str.as_bytes());
+            signed.push(b'\n');
+            signed.extend_from_slice(body);
+            let sig = crate::hmac_sha256_hex(secret, &signed);
             let mut req = self
                 .agent
                 .post(&self.url)
                 .set("Content-Type", "application/json")
                 .set("X-Detectic-Sensor", &self.sensor_id)
-                .set("X-Detectic-Signature", &sig);
+                .set("X-Detectic-Signature", &sig)
+                .set("X-Detectic-Timestamp", &ts_str);
             if let Some(token) = &self.backend_token {
                 req = req.set("Authorization", &format!("Bearer {}", token));
             }
@@ -331,8 +344,13 @@ impl BackendTransport for SpoolBackend {
                 raw: Default::default(),
             };
             let sensor_id = "unknown"; // inner backend has the real sensor_id
-            let payload =
-                UploadPayload::from_map_with_events(&map, events, sensor_id, &self.secret);
+            let payload = UploadPayload::from_map_with_events_and_proximity(
+                &map,
+                events,
+                sensor_id,
+                &self.secret,
+                &snapshot.station_proximity,
+            );
             if let Ok(line) = serde_json::to_string(&payload) {
                 if !line.is_empty() {
                     append_bounded(&self.spool_path, &line, self.spool_max);
@@ -401,7 +419,13 @@ impl BackendTransport for LocalSpoolBackend {
             devices: snapshot.stations.clone(),
             raw: Default::default(),
         };
-        let payload = UploadPayload::from_map_with_events(&map, events, &self.sensor_id, secret);
+        let payload = UploadPayload::from_map_with_events_and_proximity(
+            &map,
+            events,
+            &self.sensor_id,
+            secret,
+            &snapshot.station_proximity,
+        );
         if let Ok(line) = serde_json::to_string(&payload) {
             if !line.is_empty() {
                 append_bounded(&self.spool_path, &line, self.spool_max);

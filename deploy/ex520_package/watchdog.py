@@ -136,13 +136,31 @@ def gtpr_query(oid: str = "DEV2_LIFEMOTE_AGENT") -> bool:
 
 
 def trigger_bootstart() -> bool:
-    payload = (
+    """Trigger Phoenix via the enable:0 → enable:1 toggle (Path 2.A).
+
+    Sending enable:1 when already enable:1 is a NO-OP — cos does not re-invoke
+    rsl_setDev2LifemoteAgentObj for a same-value update.  The reliable runtime
+    re-trigger is a state transition: first disable (enable:0), then re-enable
+    (enable:1) with the bootstart URL.  This causes cos to detect the 0→1
+    transition and spawn phoenix.sh.
+    """
+    disable_payload = '{"enable":"0","URL":"","stack":"0,0,0,0,0,0","pstack":"0,0,0,0,0,0"}'
+    enable_payload = (
         '{"enable":"1","URL":"%s","stack":"0,0,0,0,0,0","pstack":"0,0,0,0,0,0"}'
         % BOOTSTART_URL
     )
     try:
+        # Step 1: disable.
+        _run(
+            [DETECTIC, "--url", ROUTER_URL, "--user", USER, "set", "DEV2_LIFEMOTE_AGENT", disable_payload],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        time.sleep(2)
+        # Step 2: re-enable with bootstart URL (triggers phoenix).
         ret = _run(
-            [DETECTIC, "--url", ROUTER_URL, "--user", USER, "set", "DEV2_LIFEMOTE_AGENT", payload],
+            [DETECTIC, "--url", ROUTER_URL, "--user", USER, "set", "DEV2_LIFEMOTE_AGENT", enable_payload],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=30,
@@ -403,9 +421,14 @@ class EdgeSupervisor:
             if self.state.state == State.SENSOR_HEALTHY:
                 self._log("SENSOR_UNHEALTHY")
             self._transition(State.SENSOR_UNHEALTHY)
-            if self.state.last_trigger and (
-                time.time() - self.state.last_trigger > self.cfg.health_timeout
-            ):
+            # If we've never triggered (e.g. watchdog started after a cold
+            # boot and the sensor is down), trigger now.  This handles the
+            # case where the watchdog didn't witness the router downtime
+            # but the sensor still needs to be started.
+            if self.state.last_trigger is None:
+                self._log("sensor down and no prior trigger — initial trigger")
+                self._trigger()
+            elif time.time() - self.state.last_trigger > self.cfg.health_timeout:
                 self._recover()
 
     def run(self) -> None:

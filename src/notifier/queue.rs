@@ -228,6 +228,7 @@ mod tests {
             connected: false,
             active: false,
             proximity: "Incerto".into(),
+            heat: None,
             signal_quality: "N/A".into(),
             total_devices: 0,
             connected_count: 0,

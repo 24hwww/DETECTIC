@@ -42,6 +42,9 @@ pub struct DetectionEvent {
     /// Signal quality label: "Excelente", "Bom", "Regular", "Fraco", "N/A".
     #[serde(default)]
     pub signal_quality: String,
+    /// Thermal heat 0-100 (cold = far/weak, hot = near/strong).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heat: Option<u8>,
     /// Number of devices detected in this capture (for dashboard).
     #[serde(default)]
     pub total_devices: u32,
@@ -141,6 +144,7 @@ mod tests {
             connected: true,
             active: true,
             proximity: "Perto".into(),
+            heat: Some(75),
             signal_quality: "Bom".into(),
             total_devices: 5,
             connected_count: 5,
@@ -171,6 +175,7 @@ mod tests {
             connected: false,
             active: false,
             proximity: "Incerto".into(),
+            heat: None,
             signal_quality: "N/A".into(),
             total_devices: 0,
             connected_count: 0,

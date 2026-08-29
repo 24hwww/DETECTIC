@@ -20,7 +20,6 @@ pub enum GtprError {
     Protocol(String),
 }
 
-
 impl From<std::io::Error> for GtprError {
     fn from(e: std::io::Error) -> Self {
         GtprError::Http(e.to_string())
@@ -45,7 +44,11 @@ impl std::error::Error for GtprError {}
 
 fn log_response(endpoint: &str, resp: &crate::http::HttpResponse) -> Result<(), GtprError> {
     let status = resp.status;
-    let content_type = resp.headers.get("Content-Type").map(|s| s.as_str()).unwrap_or("");
+    let content_type = resp
+        .headers
+        .get("Content-Type")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let has_cookie = resp.headers.contains_key("Set-Cookie");
     eprintln!(
         "[DEBUG {}] status={} content-type={} set-cookie-present={}",
@@ -316,11 +319,7 @@ impl GtprClient {
 
         log_response("login", &resp)?;
 
-        let set_cookie = resp
-            .headers
-            .get("Set-Cookie")
-            .cloned()
-            .unwrap_or_default();
+        let set_cookie = resp.headers.get("Set-Cookie").cloned().unwrap_or_default();
         if let Some(idx) = set_cookie.find("JSESSIONID=") {
             let rest = &set_cookie[idx + "JSESSIONID=".len()..];
             self.jsessionid = rest.split(';').next().unwrap_or("").to_string();

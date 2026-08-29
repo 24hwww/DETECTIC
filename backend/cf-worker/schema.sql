@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS ap_state (
   security           TEXT,
   w_mode             TEXT,
   extch              TEXT,
+  proximity          TEXT,
+  proximity_detail   TEXT,
   updated_at         INTEGER NOT NULL,
   PRIMARY KEY (sensor_id, ap_id)
 );
@@ -162,4 +164,20 @@ CREATE TABLE IF NOT EXISTS rf_environment_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rf_sensor_ts ON rf_environment_snapshots(sensor_id, event_timestamp);
+
+-- Temporary debug log for ingest auth mismatches. Stores only metadata/pseudonyms,
+-- not raw device details. Retain only the last 20 entries per sensor.
+CREATE TABLE IF NOT EXISTS debug_ingest_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  sensor_id     TEXT NOT NULL,
+  captured_at   INTEGER,
+  received_at   INTEGER NOT NULL,
+  got_id        TEXT,
+  expected_id   TEXT,
+  pseudos_json  TEXT,
+  body_sha256   TEXT,
+  reason        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_debug_ingest_sensor ON debug_ingest_log(sensor_id, received_at);
 

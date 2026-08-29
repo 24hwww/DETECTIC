@@ -784,3 +784,98 @@ Use **Path 4** (host-side watchdog + Phoenix + bootstart + launcher) as
 All findings in this report are supported by firmware analysis, live EX520
 observation, or the proven deployment scripts in
 `deploy/ex520_package/`.
+
+---
+
+## Phase 24C addendum (2026-08-28)
+
+A further exhaustive audit of the extracted EX520 firmware and live `user`
+GTPR channel re-examined every candidate for cold-boot autostart.
+
+### New live evidence
+
+| Test | Result |
+|------|--------|
+| Cold reboot with `DEV2_LIFEMOTE_AGENT` already `{enable:1, URL:http://192.168.0.27:8080/bootstart.sh}` | **NO auto-start** — no `/bootstart.sh` GET, `:8787/health` unreachable after boot |
+| `so DEV2_MANAGEMENT_SERVER` with `{URL, periodicInformInterval}` | **PERSISTS** via user GTPR (`go` confirmed new values) |
+| Reboot with CWMP ACS URL set to LAN package server | **NO Inform traffic** — cwmp on `ppp0` cannot reach a LAN IP; manual URL may also not propagate to cwmp runtime |
+| GTPR `gl` on `EE`/`DU`/`EU`/`SW_MODULES` | **All return error 9804** — object not exposed to GTPR |
+| Direct HTTP `/cgi/getSmhmResult` | **HTTP 406** — SmartHome CGI endpoints are not functional from user session |
+| Live process list via `ps` probe | `cwmp`, `obuspa`, `dropbear`, `ntpc`, `dyndns`, `noipdns`, `dnsmasq`, `dhcpd`, `dhcpc`, `cloud_client`, `httpd`, `snmpd`, `upnpd` confirmed running |
+
+### Firmware audit for SmartHome / SoftwareModules
+
+- Web pages (`smarthomeEE.htm`, `smarthomeDU.htm`, `smarthomeEU.htm`) expose
+  an Execution-Unit `autoStart` toggle and DU/EU Add/Update controls.
+- `oid_str.js` contains the `EE`/`DU`/`EU`/`SW_MODULES` names and
+  `INCLUDE_CONTAINER` / `INCLUDE_SMART_HOME_V2` build flags.
+- However, `libcmm.so` only has the data-model path strings
+  (`Device.SoftwareModules.*`); there are no `rsl_*` handlers, no `autoStart`,
+  no `smhm`, no `container`, `lxc`, `docker`, `runc`, or `containerd` strings.
+- `cos`, `cwmp`, and `obuspa` contain no SmartHome/container references.
+- No container-runtime binaries exist in the extracted rootfs.
+
+**Conclusion:** SmartHome/SoftwareModules is a build-time web UI template in
+this firmware. The execution backend is not present, so it cannot be used for
+arbitrary-code autostart.
+
+### CWMP / TR-069 revisit
+
+The earlier assessment that `so DEV2_MANAGEMENT_SERVER` does not persist was
+superseded. With the correct payload framing, `URL` and `periodicInformInterval`
+**do** survive and are returned by `go`. This means the `user` GTPR channel can
+point the router at an ACS and control the inform interval.
+
+However, the router's `cwmp` client:
+
+1. Runs on the WAN interface (`ppp0`, public IP `100.64.85.231`); it cannot
+   "hairpin" to a LAN client (`192.168.0.27`) for the ACS.
+2. Did not send any Inform to a LAN test ACS even after a reboot.
+
+Therefore, the stock `cwmp` **can** execute `ExecuteCliCommand` or `Download`
+RPCs pushed by a real, WAN/cloud-reachable ACS, but only when such an ACS is
+available. This is the only stock protocol that could deliver autonomous
+command execution after a cold boot, but it is **not a no-external solution**.
+
+### New daemons evaluated
+
+| Daemon | Autostart potential | Reason |
+|--------|--------------------|--------|
+| `dropbear` (SSH) | No | Provides a shell, but no stock boot hook; credentials untested |
+| `ntpc` (NTP client) | No | No exec/script callback surface in binary |
+| `dyndns` / `noipdns` | No | HTTP update to provider only; no command execution |
+| `dnsmasq` / `dhcpd` / `dhcpc` | Unlikely | `dnsmasq` compiled with `no-scripts`; no user-writable script path in `/var/tmp/dconf/`; event-driven (lease/IP change), not boot |
+| `cloud_client` / `cloud_https` | Unknown | Closed TP-Link cloud protocol; no user-writable controller URL identified |
+| `obuspa` (USP/TR-369) | Unknown | Mutual-TLS + controller URL gating; `go` returned empty; no user test performed |
+
+### Updated final classification
+
+```text
+DEPLOY              = PROVEN-LIVE (GTPR so → phoenix → bootstart)
+PERSIST             = PROVEN-LIVE (config + launcher/env in misc_rw)
+EXECUTE             = PROVEN-LIVE (detectic sensor runs as root)
+AUTOSTART           = PROVEN-LIVE (host watchdog → cold boot trigger)
+COLD-BOOT RECOVERY  = PROVEN-LIVE (watchdog detects DOWN/UP and re-triggers)
+NATIVE_NO-EXTERNAL_AUTOSTART = FAILED (no stock boot hook, no functional SoftwareModules backend,
+                                     CWMP needs external ACS, all other daemons lack exec hook)
+ROLLBACK            = PROVEN-LIVE (set DEV2_LIFEMOTE_AGENT enable:0)
+SECURITY            = ACCEPTED RISK (documented; mitigations listed)
+```
+
+### Recommendation (unchanged)
+
+Use **Path 4** (host-side watchdog + Phoenix + bootstart + launcher) as the
+canonical EX520 DETECTIC persistence and autostart mechanism. If an external
+ACS (e.g., a Cloudflare Worker speaking CWMP) is acceptable as a dependency,
+CWMP is the only stock protocol that could replace the host watchdog; it is
+not a "no external dependencies" solution and requires significant additional
+engineering.
+
+Do not attempt firmware modification, native SquashFS hooks, or SSH/Telnet
+workarounds for production deployment.
+
+### Evidence files
+
+- `firmware_forensics/execution_vector_inventory.json` (updated catalog)
+- `firmware_forensics/execution_vector_verdict.json` (updated verdict)
+- `deploy/ex520_package/probe_log.txt` (live `ps` and `ifconfig` probe)

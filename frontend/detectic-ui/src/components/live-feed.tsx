@@ -16,6 +16,9 @@ function timeAgo(ms?: number) {
 function eventLabel(type: string) {
   if (type.includes("device.connected")) return "Device connected";
   if (type.includes("device.disconnected")) return "Device disconnected";
+  if (type.includes("device.presence_changed")) return "Device presence changed";
+  if (type.includes("device.proximity_changed")) return "Device proximity changed";
+  if (type.includes("device.signal_changed")) return "Device signal changed";
   if (type.includes("device")) return "Device observed";
   if (type.includes("network.detected")) return "AP observed";
   if (type.includes("network.disappeared")) return "AP disappeared";

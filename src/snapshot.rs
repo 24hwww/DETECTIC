@@ -8,7 +8,9 @@
 //! Fields that the firmware does not provide are `None` — we never invent values.
 
 use crate::model::Device;
+use crate::proximity::ProximityResult;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Router identity (from `DEV2_DEV_INFO`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -35,6 +37,11 @@ pub struct RadioStats {
     pub noise_floor_dbm: Option<i64>,
     pub last_tx_rate: Option<String>,
     pub last_rx_rate: Option<String>,
+    /// Per-chain receive RSSI (dBm-ish raw values) from the `Rssi:` line of
+    /// `iwpriv <if> stat`. Order corresponds to antenna chains. Empty if the
+    /// line was absent or malformed; never fabricated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rssi_per_chain: Vec<i64>,
 }
 
 /// Nearby AP summary entry (from `iwpriv get_site_survey`, optional).
@@ -61,6 +68,9 @@ pub struct SensorSnapshot {
     pub uptime: Option<u64>,
     /// Wi-Fi stations and host-table devices.
     pub stations: Vec<Device>,
+    /// Proximity result per station identity, populated by the presence engine.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub station_proximity: HashMap<String, ProximityResult>,
     /// Per-radio statistics (optional, when `enable_radio_stats` is true).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub radio_stats: Vec<RadioStats>,
@@ -79,6 +89,7 @@ impl SensorSnapshot {
             router: None,
             uptime: None,
             stations,
+            station_proximity: HashMap::new(),
             radio_stats: Vec::new(),
             nearby_aps: Vec::new(),
         }
