@@ -76,6 +76,7 @@ from identity.stable_id import stable_fingerprint
 from identity.classifier import infer_device_class
 from identity.mac import classify_mac
 from identity.oui import manufacturer as oui_manufacturer
+from arp_reader import neighbor_events
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -145,6 +146,7 @@ class Config:
     email_enabled: bool
     log_path: str
     identity_path: str = ""
+    arp_enabled: bool = False
 
 
 def load_config() -> Config:
@@ -174,6 +176,7 @@ def load_config() -> Config:
 
     email_enabled = env_int("AUTONOMOUS_EMAIL_ENABLED", 1 if smtp_host and smtp_to else 0)
     log_path = env("AUTONOMOUS_LOG", str(here / "logs" / "collector.log"))
+    arp_enabled = env_int("AUTONOMOUS_ARP_ENABLED", 0) == 1
 
     # Identity/fingerprint state file (cross-run temporal correlation).
     # Co-located with the SQLite DB when present, else under data/.
@@ -204,7 +207,7 @@ def load_config() -> Config:
 
     return Config(
         db_path=db, sensor_id=sensor, url=url, user=user, password=password,
-        secret=secret, dialect=dialect,
+        secret=secret, dialect=dialect, arp_enabled=arp_enabled,
         smtp_host=smtp_host, smtp_port=smtp_port, smtp_user=smtp_user,
         smtp_password=smtp_password, smtp_from=smtp_from, smtp_to=smtp_to,
         smtp_tls=smtp_tls, email_enabled=bool(email_enabled), log_path=log_path,
@@ -1491,6 +1494,46 @@ def deliver_worker_reports(cfg: Config) -> int:
     return delivered
 
 
+def post_events_batch(cfg: Config, events: List[Dict[str, Any]]) -> bool:
+    """Push a batch of canonical events to the Worker ingest endpoint."""
+    d1_url = _get_d1_sync_url()
+    if not d1_url:
+        return False
+    if not events:
+        return True
+
+    url = f"{d1_url}/api/v1/events/batch"
+    payload: Dict[str, Any] = {
+        "sensor_id": cfg.sensor_id,
+        "captured_at": int(time.time()),
+        "events": events,
+    }
+    body = json.dumps(payload, separators=(",", ":"))
+    ts = str(int(time.time()))
+    signed = ts.encode() + b"\n" + body.encode()
+    sig = hmac.new(cfg.secret, signed, hashlib.sha256).hexdigest()
+
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url,
+            data=body.encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Detectic-Sensor": cfg.sensor_id,
+                "X-Detectic-Signature": sig,
+                "X-Detectic-Timestamp": ts,
+                "User-Agent": "detectic-collector/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 202
+    except Exception as e:
+        print(f"events batch post failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
+
+
 def sync_to_d1(cfg: Config, cap: Dict[str, Any], devices: List[Dict[str, Any]],
                run: Optional[Dict[str, Any]] = None) -> bool:
     """Push capture + devices to Cloudflare D1 via Worker endpoint.
@@ -1715,6 +1758,19 @@ def run_job(cfg: Config) -> int:
                                                  "status": "COMPLETE" if exit_code == 0 else "PARTIAL",
                                                  "duration_ms": int((time.time() - started_at) * 1000)})
         jlog.emit("D1_SYNC", run_id=run_id, capture_id=capture_id, ok=d1_ok)
+
+        # Optional ARP/IPv6 neighbor table read for faster presence detection.
+        # Enabled when the sensor host has shell access (AUTONOMOUS_ARP_ENABLED=1).
+        if cfg.arp_enabled:
+            try:
+                arp_events = neighbor_events(cfg.sensor_id, cfg.secret)
+                if arp_events:
+                    arp_ok = post_events_batch(cfg, arp_events)
+                    jlog.emit("ARP_SYNC", run_id=run_id, capture_id=capture_id, events=len(arp_events), ok=arp_ok)
+                else:
+                    jlog.emit("ARP_SYNC_EMPTY", run_id=run_id, capture_id=capture_id)
+            except Exception as e:
+                jlog.emit("ARP_SYNC_FAILED", run_id=run_id, capture_id=capture_id, error=str(e))
 
     # Catch-up: retry other non-delivered captures (idempotent, bounded).
     pending = store.pending_deliveries()

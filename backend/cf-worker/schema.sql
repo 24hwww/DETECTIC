@@ -237,3 +237,23 @@ CREATE TABLE IF NOT EXISTS device_trust (
 
 CREATE INDEX IF NOT EXISTS idx_device_trust_status ON device_trust(status);
 
+-- IP/MAC bindings observed from ARP, IPv6 NDP, DHCP or Wi-Fi association.
+-- Used for faster presence detection and correlation when the sensor has
+-- shell access to read neighbor tables.
+CREATE TABLE IF NOT EXISTS device_ip (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pseudonym TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  mac TEXT,
+  source TEXT NOT NULL DEFAULT 'arp',
+  sensor_id TEXT,
+  first_seen INTEGER,
+  last_seen INTEGER,
+  confidence REAL NOT NULL DEFAULT 1.0,
+  UNIQUE (pseudonym, ip, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_ip_pseudo ON device_ip(pseudonym);
+CREATE INDEX IF NOT EXISTS idx_device_ip_ip ON device_ip(ip);
+CREATE INDEX IF NOT EXISTS idx_device_ip_mac ON device_ip(mac);
+

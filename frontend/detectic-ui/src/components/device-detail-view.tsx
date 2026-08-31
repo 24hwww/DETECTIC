@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Smartphone, Save, Activity } from "lucide-react";
+import { ArrowLeft, Smartphone, Save, Activity, Network } from "lucide-react";
 import { proximityText, signalWord, bandLabel } from "@/lib/labels";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,9 +15,11 @@ import {
   fetchDeviceIdentity,
   updateDeviceIdentity,
   fetchDevicePatterns,
+  fetchDeviceIps,
   updateDeviceTrust,
   type DetailedDevice,
   type DevicePattern,
+  type DeviceIp,
 } from "@/lib/api";
 
 function timeAgo(ms?: number | null) {
@@ -66,6 +68,11 @@ export function DeviceDetailView() {
   const pattern = useQuery<DevicePattern | null>({
     queryKey: ["device-patterns", deviceId],
     queryFn: () => fetchDevicePatterns(deviceId, 168),
+  });
+
+  const ips = useQuery<DeviceIp[]>({
+    queryKey: ["device-ips", deviceId],
+    queryFn: () => fetchDeviceIps(deviceId, 168),
   });
 
   const trust = useMutation({
@@ -466,6 +473,36 @@ export function DeviceDetailView() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">Sin datos de patrones.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <Network className="h-4 w-4" />
+            IPs y MACs observadas (ARP / IPv6 NDP)
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {ips.isLoading ? (
+            <p className="text-sm text-muted-foreground">Cargando…</p>
+          ) : !ips.data || ips.data.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Sin datos de IP/MAC.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {ips.data.map((ip) => (
+                <div key={ip.id} className="rounded-lg border border-border bg-muted/50 p-2 text-sm">
+                  <div className="font-mono font-medium">{ip.ip}</div>
+                  <div className="text-xs text-muted-foreground">{ip.mac || "—"}</div>
+                  <div className="mt-1 flex items-center gap-2 text-[10px] uppercase text-muted-foreground">
+                    <Badge variant="outline" className="text-[10px]">{ip.source}</Badge>
+                    <span>conf {Math.round(ip.confidence * 100)}%</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">{timeAgo(ip.last_seen)}</div>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

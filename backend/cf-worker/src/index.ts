@@ -485,7 +485,11 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE TABLE IF NOT EXISTS report_config (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, frequency_hours INTEGER NOT NULL DEFAULT 24, changes_only INTEGER NOT NULL DEFAULT 0, top_devices INTEGER NOT NULL DEFAULT 5, new_detections INTEGER NOT NULL DEFAULT 1, nearby_aps INTEGER NOT NULL DEFAULT 1, email_to TEXT, email_subject TEXT, updated_at INTEGER NOT NULL DEFAULT 0)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, generated_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', html TEXT, text TEXT, config_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, sent_at INTEGER, error TEXT)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_trust (pseudonym TEXT PRIMARY KEY, sensor_id TEXT, status TEXT NOT NULL DEFAULT 'unknown', first_seen INTEGER, last_seen INTEGER, alert_count INTEGER NOT NULL DEFAULT 0, acknowledged_at INTEGER, updated_at INTEGER NOT NULL DEFAULT 0)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS device_ip (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, ip TEXT NOT NULL, mac TEXT, source TEXT NOT NULL DEFAULT 'arp', sensor_id TEXT, first_seen INTEGER, last_seen INTEGER, confidence REAL NOT NULL DEFAULT 1.0, UNIQUE (pseudonym, ip, source))`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_trust_status ON device_trust(status)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_ip_pseudo ON device_ip(pseudonym)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_ip_ip ON device_ip(ip)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_ip_mac ON device_ip(mac)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
@@ -571,7 +575,11 @@ async function ensureSchema(db: D1Database): Promise<void> {
       `CREATE TABLE IF NOT EXISTS report_config (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, frequency_hours INTEGER NOT NULL DEFAULT 24, changes_only INTEGER NOT NULL DEFAULT 0, top_devices INTEGER NOT NULL DEFAULT 5, new_detections INTEGER NOT NULL DEFAULT 1, nearby_aps INTEGER NOT NULL DEFAULT 1, email_to TEXT, email_subject TEXT, updated_at INTEGER NOT NULL DEFAULT 0)`,
       `CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, generated_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', html TEXT, text TEXT, config_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, sent_at INTEGER, error TEXT)`,
       `CREATE TABLE IF NOT EXISTS device_trust (pseudonym TEXT PRIMARY KEY, sensor_id TEXT, status TEXT NOT NULL DEFAULT 'unknown', first_seen INTEGER, last_seen INTEGER, alert_count INTEGER NOT NULL DEFAULT 0, acknowledged_at INTEGER, updated_at INTEGER NOT NULL DEFAULT 0)`,
+      `CREATE TABLE IF NOT EXISTS device_ip (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, ip TEXT NOT NULL, mac TEXT, source TEXT NOT NULL DEFAULT 'arp', sensor_id TEXT, first_seen INTEGER, last_seen INTEGER, confidence REAL NOT NULL DEFAULT 1.0, UNIQUE (pseudonym, ip, source))`,
       `CREATE INDEX IF NOT EXISTS idx_device_trust_status ON device_trust(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_device_ip_pseudo ON device_ip(pseudonym)`,
+      `CREATE INDEX IF NOT EXISTS idx_device_ip_ip ON device_ip(ip)`,
+      `CREATE INDEX IF NOT EXISTS idx_device_ip_mac ON device_ip(mac)`,
       `CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`,
       `CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`,
@@ -1072,6 +1080,8 @@ export async function applyCanonicalEventToD1(
     if (type.startsWith("device.")) {
       applyTemporalSideEffects(env, sideEffects, sensorId, type, ts, now, deviceId, evt.payload);
       applyAliasSideEffects(env, sideEffects, sensorId, ts, now, deviceId, evt as Record<string, any>);
+    } else if (type.startsWith("arp.") || type.startsWith("ipv6.") || type.startsWith("ndp.")) {
+      applyIpSideEffects(env, sideEffects, sensorId, type, ts, now, deviceId, evt.payload);
     } else if (type === "rf.probe_detected") {
       // A probe from an (external) RF sensor marks the device as RF_PRESENT in
       // device_state, reusing the presence side-effect contract.
@@ -1207,6 +1217,35 @@ interface SessionPayload {
   band?: string | null;
   last_signal?: number | null;
   last_noise?: number | null;
+}
+
+function applyIpSideEffects(
+  env: Env,
+  stmts: D1PreparedStatement[],
+  sensorId: string,
+  type: string,
+  ts: number,
+  now: number,
+  deviceId: string,
+  rawPayload: unknown
+): void {
+  const p = (rawPayload && typeof rawPayload === "object" ? rawPayload : {}) as Record<string, any>;
+  const ip = strOrNull(p.ip ?? p.ipv4 ?? p.ipv6);
+  if (!ip) return;
+  const mac = strOrNull(p.mac ?? p.lladdr);
+  const source = type.startsWith("ipv6.") || type.startsWith("ndp.") ? "ndp" : "arp";
+  const confidence = typeof p.confidence === "number" ? p.confidence : 1.0;
+
+  stmts.push(
+    env.DB.prepare(
+      `INSERT INTO device_ip (pseudonym, ip, mac, source, sensor_id, first_seen, last_seen, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(pseudonym, ip, source) DO UPDATE SET
+         mac = COALESCE(excluded.mac, device_ip.mac),
+         last_seen = excluded.last_seen,
+         confidence = excluded.confidence`
+    ).bind(deviceId, ip, mac, source, sensorId, ts, ts, confidence)
+  );
 }
 
 function applyAliasSideEffects(
@@ -2470,6 +2509,30 @@ async function handleDevicePatterns(
     weekday_counts: weekdayCounts,
     sessions: sessions || [],
   }, origin);
+}
+
+async function handleDeviceIps(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const m = path.match(/^\/api\/v1\/devices\/([^/]+)\/ips$/);
+  const deviceId = m ? decodeURIComponent(m[1]) : null;
+  if (!deviceId) return jsonResponse(404, { error: "not found" });
+  const origin = requestCorsOrigin(env, request);
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "168"), 720);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+
+  const rows = await env.DB.prepare(`
+    SELECT id, ip, mac, source, sensor_id, first_seen, last_seen, confidence
+    FROM device_ip
+    WHERE pseudonym = ? AND last_seen >= ?
+    ORDER BY last_seen DESC, source, ip
+    LIMIT 100
+  `).bind(deviceId, cutoff).all();
+
+  return jsonResponse(200, { device_id: deviceId, hours, ips: rows.results || [] }, origin);
 }
 
 async function handleAnalytics(
@@ -3783,6 +3846,7 @@ export default {
         else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/signals$/.test(path)) response = await handleDeviceSignals(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/patterns$/.test(path)) response = await handleDevicePatterns(request, env);
+        else if (/^\/api\/v1\/devices\/[^/]+\/ips$/.test(path)) response = await handleDeviceIps(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/identity$/.test(path)) response = await handleGetDeviceIdentity(request, env);
       }
 

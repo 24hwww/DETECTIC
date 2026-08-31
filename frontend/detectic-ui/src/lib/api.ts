@@ -406,6 +406,24 @@ export async function updateDeviceTrust(deviceId: string, status: 'known' | 'ign
   return res.json() as Promise<{ trust: { pseudonym: string; status: string } }>;
 }
 
+export type DeviceIp = {
+  id: number;
+  ip: string;
+  mac: string | null;
+  source: string;
+  sensor_id: string | null;
+  first_seen: number;
+  last_seen: number;
+  confidence: number;
+};
+
+export async function fetchDeviceIps(deviceId: string, hours = 168): Promise<DeviceIp[]> {
+  const data = await fetchJson<{ ips?: DeviceIp[] }>(
+    `${API}/devices/${encodeURIComponent(deviceId)}/ips?hours=${hours}`
+  );
+  return data.ips || [];
+}
+
 export async function fetchDevicePatterns(deviceId: string, hours = 168): Promise<DevicePattern | null> {
   const data = await fetchJson<{ pattern?: DevicePattern }>(
     `${API}/devices/${encodeURIComponent(deviceId)}/patterns?hours=${hours}`
