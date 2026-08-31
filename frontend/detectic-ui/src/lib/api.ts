@@ -17,6 +17,20 @@ export type Sensor = {
   created_at?: number | null;
 };
 
+export type ProximityDetail = {
+  zone?: string | null;
+  zone_label?: string | null;
+  trend?: string | null;
+  trend_label?: string | null;
+  trend_arrow?: string | null;
+  heat?: number | null;
+  rssi_dbm?: number | null;
+  distance_m?: number | null;
+  confidence?: number | null;
+  samples?: number | null;
+  in_radius?: boolean | null;
+};
+
 export type Device = {
   device_id: string;
   connected: boolean;
@@ -28,8 +42,14 @@ export type Device = {
   event_count?: number;
   last_type?: string;
   hostname?: string;
+  alias?: string | null;
   band?: string;
   proximity?: string | null;
+  proximity_detail?: ProximityDetail | null;
+  rssi_dbm?: number | null;
+  distance_m?: number | null;
+  heat?: number | null;
+  trend?: string | null;
 };
 
 export type DetailedDevice = {
@@ -59,6 +79,12 @@ export type DetailedDevice = {
   room?: string | null;
   tags?: string | null;
   notes?: string | null;
+  proximity?: string | null;
+  proximity_detail?: ProximityDetail | null;
+  rssi_dbm?: number | null;
+  distance_m?: number | null;
+  heat?: number | null;
+  trend?: string | null;
 };
 
 export type Network = {

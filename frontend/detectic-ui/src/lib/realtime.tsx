@@ -4,7 +4,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import type { Device, Network, TimelinePoint } from "@/lib/api";
+import type { Device, Network, ProximityDetail, TimelinePoint } from "@/lib/api";
 
 export type LiveEvent = {
   type: string;
@@ -120,6 +120,23 @@ export function extractDevice(event: any): Device | null {
         event?.server_time ||
         Date.now();
 
+  const proximityDetail: ProximityDetail | null =
+    inner.proximity_detail && typeof inner.proximity_detail === "object"
+      ? {
+          zone: inner.proximity_detail.zone ?? null,
+          zone_label: inner.proximity_detail.zone_label ?? null,
+          trend: inner.proximity_detail.trend ?? null,
+          trend_label: inner.proximity_detail.trend_label ?? null,
+          trend_arrow: inner.proximity_detail.trend_arrow ?? null,
+          heat: inner.proximity_detail.heat ?? null,
+          rssi_dbm: inner.proximity_detail.rssi_dbm ?? null,
+          distance_m: inner.proximity_detail.distance_m ?? null,
+          confidence: inner.proximity_detail.confidence ?? null,
+          samples: inner.proximity_detail.samples ?? null,
+          in_radius: inner.proximity_detail.in_radius ?? null,
+        }
+      : null;
+
   return {
     device_id: deviceId,
     connected,
@@ -132,6 +149,14 @@ export function extractDevice(event: any): Device | null {
     hostname: inner.hostname,
     band: inner.band || inner.new_band || inner.old_band,
     proximity: inner.proximity ?? null,
+    proximity_detail: proximityDetail,
+    rssi_dbm:
+      inner.rssi_dbm != null
+        ? Number(inner.rssi_dbm)
+        : (inner.rssi != null ? Number(inner.rssi) : undefined),
+    distance_m: inner.distance_m != null ? Number(inner.distance_m) : undefined,
+    heat: inner.heat != null ? Number(inner.heat) : undefined,
+    trend: inner.trend ?? undefined,
   };
 }
 

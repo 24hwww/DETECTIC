@@ -72,15 +72,26 @@ function makeColumns(identity: Map<string, DetailedDevice>) {
     columnHelper.accessor("proximity", {
       header: "Distancia al router",
       cell: (info) => {
-        const v = info.getValue();
-        const text = proximityText(v);
-        return <span>{text === "desconocido" ? "—" : text}</span>;
+        const d = info.row.original;
+        const text = proximityText(d.proximity, d.proximity_detail);
+        return (
+          <div>
+            <div className="text-foreground">{text === "desconocido" ? "—" : text}</div>
+            {d.heat != null && (
+              <div className="text-[11px] text-muted-foreground">
+                intensidad {d.heat}
+                {d.proximity_detail?.trend_arrow ? ` · ${d.proximity_detail.trend_arrow}` : ""}
+              </div>
+            )}
+          </div>
+        );
       },
     }),
     columnHelper.accessor("last_signal", {
       header: "Señal",
       cell: (info) => {
-        const v = info.getValue();
+        const d = info.row.original;
+        const v = d.rssi_dbm ?? d.last_signal;
         return (
           <div>
             <div className="text-foreground">{signalWord(v)}</div>

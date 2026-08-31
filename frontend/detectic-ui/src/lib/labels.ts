@@ -159,6 +159,7 @@ export function deviceName(
   d: Device,
   detailed?: DetailedDevice | null
 ): string {
+  if (d.alias) return d.alias;
   if (detailed?.alias) return detailed.alias;
 
   const host = detailed?.hostname || d.hostname;

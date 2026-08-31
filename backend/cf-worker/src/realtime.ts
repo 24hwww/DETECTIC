@@ -48,6 +48,11 @@ interface DeviceSummary {
   hostname?: string;
   alias?: string;
   proximity?: string;
+  proximity_detail?: Record<string, unknown>;
+  rssi_dbm?: number;
+  distance_m?: number;
+  heat?: number;
+  trend?: string;
 }
 
 interface NetworkSummary {
@@ -282,7 +287,13 @@ export class RealtimeHub extends DurableObject {
           last_signal: d.last_signal,
           band: d.band,
           hostname: d.hostname,
+          alias: d.alias,
           proximity: d.proximity,
+          proximity_detail: d.proximity_detail,
+          rssi_dbm: d.rssi_dbm,
+          distance_m: d.distance_m,
+          heat: d.heat,
+          trend: d.trend,
         });
       }
       devices.sort((a, b) => b.last_seen - a.last_seen);
@@ -453,6 +464,23 @@ export class RealtimeHub extends DurableObject {
     if (dev.proximity != null) summary.proximity = String(dev.proximity);
     else if (p.proximity != null) summary.proximity = String(p.proximity);
     else if (dev.proximity_detail?.zone_label) summary.proximity = String(dev.proximity_detail.zone_label);
+
+    const pd = dev.proximity_detail || p.proximity_detail;
+    if (pd && typeof pd === 'object') {
+      summary.proximity_detail = pd as Record<string, unknown>;
+      if (pd.rssi_dbm != null) summary.rssi_dbm = Number(pd.rssi_dbm);
+      if (pd.distance_m != null) summary.distance_m = Number(pd.distance_m);
+      if (pd.heat != null) summary.heat = Number(pd.heat);
+      if (pd.trend != null) summary.trend = String(pd.trend);
+    }
+    if (dev.rssi_dbm != null) summary.rssi_dbm = Number(dev.rssi_dbm);
+    else if (p.rssi_dbm != null) summary.rssi_dbm = Number(p.rssi_dbm);
+    if (dev.distance_m != null) summary.distance_m = Number(dev.distance_m);
+    else if (p.distance_m != null) summary.distance_m = Number(p.distance_m);
+    if (dev.heat != null) summary.heat = Number(dev.heat);
+    else if (p.heat != null) summary.heat = Number(p.heat);
+    if (dev.trend != null) summary.trend = String(dev.trend);
+    else if (p.trend != null) summary.trend = String(p.trend);
 
     this.devices.set(deviceId, summary);
     await this.persistDevices();

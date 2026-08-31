@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Smartphone, Save } from "lucide-react";
+import { proximityText, signalWord, bandLabel } from "@/lib/labels";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -192,20 +193,7 @@ export function DeviceDetailView() {
                 </Badge>
               }
             />
-            <Field
-              label="Señal"
-              value={
-                liveDev?.last_signal != null
-                  ? `${liveDev.last_signal} dBm`
-                  : detail?.signal_strength != null
-                  ? `${detail.signal_strength} dBm`
-                  : "—"
-              }
-            />
-            <Field
-              label="Banda"
-              value={liveDev?.band || detail?.band || "—"}
-            />
+
             <Field
               label="AP"
               value={detail?.bssid_pseudonym || detail?.bssid_manufacturer || "—"}
@@ -227,8 +215,58 @@ export function DeviceDetailView() {
               value={detail?.fingerprint_model || "—"}
             />
             <Field
-              label="Confianza"
+              label="Confianza ID"
               value={detail?.confidence_label || "—"}
+            />
+            <Field
+              label="Proximidad"
+              value={proximityText(liveDev?.proximity, liveDev?.proximity_detail) || "—"}
+            />
+            <Field
+              label="Tendencia"
+              value={
+                liveDev?.proximity_detail?.trend_arrow
+                  ? `${liveDev.proximity_detail.trend_arrow} ${liveDev.proximity_detail.trend_label || liveDev.trend || "—"}`
+                  : liveDev?.trend || "—"
+              }
+            />
+            <Field
+              label="Intensidad"
+              value={liveDev?.heat != null ? `${liveDev.heat}/100` : "—"}
+            />
+            <Field
+              label="Distancia"
+              value={
+                liveDev?.distance_m != null
+                  ? `~${Math.round(liveDev.distance_m)} m`
+                  : liveDev?.proximity_detail?.distance_m != null
+                  ? `~${Math.round(liveDev.proximity_detail.distance_m)} m`
+                  : "—"
+              }
+            />
+            <Field
+              label="RSSI"
+              value={
+                liveDev?.rssi_dbm != null
+                  ? `${liveDev.rssi_dbm} dBm · ${signalWord(liveDev.rssi_dbm)}`
+                  : liveDev?.last_signal != null
+                  ? `${liveDev.last_signal} dBm · ${signalWord(liveDev.last_signal)}`
+                  : "—"
+              }
+            />
+            <Field
+              label="Banda"
+              value={bandLabel(liveDev?.band) || bandLabel(detail?.band) || "—"}
+            />
+            <Field
+              label="Confianza proximidad"
+              value={
+                liveDev?.proximity_detail?.confidence != null
+                  ? `${Math.round(liveDev.proximity_detail.confidence * 100)}%${
+                      liveDev.proximity_detail.samples ? ` · ${liveDev.proximity_detail.samples} muestras` : ""
+                    }`
+                  : "—"
+              }
             />
           </div>
         </CardContent>

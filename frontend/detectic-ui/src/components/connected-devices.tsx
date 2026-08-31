@@ -60,14 +60,18 @@ export function ConnectedDevices({
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <Badge variant="outline" className="text-[10px]">
-                    {proximityText(d.proximity)}
+                    {proximityText(d.proximity, d.proximity_detail)}
                   </Badge>
                   <span className="text-[10px] text-muted-foreground">
-                    {signalWord(d.last_signal)}
+                    {d.heat != null ? `intensidad ${d.heat}` : signalWord(d.rssi_dbm ?? d.last_signal)}
                   </span>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                  <span>{signalBars(d.last_signal)}</span>
+                  <span>
+                    {d.proximity_detail?.trend_arrow
+                      ? `${d.proximity_detail.trend_arrow} ${d.proximity_detail.trend_label || d.trend || ""}`
+                      : signalBars(d.rssi_dbm ?? d.last_signal)}
+                  </span>
                   <span>{timeAgo(d.last_seen)}</span>
                 </div>
               </div>
