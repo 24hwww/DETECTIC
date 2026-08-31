@@ -1,15 +1,18 @@
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Smartphone } from "lucide-react";
+import { ArrowLeft, Smartphone, Save } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+
 import { DeviceSignalChart } from "@/components/device-signal-chart";
 import { useRealtime } from "@/lib/realtime";
 import {
   fetchAllDevices,
   fetchTimeline,
+  fetchDeviceIdentity,
+  updateDeviceIdentity,
   type DetailedDevice,
 } from "@/lib/api";
 
@@ -42,6 +45,7 @@ export function DeviceDetailView() {
   const { deviceId } = useParams({ from: "/devices/$deviceId" });
   const navigate = useNavigate();
   const live = useRealtime();
+  const queryClient = useQueryClient();
 
   const all = useQuery<DetailedDevice[]>({
     queryKey: ["all-devices"],
@@ -50,6 +54,41 @@ export function DeviceDetailView() {
   const timeline = useQuery({
     queryKey: ["timeline"],
     queryFn: fetchTimeline,
+  });
+  const identity = useQuery({
+    queryKey: ["device-identity", deviceId],
+    queryFn: () => fetchDeviceIdentity(deviceId),
+  });
+
+  const [alias, setAlias] = useState("");
+  const [owner, setOwner] = useState("");
+  const [room, setRoom] = useState("");
+  const [tags, setTags] = useState("");
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (identity.data) {
+      setAlias(identity.data.alias || "");
+      setOwner(identity.data.owner || "");
+      setRoom(identity.data.room || "");
+      setTags(identity.data.tags || "");
+      setNotes(identity.data.notes || "");
+    }
+  }, [identity.data]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      updateDeviceIdentity(deviceId, {
+        alias: alias.trim() || null,
+        owner: owner.trim() || null,
+        room: room.trim() || null,
+        tags: tags.trim() ? tags.trim() : null,
+        notes: notes.trim() || null,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["device-identity", deviceId] });
+      queryClient.invalidateQueries({ queryKey: ["all-devices"] });
+    },
   });
 
   const liveDev = useMemo(() => live.devices.get(deviceId), [live.devices, deviceId]);
@@ -73,7 +112,7 @@ export function DeviceDetailView() {
     return <div className="py-12 text-center text-muted-foreground">Cargando…</div>;
   }
 
-  if (!liveDev && !detail) {
+  if (!liveDev && !detail && !identity.data) {
     return (
       <div className="space-y-4 md:space-y-6">
         <Button
@@ -92,7 +131,7 @@ export function DeviceDetailView() {
     );
   }
 
-  const name = detail?.hostname || liveDev?.hostname || deviceId;
+  const name = detail?.alias || identity.data?.alias || detail?.hostname || liveDev?.hostname || deviceId;
   const deviceState = liveDev?.state ?? (detail?.status === "connected" ? "CONNECTED" : "ABSENT");
   const isConnected = deviceState !== "ABSENT" && deviceState !== "DISCONNECTED";
 
@@ -191,6 +230,97 @@ export function DeviceDetailView() {
               label="Confianza"
               value={detail?.confidence_label || "—"}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Etiquetas
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Alias
+              </span>
+              <input
+                type="text"
+                value={alias}
+                onChange={(e) => setAlias(e.target.value)}
+                placeholder="Ej: Celular de Juan"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
+              />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Responsable / dueño
+              </span>
+              <input
+                type="text"
+                value={owner}
+                onChange={(e) => setOwner(e.target.value)}
+                placeholder="Ej: Juan"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
+              />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Ubicación
+              </span>
+              <input
+                type="text"
+                value={room}
+                onChange={(e) => setRoom(e.target.value)}
+                placeholder="Ej: Sala"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
+              />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Tags (JSON)
+              </span>
+              <input
+                type="text"
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                placeholder='Ej: ["iot", "camara"]'
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
+              />
+            </div>
+            <div className="space-y-2 sm:col-span-2">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Notas
+              </span>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Notas adicionales..."
+                rows={3}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex items-center gap-3">
+            <Button
+              size="sm"
+              className="gap-2"
+              onClick={() => save.mutate()}
+              disabled={save.isPending}
+            >
+              <Save className="h-4 w-4" />
+              {save.isPending ? "Guardando..." : "Guardar"}
+            </Button>
+            {save.isError && (
+              <span className="text-xs text-destructive">
+                Error al guardar
+              </span>
+            )}
+            {save.isSuccess && (
+              <span className="text-xs text-green-600">Guardado</span>
+            )}
           </div>
         </CardContent>
       </Card>

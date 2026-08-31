@@ -181,3 +181,15 @@ CREATE TABLE IF NOT EXISTS debug_ingest_log (
 
 CREATE INDEX IF NOT EXISTS idx_debug_ingest_sensor ON debug_ingest_log(sensor_id, received_at);
 
+-- Human-editable labels for devices. Separated from device_identity so edits
+-- do not depend on the (pseudonym, sensor_id) composite key of that table.
+CREATE TABLE IF NOT EXISTS device_label (
+  pseudonym TEXT PRIMARY KEY,
+  alias TEXT,
+  owner TEXT,
+  room TEXT,
+  tags TEXT,  -- JSON array, validated by the API
+  notes TEXT,
+  updated_at INTEGER NOT NULL
+);
+

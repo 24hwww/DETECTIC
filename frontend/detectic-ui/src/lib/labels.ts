@@ -151,13 +151,16 @@ export function durationBetween(start?: number | null, end?: number | null): str
 }
 
 /**
- * Friendliest available name for a device. Prefers a hostname, then the
- * manufacturer/brand/model/type chain, then a generic fallback. Never raw MAC.
+ * Friendliest available name for a device. Prefers an alias, then a hostname,
+ * then the manufacturer/brand/model/type chain, then a generic fallback.
+ * Never raw MAC.
  */
 export function deviceName(
   d: Device,
   detailed?: DetailedDevice | null
 ): string {
+  if (detailed?.alias) return detailed.alias;
+
   const host = detailed?.hostname || d.hostname;
   if (host) return host;
 

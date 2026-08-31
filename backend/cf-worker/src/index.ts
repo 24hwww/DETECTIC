@@ -425,6 +425,11 @@ async function patchColumns(db: D1Database): Promise<void> {
     `ALTER TABLE device_identity ADD COLUMN bssid_manufacturer TEXT`,
     `ALTER TABLE device_identity ADD COLUMN identity_json TEXT`,
     `ALTER TABLE device_identity ADD COLUMN fingerprint_id TEXT`,
+    `ALTER TABLE device_label ADD COLUMN alias TEXT`,
+    `ALTER TABLE device_label ADD COLUMN owner TEXT`,
+    `ALTER TABLE device_label ADD COLUMN room TEXT`,
+    `ALTER TABLE device_label ADD COLUMN tags TEXT`,
+    `ALTER TABLE device_label ADD COLUMN notes TEXT`,
     `ALTER TABLE device_state ADD COLUMN fingerprint_id TEXT`,
     `ALTER TABLE device_sessions ADD COLUMN fingerprint_id TEXT`,
     `ALTER TABLE events ADD COLUMN payload_json TEXT`,
@@ -475,7 +480,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE TABLE IF NOT EXISTS collector_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, capture_id TEXT NOT NULL, pseudonym TEXT NOT NULL, hostname TEXT, band TEXT, signal_strength INTEGER, signal_level INTEGER, noise INTEGER, operating_standard TEXT, tx_rate_kbps INTEGER, rx_rate_kbps INTEGER, status TEXT, bssid_pseudonym TEXT, identity_json TEXT)`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_cd_capture ON collector_devices(capture_id)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS collector_runs (run_id TEXT PRIMARY KEY, scheduled_at INTEGER NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER, status TEXT NOT NULL, duration_ms INTEGER)`),
-      db.prepare(`CREATE TABLE IF NOT EXISTS device_identity (pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, manufacturer TEXT, brand TEXT, model_guess TEXT, device_class TEXT, mac_type TEXT, confidence REAL, confidence_label TEXT, bssid_manufacturer TEXT, identity_json TEXT, last_seen INTEGER, PRIMARY KEY (pseudonym, sensor_id))`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS device_identity (pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, manufacturer TEXT, brand TEXT, model_guess TEXT, device_class TEXT, mac_type TEXT, confidence REAL, confidence_label TEXT, bssid_manufacturer TEXT, identity_json TEXT, fingerprint_id TEXT, last_seen INTEGER, PRIMARY KEY (pseudonym, sensor_id))`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS device_label (pseudonym TEXT PRIMARY KEY, alias TEXT, owner TEXT, room TEXT, tags TEXT, notes TEXT, updated_at INTEGER NOT NULL)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
@@ -556,7 +562,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       `CREATE TABLE IF NOT EXISTS collector_devices (id INTEGER PRIMARY KEY AUTOINCREMENT, capture_id TEXT NOT NULL, pseudonym TEXT NOT NULL, hostname TEXT, band TEXT, signal_strength INTEGER, signal_level INTEGER, noise INTEGER, operating_standard TEXT, tx_rate_kbps INTEGER, rx_rate_kbps INTEGER, status TEXT, bssid_pseudonym TEXT, identity_json TEXT)`,
       `CREATE INDEX IF NOT EXISTS idx_cd_capture ON collector_devices(capture_id)`,
       `CREATE TABLE IF NOT EXISTS collector_runs (run_id TEXT PRIMARY KEY, scheduled_at INTEGER NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER, status TEXT NOT NULL, duration_ms INTEGER)`,
-      `CREATE TABLE IF NOT EXISTS device_identity (pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, manufacturer TEXT, brand TEXT, model_guess TEXT, device_class TEXT, mac_type TEXT, confidence REAL, confidence_label TEXT, bssid_manufacturer TEXT, identity_json TEXT, last_seen INTEGER, PRIMARY KEY (pseudonym, sensor_id))`,
+      `CREATE TABLE IF NOT EXISTS device_identity (pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, manufacturer TEXT, brand TEXT, model_guess TEXT, device_class TEXT, mac_type TEXT, confidence REAL, confidence_label TEXT, bssid_manufacturer TEXT, identity_json TEXT, fingerprint_id TEXT, last_seen INTEGER, PRIMARY KEY (pseudonym, sensor_id))`,
+      `CREATE TABLE IF NOT EXISTS device_label (pseudonym TEXT PRIMARY KEY, alias TEXT, owner TEXT, room TEXT, tags TEXT, notes TEXT, updated_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`,
       `CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`,
@@ -609,7 +616,7 @@ function requestCorsOrigin(env: Env, request: Request): string | undefined {
 
 function corsHeaders(origin?: string): Record<string, string> {
   const headers: Record<string, string> = {
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Detectic-Sensor, X-Detectic-Signature, Authorization",
     "Access-Control-Max-Age": "86400",
   };
@@ -1576,9 +1583,12 @@ async function handleDevices(
   const origin = requestCorsOrigin(env, request);
 
   const idRows = await env.DB.prepare(
-    `SELECT pseudonym, manufacturer, brand, model_guess, device_class,
-            mac_type, confidence, confidence_label, bssid_manufacturer, last_seen
-     FROM device_identity ORDER BY last_seen DESC LIMIT ?`
+    `SELECT i.pseudonym, i.manufacturer, i.brand, i.model_guess, i.device_class,
+            i.mac_type, i.confidence, i.confidence_label, i.bssid_manufacturer, i.last_seen,
+            l.alias, l.owner, l.room, l.tags, l.notes
+     FROM device_identity i
+     LEFT JOIN device_label l ON i.pseudonym = l.pseudonym
+     ORDER BY i.last_seen DESC LIMIT ?`
   ).bind(limit).all();
 
   const devRows = await env.DB.prepare(
@@ -1650,6 +1660,11 @@ async function handleDevices(
       observations: obs.get(i.pseudonym) || 0,
       fingerprint_model: f?.model ?? null,
       fingerprint_confidence: f?.confidence ?? null,
+      alias: i.alias ?? null,
+      owner: i.owner ?? null,
+      room: i.room ?? null,
+      tags: i.tags ?? null,
+      notes: i.notes ?? null,
     });
   }
 
@@ -1680,6 +1695,11 @@ async function handleDevices(
       observations: obs.get(pseudonym) || 0,
       fingerprint_model: null,
       fingerprint_confidence: null,
+      alias: null,
+      owner: null,
+      room: null,
+      tags: null,
+      notes: null,
     });
   }
 
@@ -2069,6 +2089,126 @@ async function handleDeviceAliases(
     byFp[fp].last_seen = Math.max(byFp[fp].last_seen ?? r.last_seen, r.last_seen ?? 0);
   }
   return jsonResponse(200, { devices: Object.values(byFp) }, origin);
+}
+
+async function handleGetDeviceIdentity(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  const path = new URL(request.url).pathname;
+  const match = path.match(/^\/api\/v1\/devices\/([^/]+)\/identity$/);
+  if (!match) return jsonResponse(400, { error: "invalid path" }, origin);
+  const deviceId = decodeURIComponent(match[1]);
+
+  const identity = await env.DB.prepare(
+    `SELECT i.pseudonym, i.sensor_id, i.manufacturer, i.brand, i.model_guess,
+            i.device_class, i.mac_type, i.confidence, i.confidence_label,
+            i.bssid_manufacturer, i.identity_json, i.fingerprint_id, i.last_seen,
+            l.alias, l.owner, l.room, l.tags, l.notes, l.updated_at
+     FROM device_identity i
+     LEFT JOIN device_label l ON i.pseudonym = l.pseudonym
+     WHERE i.pseudonym = ?`
+  ).bind(deviceId).first();
+
+  if (!identity) {
+    // Device may not be in device_identity yet; try to return any stored label.
+    const label = await env.DB.prepare(
+      `SELECT pseudonym, alias, owner, room, tags, notes, updated_at
+       FROM device_label WHERE pseudonym = ?`
+    ).bind(deviceId).first();
+    if (!label) return jsonResponse(404, { error: "not found" }, origin);
+    return jsonResponse(200, { identity: label }, origin);
+  }
+
+  return jsonResponse(200, { identity }, origin);
+}
+
+async function handleUpdateDeviceIdentity(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  const path = new URL(request.url).pathname;
+  const match = path.match(/^\/api\/v1\/devices\/([^/]+)\/identity$/);
+  if (!match) return jsonResponse(400, { error: "invalid path" }, origin);
+  const deviceId = decodeURIComponent(match[1]);
+
+  let body: any;
+  try { body = await request.json(); } catch {
+    return jsonResponse(400, { error: "invalid json" }, origin);
+  }
+
+  const allowed = new Set(["alias", "owner", "room", "tags", "notes"]);
+  const updates: Record<string, string | null> = {};
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    if (body[key] === null) {
+      updates[key] = null;
+      continue;
+    }
+    if (typeof body[key] !== "string") {
+      return jsonResponse(400, { error: `invalid type for ${key}` }, origin);
+    }
+    const trimmed = body[key].trim();
+    if (key === "tags") {
+      if (trimmed === "") {
+        updates[key] = null;
+      } else {
+        try {
+          JSON.parse(trimmed); // validate JSON array/object
+          updates[key] = trimmed;
+        } catch {
+          return jsonResponse(400, { error: "tags must be valid JSON" }, origin);
+        }
+      }
+    } else {
+      updates[key] = trimmed === "" ? null : trimmed;
+    }
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return jsonResponse(400, { error: "no fields to update" }, origin);
+  }
+
+  const updatedAt = Math.floor(Date.now() / 1000);
+  const setClause = Object.keys(updates).map(k => `${k} = ?`).join(", ");
+
+  const existing = await env.DB.prepare(
+    `SELECT pseudonym FROM device_label WHERE pseudonym = ?`
+  ).bind(deviceId).first();
+
+  if (!existing) {
+    const cols = ["pseudonym", "updated_at", ...Object.keys(updates)];
+    const vals = [deviceId, updatedAt, ...Object.values(updates)];
+    const placeholders = vals.map(() => "?").join(", ");
+    await env.DB.prepare(
+      `INSERT INTO device_label (${cols.join(", ")}) VALUES (${placeholders})`
+    ).bind(...vals).run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE device_label SET ${setClause}, updated_at = ? WHERE pseudonym = ?`
+    ).bind(...Object.values(updates), updatedAt, deviceId).run();
+  }
+
+  const identity = await env.DB.prepare(
+    `SELECT i.pseudonym, i.sensor_id, i.manufacturer, i.brand, i.model_guess,
+            i.device_class, i.mac_type, i.confidence, i.confidence_label,
+            i.bssid_manufacturer, i.identity_json, i.fingerprint_id, i.last_seen,
+            l.alias, l.owner, l.room, l.tags, l.notes, l.updated_at
+     FROM device_identity i
+     LEFT JOIN device_label l ON i.pseudonym = l.pseudonym
+     WHERE i.pseudonym = ?`
+  ).bind(deviceId).first();
+
+  if (identity) return jsonResponse(200, { identity }, origin);
+
+  const label = await env.DB.prepare(
+    `SELECT pseudonym, alias, owner, room, tags, notes, updated_at
+     FROM device_label WHERE pseudonym = ?`
+  ).bind(deviceId).first();
+
+  return jsonResponse(200, { identity: label }, origin);
 }
 
 async function handleSessions(
@@ -3106,6 +3246,8 @@ export default {
           return hubStub(env).fetch(request);
         } else if (path.match(/^\/api\/v1\/sensors\/[^/]+\/location$/)) {
           response = await handleUpdateSensorLocation(request, env);
+        } else if (path.match(/^\/api\/v1\/devices\/[^/]+\/identity$/)) {
+          response = await handleUpdateDeviceIdentity(request, env);
         }
       }
 
@@ -3156,6 +3298,7 @@ export default {
         else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/signals$/.test(path)) response = await handleDeviceSignals(request, env);
+        else if (/^\/api\/v1\/devices\/[^/]+\/identity$/.test(path)) response = await handleGetDeviceIdentity(request, env);
       }
 
       if (!response) {

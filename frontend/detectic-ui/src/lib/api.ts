@@ -54,6 +54,11 @@ export type DetailedDevice = {
   last_seen?: number | null;
   fingerprint_model?: string | null;
   fingerprint_confidence?: number | null;
+  alias?: string | null;
+  owner?: string | null;
+  room?: string | null;
+  tags?: string | null;
+  notes?: string | null;
 };
 
 export type Network = {
@@ -247,11 +252,59 @@ export async function fetchStats(): Promise<Stats> {
   return fetchJson<Stats>(`${API}/stats`);
 }
 
+export type DeviceIdentity = {
+  pseudonym: string;
+  sensor_id?: string | null;
+  manufacturer?: string | null;
+  brand?: string | null;
+  model_guess?: string | null;
+  device_class?: string | null;
+  mac_type?: string | null;
+  confidence?: number | null;
+  confidence_label?: string | null;
+  bssid_manufacturer?: string | null;
+  identity_json?: string | null;
+  fingerprint_id?: string | null;
+  last_seen?: number | null;
+  alias?: string | null;
+  owner?: string | null;
+  room?: string | null;
+  tags?: string | null;
+  notes?: string | null;
+  updated_at?: number | null;
+};
+
 export async function fetchAllDevices(): Promise<DetailedDevice[]> {
   const data = await fetchJson<{ devices?: DetailedDevice[] }>(
     `${API}/devices?limit=200`
   );
   return data.devices || [];
+}
+
+export async function fetchDeviceIdentity(
+  deviceId: string
+): Promise<DeviceIdentity | null> {
+  const data = await fetchJson<{ identity?: DeviceIdentity }>(
+    `${API}/devices/${encodeURIComponent(deviceId)}/identity`
+  );
+  return data.identity || null;
+}
+
+export async function updateDeviceIdentity(
+  deviceId: string,
+  identity: Partial<Pick<DeviceIdentity, "alias" | "owner" | "room" | "tags" | "notes">>
+): Promise<DeviceIdentity> {
+  const res = await fetch(
+    `${API}/devices/${encodeURIComponent(deviceId)}/identity`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(identity),
+    }
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { identity: DeviceIdentity };
+  return data.identity;
 }
 
 export async function fetchTimeline(): Promise<Timeline> {
