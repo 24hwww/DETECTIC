@@ -16,8 +16,8 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, Signal, Timer, Users } from "lucide-react";
-import type { Analytics, Dweller } from "@/lib/api";
+import { Clock, Signal, Timer, Users, AlertTriangle, Activity } from "lucide-react";
+import type { Analytics, Anomaly, DevicePattern, Dweller } from "@/lib/api";
 
 function timeLabel(bucket: string) {
   const d = new Date(bucket + "Z");
@@ -347,6 +347,110 @@ export function AnalyticsDashboard({ analytics }: { analytics?: Analytics }) {
           </CardContent>
         </Card>
       </div>
+
+      {data.anomalies && data.anomalies.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <AlertTriangle className="h-4 w-4" />
+              Anomalías detectadas
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[260px] overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted text-muted-foreground">
+                  <tr>
+                    <th className="p-3 text-left font-medium">Tipo</th>
+                    <th className="p-3 text-left font-medium">Dispositivo / Red</th>
+                    <th className="p-3 text-left font-medium">Mensaje</th>
+                    <th className="p-3 text-left font-medium">Severidad</th>
+                    <th className="p-3 text-left font-medium">Hora</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.anomalies.map((a: Anomaly, i: number) => (
+                    <tr key={i} className="border-b border-border last:border-0">
+                      <td className="p-3 text-xs capitalize">{a.type.replace(/_/g, " ")}</td>
+                      <td className="p-3 text-xs font-mono">{a.device_id || a.ssid || a.network_id || "—"}</td>
+                      <td className="p-3 text-xs">{a.message}</td>
+                      <td className="p-3">
+                        <Badge
+                          variant="secondary"
+                          className={`text-[10px] ${
+                            a.severity === "high"
+                              ? "bg-destructive/20 text-destructive"
+                              : a.severity === "medium"
+                              ? "bg-warning/20 text-warning"
+                              : a.severity === "low"
+                              ? "bg-primary/20 text-primary"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {a.severity}
+                        </Badge>
+                      </td>
+                      <td className="p-3 text-xs tabular-nums">
+                        {new Date(a.timestamp * 1000).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {data.patterns && data.patterns.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <Activity className="h-4 w-4" />
+              Patrones horarios y recurrencia
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[320px] overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted text-muted-foreground">
+                  <tr>
+                    <th className="p-3 text-left font-medium">Dispositivo</th>
+                    <th className="p-3 text-left font-medium">Observaciones</th>
+                    <th className="p-3 text-left font-medium">Horas pico</th>
+                    <th className="p-3 text-left font-medium">Días de la semana</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.patterns.slice(0, 10).map((p: DevicePattern) => (
+                    <tr key={p.device_id} className="border-b border-border last:border-0">
+                      <td className="p-3 text-xs font-mono">{p.device_id.slice(0, 16)}</td>
+                      <td className="p-3 tabular-nums">{p.total_observations}</td>
+                      <td className="p-3 text-xs">
+                        {p.top_hours.map((h) => `${String(h.hour).padStart(2, "0")}h (${Math.round(h.ratio * 100)}%)`).join(", ")}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex gap-1">
+                          {p.weekday_counts.map((c, i) => (
+                            <div
+                              key={i}
+                              className="h-5 w-5 rounded bg-primary/20 text-center text-[9px] leading-5"
+                              title={`${["L", "M", "X", "J", "V", "S", "D"][i]}: ${c}`}
+                              style={{ opacity: Math.max(0.3, Math.min(1, c / Math.max(1, p.total_observations / 7))) }}
+                            >
+                              {["L", "M", "X", "J", "V", "S", "D"][i]}
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-2">

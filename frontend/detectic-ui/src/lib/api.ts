@@ -200,6 +200,29 @@ export type AnalyticsTotals = {
   peak_hour_connections: number;
 };
 
+export type PatternHour = { hour: number; frequency: number; ratio: number };
+
+export type DevicePattern = {
+  device_id: string;
+  top_hours: PatternHour[];
+  total_observations: number;
+  weekday_counts: number[];
+  hour_counts?: number[];
+  sessions?: { session_id: string; started_at: number; ended_at?: number | null; duration_seconds?: number | null; band?: string | null; last_signal?: number | null }[];
+};
+
+export type Anomaly = {
+  type: "unusual_hour" | "new_device" | "new_network" | "proximity_immediate";
+  device_id?: string;
+  network_id?: string;
+  ssid?: string | null;
+  band?: string | null;
+  timestamp: number;
+  hour?: number;
+  message: string;
+  severity: "info" | "low" | "medium" | "high";
+};
+
 export type Analytics = {
   hours: number;
   granularity: "hour" | "day";
@@ -219,6 +242,8 @@ export type Analytics = {
   activityByHour: ActivityHour[];
   topDwellers: Dweller[];
   totals: AnalyticsTotals;
+  patterns: DevicePattern[];
+  anomalies: Anomaly[];
 };
 
 export type SystemEvent = {
@@ -349,6 +374,13 @@ export type ReportConfig = {
   email_subject: string | null;
   updated_at: number;
 };
+
+export async function fetchDevicePatterns(deviceId: string, hours = 168): Promise<DevicePattern | null> {
+  const data = await fetchJson<{ pattern?: DevicePattern }>(
+    `${API}/devices/${encodeURIComponent(deviceId)}/patterns?hours=${hours}`
+  );
+  return data.pattern || null;
+}
 
 export async function fetchReportConfig(): Promise<ReportConfig | null> {
   const data = await fetchJson<{ config?: ReportConfig }>(`${API}/reports/config`);

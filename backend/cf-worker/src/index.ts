@@ -2342,6 +2342,66 @@ async function handleDeviceSignals(
   return jsonResponse(200, { device_id: deviceId, hours, signals: results }, origin);
 }
 
+async function handleDevicePatterns(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const m = path.match(/^\/api\/v1\/devices\/([^/]+)\/patterns$/);
+  const deviceId = m ? decodeURIComponent(m[1]) : null;
+  if (!deviceId) return jsonResponse(404, { error: "not found" });
+  const url = new URL(request.url);
+  const origin = requestCorsOrigin(env, request);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "168"), 720);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+
+  const [{ results: hoursRows }, { results: weekdayRows }, { results: sessions }] = await Promise.all([
+    env.DB.prepare(`
+      SELECT CAST(strftime('%H', datetime(event_timestamp, 'unixepoch')) AS INTEGER) AS hour, COUNT(*) AS c
+      FROM events
+      WHERE event_type = 'device.connected' AND device_id = ? AND event_timestamp >= ?
+      GROUP BY hour
+      ORDER BY hour
+    `).bind(deviceId, cutoff).all(),
+    env.DB.prepare(`
+      SELECT CAST(strftime('%w', datetime(event_timestamp, 'unixepoch')) AS INTEGER) AS weekday, COUNT(*) AS c
+      FROM events
+      WHERE event_type = 'device.connected' AND device_id = ? AND event_timestamp >= ?
+      GROUP BY weekday
+      ORDER BY weekday
+    `).bind(deviceId, cutoff).all(),
+    env.DB.prepare(`
+      SELECT session_id, started_at, ended_at, duration_seconds, band, last_signal
+      FROM device_sessions
+      WHERE device_id = ? AND started_at >= ?
+      ORDER BY started_at DESC
+      LIMIT 100
+    `).bind(deviceId, cutoff).all(),
+  ]);
+
+  const hourCounts = new Array(24).fill(0);
+  for (const r of hoursRows as any[]) hourCounts[r.hour] = r.c;
+
+  const weekdayCounts = new Array(7).fill(0);
+  for (const r of weekdayRows as any[]) weekdayCounts[(r.weekday + 6) % 7] = r.c;
+
+  const total = hourCounts.reduce((s, c) => s + c, 0);
+  const topHours = hourCounts
+    .map((c, i) => ({ hour: i, frequency: c, ratio: total ? Math.round((c / total) * 1000) / 1000 : 0 }))
+    .sort((a, b) => b.frequency - a.frequency)
+    .slice(0, 5);
+
+  return jsonResponse(200, {
+    device_id: deviceId,
+    hours,
+    total_observations: total,
+    hour_counts: hourCounts,
+    top_hours: topHours,
+    weekday_counts: weekdayCounts,
+    sessions: sessions || [],
+  }, origin);
+}
+
 async function handleAnalytics(
   request: Request,
   env: Env
@@ -2479,6 +2539,170 @@ async function handleAnalytics(
 
   const t = totals[0] || {};
   const p = peak[0];
+
+  // Hourly recurrence pattern per device (last 14 days) and anomaly detection.
+  const patternWindow = Math.min(hours, 14 * 24);
+  const patternCutoff = Math.floor(Date.now() / 1000) - patternWindow * 3600;
+  const { results: patternRows }: any = await env.DB.prepare(`
+    SELECT
+      device_id,
+      CAST(strftime('%H', datetime(event_timestamp, 'unixepoch')) AS INTEGER) AS hour,
+      COUNT(*) AS c
+    FROM events
+    WHERE event_type = 'device.connected'
+      AND event_timestamp >= ?
+    GROUP BY device_id, hour
+    ORDER BY device_id, c DESC
+  `).bind(patternCutoff).all();
+
+  const patternByDevice = new Map<string, Map<number, number>>();
+  for (const r of patternRows) {
+    if (!patternByDevice.has(r.device_id)) patternByDevice.set(r.device_id, new Map());
+    patternByDevice.get(r.device_id)!.set(r.hour, r.c);
+  }
+
+  const { results: recentEvents }: any = await env.DB.prepare(`
+    SELECT
+      e.device_id,
+      e.event_type,
+      e.event_timestamp,
+      COALESCE(json_extract(e.payload_json, '$.rssi_dbm'), json_extract(e.payload_json, '$.payload.rssi_dbm')) AS rssi,
+      COALESCE(json_extract(e.payload_json, '$.in_radius'), json_extract(e.payload_json, '$.payload.in_radius')) AS in_radius,
+      COALESCE(json_extract(e.payload_json, '$.proximity_detail.zone'), json_extract(e.payload_json, '$.payload.proximity_detail.zone')) AS zone
+    FROM events e
+    WHERE e.event_timestamp >= ?
+      AND e.event_type IN ('device.connected', 'device.disconnected')
+    ORDER BY e.event_timestamp DESC
+    LIMIT 200
+  `).bind(cutoff).all();
+
+  const anomalies: any[] = [];
+  const seenAnomaly = new Set<string>();
+  const addAnomaly = (a: any) => {
+    const key = `${a.type}:${a.device_id}:${a.timestamp}`;
+    if (seenAnomaly.has(key)) return;
+    seenAnomaly.add(key);
+    anomalies.push(a);
+  };
+
+  for (const e of recentEvents) {
+    const hour = new Date(e.event_timestamp * 1000).getUTCHours();
+    const hist = patternByDevice.get(e.device_id);
+    if (e.event_type === 'device.connected' && hist) {
+      const entries = Array.from(hist.entries());
+      const top = entries.slice(0, 3).map(([h]) => h);
+      const total = entries.reduce((s, [, c]) => s + c, 0);
+      const hourCount = hist.get(hour) || 0;
+      if (total >= 5 && !top.includes(hour) && hourCount <= Math.max(1, total * 0.05)) {
+        addAnomaly({
+          type: 'unusual_hour',
+          device_id: e.device_id,
+          timestamp: e.event_timestamp,
+          hour,
+          message: `Conexión inusual a las ${String(hour).padStart(2, '0')}:00`,
+          severity: 'low',
+        });
+      }
+    }
+  }
+
+  const { results: newDevices }: any = await env.DB.prepare(`
+    SELECT s.device_id, s.first_seen, s.last_seen, s.connection_count
+    FROM device_state s
+    WHERE s.first_seen >= ?
+    ORDER BY s.first_seen DESC
+    LIMIT 20
+  `).bind(cutoff).all();
+
+  for (const d of newDevices) {
+    addAnomaly({
+      type: 'new_device',
+      device_id: d.device_id,
+      timestamp: d.first_seen,
+      message: 'Nuevo dispositivo en la red',
+      severity: d.connection_count <= 1 ? 'medium' : 'low',
+    });
+  }
+
+  const { results: newNetworks }: any = await env.DB.prepare(`
+    SELECT ssid, bssid_pseudonym, band, first_seen, sensor_id
+    FROM wifi_network_observation
+    WHERE first_seen >= ?
+    ORDER BY first_seen DESC
+    LIMIT 20
+  `).bind(cutoff).all();
+
+  for (const n of newNetworks) {
+    addAnomaly({
+      type: 'new_network',
+      network_id: n.bssid_pseudonym,
+      ssid: n.ssid,
+      band: n.band,
+      timestamp: n.first_seen,
+      message: `Nueva red Wi-Fi detectada: ${n.ssid || n.bssid_pseudonym}`,
+      severity: 'low',
+    });
+  }
+
+  const { results: proximityAnomalies }: any = await env.DB.prepare(`
+    SELECT
+      e.device_id,
+      e.event_timestamp,
+      COALESCE(json_extract(e.payload_json, '$.proximity_detail.zone'), json_extract(e.payload_json, '$.payload.proximity_detail.zone')) AS zone
+    FROM events e
+    WHERE e.event_type = 'device.proximity_changed'
+      AND e.event_timestamp >= ?
+      AND lower(COALESCE(json_extract(e.payload_json, '$.proximity_detail.zone'), json_extract(e.payload_json, '$.payload.proximity_detail.zone'))) = 'immediate'
+    ORDER BY e.event_timestamp DESC
+    LIMIT 20
+  `).bind(cutoff).all();
+
+  for (const p of proximityAnomalies) {
+    addAnomaly({
+      type: 'proximity_immediate',
+      device_id: p.device_id,
+      timestamp: p.event_timestamp,
+      message: 'Dispositivo muy cerca del sensor',
+      severity: 'info',
+    });
+  }
+
+  anomalies.sort((a, b) => b.timestamp - a.timestamp);
+
+  const patterns: any[] = Array.from(patternByDevice.entries()).map(([device_id, hoursMap]) => {
+    const sorted = Array.from(hoursMap.entries()).sort((a, b) => b[1] - a[1]);
+    const total = sorted.reduce((s, [, c]) => s + c, 0);
+    return {
+      device_id,
+      top_hours: sorted.slice(0, 5).map(([h, c]) => ({ hour: h, frequency: c, ratio: Math.round((c / total) * 1000) / 1000 })),
+      total_observations: total,
+      weekday_counts: new Array(7).fill(0),
+    };
+  });
+
+  const { results: weekdayRows }: any = await env.DB.prepare(`
+    SELECT
+      device_id,
+      CAST(strftime('%w', datetime(event_timestamp, 'unixepoch')) AS INTEGER) AS weekday,
+      COUNT(*) AS c
+    FROM events
+    WHERE event_type = 'device.connected'
+      AND event_timestamp >= ?
+    GROUP BY device_id, weekday
+    ORDER BY device_id, c DESC
+  `).bind(patternCutoff).all();
+
+  const weekdayByDevice = new Map<string, number[]>();
+  for (const r of weekdayRows) {
+    if (!weekdayByDevice.has(r.device_id)) weekdayByDevice.set(r.device_id, new Array(7).fill(0));
+    weekdayByDevice.get(r.device_id)![(r.weekday + 6) % 7] = r.c; // shift so Monday=0
+  }
+
+  for (const p of patterns) {
+    const wd = weekdayByDevice.get(p.device_id);
+    p.weekday_counts = wd || new Array(7).fill(0);
+  }
+
   const response = {
     hours,
     granularity,
@@ -2533,6 +2757,8 @@ async function handleAnalytics(
       peak_hour: p ? parseInt(p.hour, 10) : null,
       peak_hour_connections: p ? p.c : 0,
     },
+    patterns,
+    anomalies: anomalies.slice(0, 50),
   };
 
   return jsonResponse(200, response, origin);
@@ -3483,6 +3709,7 @@ export default {
         else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/signals$/.test(path)) response = await handleDeviceSignals(request, env);
+        else if (/^\/api\/v1\/devices\/[^/]+\/patterns$/.test(path)) response = await handleDevicePatterns(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/identity$/.test(path)) response = await handleGetDeviceIdentity(request, env);
       }
 

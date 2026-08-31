@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Smartphone, Save } from "lucide-react";
+import { ArrowLeft, Smartphone, Save, Activity } from "lucide-react";
 import { proximityText, signalWord, bandLabel } from "@/lib/labels";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,9 @@ import {
   fetchTimeline,
   fetchDeviceIdentity,
   updateDeviceIdentity,
+  fetchDevicePatterns,
   type DetailedDevice,
+  type DevicePattern,
 } from "@/lib/api";
 
 function timeAgo(ms?: number | null) {
@@ -59,6 +61,10 @@ export function DeviceDetailView() {
   const identity = useQuery({
     queryKey: ["device-identity", deviceId],
     queryFn: () => fetchDeviceIdentity(deviceId),
+  });
+  const pattern = useQuery<DevicePattern | null>({
+    queryKey: ["device-patterns", deviceId],
+    queryFn: () => fetchDevicePatterns(deviceId, 168),
   });
 
   const [alias, setAlias] = useState("");
@@ -367,15 +373,62 @@ export function DeviceDetailView() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Historial de sesiones
+          <CardTitle className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <Activity className="h-4 w-4" />
+            Patrones de actividad (últimos 7 días)
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">
-            El historial de sesiones requiere soporte del backend. Se muestra el
-            historial de señal como referencia de la actividad observada.
-          </p>
+          {pattern.isLoading ? (
+            <p className="text-sm text-muted-foreground">Cargando…</p>
+          ) : pattern.data ? (
+            <div className="space-y-4">
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Horas pico</p>
+                <p className="text-sm">
+                  {pattern.data.top_hours.map((h) => `${String(h.hour).padStart(2, "0")}h (${Math.round(h.ratio * 100)}%)`).join(", ") || "Sin datos"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Actividad por hora</p>
+                <div className="mt-2 flex h-16 items-end gap-1">
+                  {pattern.data.hour_counts?.map((c, i) => {
+                    const max = Math.max(1, ...(pattern.data?.hour_counts || []));
+                    return (
+                      <div key={i} className="flex flex-1 flex-col items-center gap-1">
+                        <div
+                          className="w-full rounded-sm bg-primary/60"
+                          style={{ height: `${Math.round((c / max) * 100)}%`, minHeight: c > 0 ? 2 : 0 }}
+                          title={`${String(i).padStart(2, "0")}h: ${c}`}
+                        />
+                        {i % 4 === 0 && <span className="text-[8px] text-muted-foreground">{i}h</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Días de la semana</p>
+                <div className="mt-2 flex gap-1">
+                  {pattern.data.weekday_counts.map((c, i) => {
+                    const max = Math.max(1, ...pattern.data.weekday_counts);
+                    return (
+                      <div key={i} className="flex flex-1 flex-col items-center gap-1">
+                        <div
+                          className="w-6 rounded-sm bg-primary/60"
+                          style={{ height: `${Math.round((c / max) * 60)}px`, minHeight: c > 0 ? 2 : 0 }}
+                          title={`${["L", "M", "X", "J", "V", "S", "D"][i]}: ${c}`}
+                        />
+                        <span className="text-[9px] text-muted-foreground">{["L", "M", "X", "J", "V", "S", "D"][i]}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin datos de patrones.</p>
+          )}
         </CardContent>
       </Card>
     </div>
