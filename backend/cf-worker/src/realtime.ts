@@ -82,6 +82,10 @@ export class RealtimeHub extends DurableObject {
   private vapidKeys: CryptoKeyPair | null = null;
   private d1: D1Database | null = null;
   private _env: Env;
+  private newDeviceAlerts: Set<string> = new Set();
+  private newDeviceAlertsLoaded = false;
+  private newNetworkAlerts: Set<string> = new Set();
+  private newNetworkAlertsLoaded = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -157,6 +161,28 @@ export class RealtimeHub extends DurableObject {
 
   private async savePushSubs() {
     await this.ctx.storage.put('push-subs', this.pushSubs);
+  }
+
+  private async loadNewDeviceAlerts() {
+    if (this.newDeviceAlertsLoaded) return;
+    const stored = await this.ctx.storage.get<string[]>('new-device-alerts') || [];
+    this.newDeviceAlerts = new Set(stored);
+    this.newDeviceAlertsLoaded = true;
+  }
+
+  private async saveNewDeviceAlerts() {
+    await this.ctx.storage.put('new-device-alerts', Array.from(this.newDeviceAlerts));
+  }
+
+  private async loadNewNetworkAlerts() {
+    if (this.newNetworkAlertsLoaded) return;
+    const stored = await this.ctx.storage.get<string[]>('new-network-alerts') || [];
+    this.newNetworkAlerts = new Set(stored);
+    this.newNetworkAlertsLoaded = true;
+  }
+
+  private async saveNewNetworkAlerts() {
+    await this.ctx.storage.put('new-network-alerts', Array.from(this.newNetworkAlerts));
   }
 
   private async getVapidKeys(): Promise<CryptoKeyPair> {
@@ -253,9 +279,37 @@ export class RealtimeHub extends DurableObject {
       const net = this.networks.get(id);
       const name = net?.ssid || id;
       await this.pushEvent('Red desaparecida', `red: ${name} perdió señal`, `net-gone-${id}`, '/');
-    } else if (eventType === 'device.connected') {
-      const name = await this.resolveDeviceName(id);
+    } else if (eventType === 'device.connected' || eventType === 'device.detected' || (eventType === 'device.presence_changed' && (dev.to_state === 'RF_PRESENT' || p.to_state === 'RF_PRESENT'))) {
+      await this.loadNewDeviceAlerts();
       const device = this.devices.get(id);
+      const isNew = !device && !this.newDeviceAlerts.has(id);
+      if (isNew && this.d1) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const trust = await this.d1.prepare('SELECT status, alert_count FROM device_trust WHERE pseudonym = ?').bind(id).first() as { status?: string; alert_count?: number } | null;
+        let shouldAlert = false;
+        if (!trust) {
+          await this.d1.prepare(
+            `INSERT INTO device_trust (pseudonym, sensor_id, status, first_seen, last_seen, alert_count, updated_at)
+             VALUES (?, ?, 'unknown', ?, ?, 1, ?)`
+          ).bind(id, sensorId, nowSec, nowSec, nowSec).run();
+          shouldAlert = true;
+        } else if (trust.status !== 'known' && trust.status !== 'ignored' && (trust.alert_count || 0) < 3) {
+          await this.d1.prepare(
+            `UPDATE device_trust SET last_seen = ?, alert_count = alert_count + 1, updated_at = ?
+             WHERE pseudonym = ? AND status NOT IN ('known','ignored') AND alert_count < 3`
+          ).bind(nowSec, nowSec, id).run();
+          shouldAlert = true;
+        }
+        if (shouldAlert) {
+          this.newDeviceAlerts.add(id);
+          await this.saveNewDeviceAlerts();
+          const name = await this.resolveDeviceName(id);
+          await this.pushEvent('Nuevo dispositivo desconocido', `${name} visto por primera vez`, `new-device-${id}`, `/devices/${encodeURIComponent(id)}`);
+          return;
+        }
+      }
+      if (this.newDeviceAlerts.has(id)) return;
+      const name = await this.resolveDeviceName(id);
       const extra = device?.band ? ` · ${device.band}` : '';
       await this.pushEvent('Dispositivo conectado', `${name}${extra}`, `dev-conn-${id}`, `/devices/${encodeURIComponent(id)}`);
     } else if (eventType === 'device.disconnected') {
@@ -432,6 +486,36 @@ export class RealtimeHub extends DurableObject {
 
     summary.sensor_id = sensorId;
 
+    const toState = dev.to_state || p.to_state;
+
+    if (!existing && this.d1 && (eventType === 'device.connected' || eventType === 'device.detected' || (eventType === 'device.presence_changed' && toState === 'RF_PRESENT'))) {
+      await this.loadNewDeviceAlerts();
+      if (!this.newDeviceAlerts.has(deviceId)) {
+        const nowSec = Math.floor(now / 1000);
+        const trust = await this.d1.prepare('SELECT status, alert_count, first_seen FROM device_trust WHERE pseudonym = ?').bind(deviceId).first() as { status?: string; alert_count?: number; first_seen?: number } | null;
+        let shouldAlert = false;
+        if (!trust) {
+          await this.d1.prepare(
+            `INSERT INTO device_trust (pseudonym, sensor_id, status, first_seen, last_seen, alert_count, updated_at)
+             VALUES (?, ?, 'unknown', ?, ?, 1, ?)`
+          ).bind(deviceId, sensorId, nowSec, nowSec, nowSec).run();
+          shouldAlert = true;
+        } else if (trust.status !== 'known' && trust.status !== 'ignored' && (trust.alert_count || 0) < 3) {
+          await this.d1.prepare(
+            `UPDATE device_trust SET last_seen = ?, alert_count = alert_count + 1, updated_at = ?
+             WHERE pseudonym = ? AND status NOT IN ('known','ignored') AND alert_count < 3`
+          ).bind(nowSec, nowSec, deviceId).run();
+          shouldAlert = true;
+        }
+        if (shouldAlert) {
+          this.newDeviceAlerts.add(deviceId);
+          await this.saveNewDeviceAlerts();
+          const name = await this.resolveDeviceName(deviceId);
+          await this.pushEvent('Nuevo dispositivo desconocido', `${name} visto por primera vez`, `new-device-${deviceId}`, `/devices/${encodeURIComponent(deviceId)}`);
+        }
+      }
+    }
+
     const incomingHostname = dev.hostname || p.hostname;
     if (incomingHostname && !summary.hostname) {
       summary.hostname = String(incomingHostname);
@@ -442,7 +526,6 @@ export class RealtimeHub extends DurableObject {
     summary.event_count += 1;
     summary.last_type = eventType;
 
-    const toState = dev.to_state || p.to_state;
     const stateValue = toState ? String(toState) : summary.state;
     if (stateValue) {
       summary.state = stateValue;
@@ -516,6 +599,20 @@ export class RealtimeHub extends DurableObject {
     };
 
     summary.sensor_id = sensorId;
+
+    if (!existing && this.d1 && eventType === 'network.detected') {
+      await this.loadNewNetworkAlerts();
+      if (!this.newNetworkAlerts.has(apId)) {
+        const nowSec = Math.floor(now / 1000);
+        const observed = await this.d1.prepare('SELECT first_seen FROM wifi_network_observation WHERE bssid_pseudonym = ? AND sensor_id = ?').bind(apId, sensorId).first() as { first_seen?: number } | null;
+        if (!observed || (observed.first_seen || 0) > nowSec - 300) {
+          this.newNetworkAlerts.add(apId);
+          await this.saveNewNetworkAlerts();
+          const ssidText = dev.ssid || apId;
+          await this.pushEvent('Nueva red Wi-Fi detectada', `${ssidText}`, `new-network-${apId}`, '/');
+        }
+      }
+    }
 
     summary.last_seen = Math.max(summary.last_seen, observedAt);
     summary.first_seen = Math.min(summary.first_seen, observedAt);

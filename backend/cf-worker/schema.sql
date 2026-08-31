@@ -222,3 +222,18 @@ CREATE TABLE IF NOT EXISTS email_queue (
   error TEXT
 );
 
+-- Trust / unknown-device tracking. `status` can be 'unknown', 'known', or 'ignored'.
+-- When a device is first observed it is inserted as 'unknown' and may trigger alerts.
+CREATE TABLE IF NOT EXISTS device_trust (
+  pseudonym TEXT PRIMARY KEY,
+  sensor_id TEXT,
+  status TEXT NOT NULL DEFAULT 'unknown',
+  first_seen INTEGER,
+  last_seen INTEGER,
+  alert_count INTEGER NOT NULL DEFAULT 0,
+  acknowledged_at INTEGER,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_trust_status ON device_trust(status);
+

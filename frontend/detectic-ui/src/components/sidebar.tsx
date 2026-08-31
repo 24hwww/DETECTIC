@@ -1,5 +1,6 @@
 import {
   Activity,
+  AlertTriangle,
   Bell,
   LayoutDashboard,
   // Map as MapIcon,
@@ -75,6 +76,7 @@ export function Sidebar() {
         <Section title="Monitoreo">
           <NavItem to="/" icon={Activity} label="Monitor en vivo" />
           <NavItem to="/devices" icon={Smartphone} label="Dispositivos" />
+          <NavItem to="/unknown-devices" icon={AlertTriangle} label="Desconocidos" />
           <NavItem to="/access-points" icon={Wifi} label="Puntos de acceso" />
           <NavItem to="/rf" icon={Radio} label="Entorno RF" />
         </Section>

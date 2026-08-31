@@ -484,6 +484,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE TABLE IF NOT EXISTS device_label (pseudonym TEXT PRIMARY KEY, alias TEXT, owner TEXT, room TEXT, tags TEXT, notes TEXT, updated_at INTEGER NOT NULL)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS report_config (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, frequency_hours INTEGER NOT NULL DEFAULT 24, changes_only INTEGER NOT NULL DEFAULT 0, top_devices INTEGER NOT NULL DEFAULT 5, new_detections INTEGER NOT NULL DEFAULT 1, nearby_aps INTEGER NOT NULL DEFAULT 1, email_to TEXT, email_subject TEXT, updated_at INTEGER NOT NULL DEFAULT 0)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, generated_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', html TEXT, text TEXT, config_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, sent_at INTEGER, error TEXT)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS device_trust (pseudonym TEXT PRIMARY KEY, sensor_id TEXT, status TEXT NOT NULL DEFAULT 'unknown', first_seen INTEGER, last_seen INTEGER, alert_count INTEGER NOT NULL DEFAULT 0, acknowledged_at INTEGER, updated_at INTEGER NOT NULL DEFAULT 0)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_trust_status ON device_trust(status)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
@@ -568,6 +570,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       `CREATE TABLE IF NOT EXISTS device_label (pseudonym TEXT PRIMARY KEY, alias TEXT, owner TEXT, room TEXT, tags TEXT, notes TEXT, updated_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS report_config (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, frequency_hours INTEGER NOT NULL DEFAULT 24, changes_only INTEGER NOT NULL DEFAULT 0, top_devices INTEGER NOT NULL DEFAULT 5, new_detections INTEGER NOT NULL DEFAULT 1, nearby_aps INTEGER NOT NULL DEFAULT 1, email_to TEXT, email_subject TEXT, updated_at INTEGER NOT NULL DEFAULT 0)`,
       `CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, generated_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', html TEXT, text TEXT, config_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, sent_at INTEGER, error TEXT)`,
+      `CREATE TABLE IF NOT EXISTS device_trust (pseudonym TEXT PRIMARY KEY, sensor_id TEXT, status TEXT NOT NULL DEFAULT 'unknown', first_seen INTEGER, last_seen INTEGER, alert_count INTEGER NOT NULL DEFAULT 0, acknowledged_at INTEGER, updated_at INTEGER NOT NULL DEFAULT 0)`,
+      `CREATE INDEX IF NOT EXISTS idx_device_trust_status ON device_trust(status)`,
       `CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`,
       `CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`,
@@ -1586,6 +1590,10 @@ async function handleDevices(
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "200"), 1000);
   const origin = requestCorsOrigin(env, request);
 
+  const trustRows = await env.DB.prepare('SELECT pseudonym, status FROM device_trust').all();
+  const trustMap = new Map<string, string>();
+  for (const r of trustRows.results as any[]) trustMap.set(r.pseudonym, r.status);
+
   const idRows = await env.DB.prepare(
     `SELECT i.pseudonym, i.manufacturer, i.brand, i.model_guess, i.device_class,
             i.mac_type, i.confidence, i.confidence_label, i.bssid_manufacturer, i.last_seen,
@@ -1668,6 +1676,7 @@ async function handleDevices(
       owner: i.owner ?? null,
       room: i.room ?? null,
       tags: i.tags ?? null,
+      trust_status: trustMap.get(i.pseudonym) || 'unknown',
       notes: i.notes ?? null,
     });
   }
@@ -1703,6 +1712,7 @@ async function handleDevices(
       owner: null,
       room: null,
       tags: null,
+      trust_status: trustMap.get(pseudonym) || 'unknown',
       notes: null,
     });
   }
@@ -2213,6 +2223,66 @@ async function handleUpdateDeviceIdentity(
   ).bind(deviceId).first();
 
   return jsonResponse(200, { identity: label }, origin);
+}
+
+async function handleUnknownDevices(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const origin = requestCorsOrigin(env, request);
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "50"), 200);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "168"), 720);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+
+  const rows = await env.DB.prepare(`
+    SELECT t.pseudonym, t.sensor_id, t.status, t.first_seen, t.last_seen, t.alert_count,
+           l.alias, l.owner, l.room, i.manufacturer, i.device_class, i.last_seen AS identity_last_seen,
+           s.first_seen AS state_first_seen, s.last_seen AS state_last_seen, s.connection_count
+    FROM device_trust t
+    LEFT JOIN device_label l ON t.pseudonym = l.pseudonym
+    LEFT JOIN device_identity i ON t.pseudonym = i.pseudonym
+    LEFT JOIN device_state s ON t.pseudonym = s.device_id AND t.sensor_id = s.sensor_id
+    WHERE t.status = 'unknown' AND (t.first_seen >= ? OR t.last_seen >= ?)
+    ORDER BY t.first_seen DESC
+    LIMIT ?
+  `).bind(cutoff, cutoff, limit).all();
+
+  return jsonResponse(200, { devices: rows.results || [] }, origin);
+}
+
+async function handleUpdateDeviceTrust(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  const path = new URL(request.url).pathname;
+  const match = path.match(/^\/api\/v1\/devices\/([^/]+)\/trust$/);
+  if (!match) return jsonResponse(400, { error: "invalid path" }, origin);
+  const deviceId = decodeURIComponent(match[1]);
+
+  let body: any;
+  try { body = await request.json(); } catch {
+    return jsonResponse(400, { error: "invalid json" }, origin);
+  }
+
+  const status = body.status;
+  if (!['known', 'ignored', 'unknown'].includes(status)) {
+    return jsonResponse(400, { error: "status must be known, ignored or unknown" }, origin);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO device_trust (pseudonym, status, acknowledged_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(pseudonym) DO UPDATE SET
+       status = excluded.status,
+       acknowledged_at = excluded.acknowledged_at,
+       updated_at = excluded.updated_at`
+  ).bind(deviceId, status, now, now).run();
+
+  const row = await env.DB.prepare('SELECT * FROM device_trust WHERE pseudonym = ?').bind(deviceId).first();
+  return jsonResponse(200, { trust: row }, origin);
 }
 
 async function handleSessions(
@@ -3653,6 +3723,8 @@ export default {
           response = await handleUpdateSensorLocation(request, env);
         } else if (path.match(/^\/api\/v1\/devices\/[^/]+\/identity$/)) {
           response = await handleUpdateDeviceIdentity(request, env);
+        } else if (path.match(/^\/api\/v1\/devices\/[^/]+\/trust$/)) {
+          response = await handleUpdateDeviceTrust(request, env);
         } else if (path === "/api/v1/reports/config") {
           response = await handleUpdateReportConfig(request, env);
         } else if (path === "/api/v1/reports/queue" || /^\/api\/v1\/reports\/queue\/[^/]+$/.test(path)) {
@@ -3705,6 +3777,7 @@ export default {
         else if (path === "/api/v1/reports/email") response = await handleEmailReport(request, env);
         else if (path === "/api/v1/reports/config") response = await handleGetReportConfig(request, env);
         else if (path === "/api/v1/reports/queue") response = await handleReportQueue(request, env);
+        else if (path === "/api/v1/devices/unknown") response = await handleUnknownDevices(request, env);
         else if (path === "/api/v1/events") response = await handleEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);

@@ -15,6 +15,7 @@ import {
   fetchDeviceIdentity,
   updateDeviceIdentity,
   fetchDevicePatterns,
+  updateDeviceTrust,
   type DetailedDevice,
   type DevicePattern,
 } from "@/lib/api";
@@ -65,6 +66,14 @@ export function DeviceDetailView() {
   const pattern = useQuery<DevicePattern | null>({
     queryKey: ["device-patterns", deviceId],
     queryFn: () => fetchDevicePatterns(deviceId, 168),
+  });
+
+  const trust = useMutation({
+    mutationFn: (status: 'known' | 'ignored' | 'unknown') => updateDeviceTrust(deviceId, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["all-devices"] });
+      queryClient.invalidateQueries({ queryKey: ["unknown-devices"] });
+    },
   });
 
   const [alias, setAlias] = useState("");
@@ -203,6 +212,35 @@ export function DeviceDetailView() {
             <Field
               label="AP"
               value={detail?.bssid_pseudonym || detail?.bssid_manufacturer || "—"}
+            />
+            <Field
+              label="Confianza"
+              value={
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant="outline"
+                    className={
+                      detail?.trust_status === 'known'
+                        ? "bg-[var(--color-online)]/10 text-[var(--color-online)]"
+                        : detail?.trust_status === 'ignored'
+                        ? "bg-muted text-muted-foreground"
+                        : "bg-[var(--color-destructive)]/10 text-[var(--color-destructive)]"
+                    }
+                  >
+                    {detail?.trust_status === 'known' ? 'Conocido' : detail?.trust_status === 'ignored' ? 'Ignorado' : 'Desconocido'}
+                  </Badge>
+                  {detail?.trust_status !== 'known' && (
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => trust.mutate('known')} disabled={trust.isPending}>
+                      Marcar conocido
+                    </Button>
+                  )}
+                  {detail?.trust_status !== 'ignored' && (
+                    <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => trust.mutate('ignored')} disabled={trust.isPending}>
+                      Ignorar
+                    </Button>
+                  )}
+                </div>
+              }
             />
             <Field label="Primera vez" value={fmtDate(detail?.first_seen)} />
             <Field label="Última vez" value={timeAgo(liveDev?.last_seen || detail?.last_seen)} />

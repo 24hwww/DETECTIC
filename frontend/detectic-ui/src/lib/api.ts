@@ -79,6 +79,7 @@ export type DetailedDevice = {
   room?: string | null;
   tags?: string | null;
   notes?: string | null;
+  trust_status?: string | null;
   proximity?: string | null;
   proximity_detail?: ProximityDetail | null;
   rssi_dbm?: number | null;
@@ -374,6 +375,36 @@ export type ReportConfig = {
   email_subject: string | null;
   updated_at: number;
 };
+
+export type UnknownDevice = {
+  pseudonym: string;
+  sensor_id: string | null;
+  status: string;
+  first_seen: number;
+  last_seen: number;
+  alert_count: number;
+  alias: string | null;
+  owner: string | null;
+  room: string | null;
+  manufacturer: string | null;
+  device_class: string | null;
+  connection_count: number | null;
+};
+
+export async function fetchUnknownDevices(hours = 168): Promise<UnknownDevice[]> {
+  const data = await fetchJson<{ devices?: UnknownDevice[] }>(`${API}/devices/unknown?hours=${hours}`);
+  return data.devices || [];
+}
+
+export async function updateDeviceTrust(deviceId: string, status: 'known' | 'ignored' | 'unknown'): Promise<{ trust: { pseudonym: string; status: string } }> {
+  const res = await fetch(`${API}/devices/${encodeURIComponent(deviceId)}/trust`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<{ trust: { pseudonym: string; status: string } }>;
+}
 
 export async function fetchDevicePatterns(deviceId: string, hours = 168): Promise<DevicePattern | null> {
   const data = await fetchJson<{ pattern?: DevicePattern }>(

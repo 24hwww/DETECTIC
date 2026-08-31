@@ -15,6 +15,7 @@ import { ConnectivityView } from "@/components/connectivity-view";
 import { ReportsView } from "@/components/reports-view";
 import { SettingsView } from "@/components/settings-view";
 import { NotificationsView } from "@/components/notifications-view";
+import { UnknownDevicesView } from "@/components/unknown-devices-view";
 
 const rootRoute = createRootRoute({
   component: DashboardLayout,
@@ -104,6 +105,12 @@ const reportsRoute = createRoute({
   component: ReportsView,
 });
 
+const unknownDevicesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/unknown-devices",
+  component: UnknownDevicesView,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
@@ -131,6 +138,7 @@ const routeTree = rootRoute.addChildren([
   routerRoute,
   connectivityRoute,
   reportsRoute,
+  unknownDevicesRoute,
   settingsRoute,
   notificationsRoute,
 ]);
