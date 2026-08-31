@@ -482,6 +482,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE TABLE IF NOT EXISTS collector_runs (run_id TEXT PRIMARY KEY, scheduled_at INTEGER NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER, status TEXT NOT NULL, duration_ms INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_identity (pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, manufacturer TEXT, brand TEXT, model_guess TEXT, device_class TEXT, mac_type TEXT, confidence REAL, confidence_label TEXT, bssid_manufacturer TEXT, identity_json TEXT, fingerprint_id TEXT, last_seen INTEGER, PRIMARY KEY (pseudonym, sensor_id))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_label (pseudonym TEXT PRIMARY KEY, alias TEXT, owner TEXT, room TEXT, tags TEXT, notes TEXT, updated_at INTEGER NOT NULL)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS report_config (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, frequency_hours INTEGER NOT NULL DEFAULT 24, changes_only INTEGER NOT NULL DEFAULT 0, top_devices INTEGER NOT NULL DEFAULT 5, new_detections INTEGER NOT NULL DEFAULT 1, nearby_aps INTEGER NOT NULL DEFAULT 1, email_to TEXT, email_subject TEXT, updated_at INTEGER NOT NULL DEFAULT 0)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, generated_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', html TEXT, text TEXT, config_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, sent_at INTEGER, error TEXT)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
@@ -564,6 +566,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       `CREATE TABLE IF NOT EXISTS collector_runs (run_id TEXT PRIMARY KEY, scheduled_at INTEGER NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER, status TEXT NOT NULL, duration_ms INTEGER)`,
       `CREATE TABLE IF NOT EXISTS device_identity (pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, manufacturer TEXT, brand TEXT, model_guess TEXT, device_class TEXT, mac_type TEXT, confidence REAL, confidence_label TEXT, bssid_manufacturer TEXT, identity_json TEXT, fingerprint_id TEXT, last_seen INTEGER, PRIMARY KEY (pseudonym, sensor_id))`,
       `CREATE TABLE IF NOT EXISTS device_label (pseudonym TEXT PRIMARY KEY, alias TEXT, owner TEXT, room TEXT, tags TEXT, notes TEXT, updated_at INTEGER NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS report_config (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, frequency_hours INTEGER NOT NULL DEFAULT 24, changes_only INTEGER NOT NULL DEFAULT 0, top_devices INTEGER NOT NULL DEFAULT 5, new_detections INTEGER NOT NULL DEFAULT 1, nearby_aps INTEGER NOT NULL DEFAULT 1, email_to TEXT, email_subject TEXT, updated_at INTEGER NOT NULL DEFAULT 0)`,
+      `CREATE TABLE IF NOT EXISTS email_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, report_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, generated_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', html TEXT, text TEXT, config_json TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at INTEGER, sent_at INTEGER, error TEXT)`,
       `CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`,
       `CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`,
@@ -2993,25 +2997,122 @@ function deviceDetails(row: any): string {
   return parts.join(' · ') || 'sin datos adicionales';
 }
 
-async function handleEmailReport(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
-  const origin = request.headers.get('Origin') || undefined;
-  const startMs = Date.now();
+type ReportConfig = {
+  id: number;
+  enabled: number;
+  frequency_hours: number;
+  changes_only: number;
+  top_devices: number;
+  new_detections: number;
+  nearby_aps: number;
+  email_to: string | null;
+  email_subject: string | null;
+  updated_at: number;
+};
 
-  const data = await fetchRealtimeSummary(env, hours);
+async function handleReportQueue(request: Request, env: Env): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  const url = new URL(request.url);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '1'), 10);
+
+  if (request.method === 'GET') {
+    const rows = await env.DB.prepare(
+      'SELECT id, report_id, scheduled_at, generated_at, html, text, config_json FROM email_queue WHERE status = ? ORDER BY scheduled_at ASC LIMIT ?'
+    ).bind('pending', limit).all();
+    return jsonResponse(200, { queue: rows.results || [] }, origin);
+  }
+
+  if (request.method === 'POST') {
+    const match = url.pathname.match(/^\/api\/v1\/reports\/queue\/([^/]+)$/);
+    if (!match) return jsonResponse(400, { error: 'invalid path' }, origin);
+    const id = match[1];
+    let body: any;
+    try { body = await request.json(); } catch { return jsonResponse(400, { error: 'invalid json' }, origin); }
+    const status = body.status === 'delivered' ? 'delivered' : 'failed';
+    const error = body.error || null;
+    const now = Math.floor(Date.now() / 1000);
+    if (status === 'delivered') {
+      await env.DB.prepare(
+        'UPDATE email_queue SET status = ?, sent_at = ?, error = NULL WHERE id = ?'
+      ).bind(status, now, id).run();
+    } else {
+      await env.DB.prepare(
+        'UPDATE email_queue SET attempts = attempts + 1, last_attempt_at = ?, error = ? WHERE id = ?'
+      ).bind(now, error, id).run();
+    }
+    return jsonResponse(200, { ok: true }, origin);
+  }
+
+  return jsonResponse(405, { error: 'method not allowed' }, origin);
+}
+
+async function handleGetReportConfig(request: Request, env: Env): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  await env.DB.prepare('INSERT OR IGNORE INTO report_config (id) VALUES (1)').run();
+  const row = await env.DB.prepare('SELECT * FROM report_config WHERE id = 1').first() as ReportConfig | null;
+  return jsonResponse(200, { config: row }, origin);
+}
+
+async function handleUpdateReportConfig(request: Request, env: Env): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  let body: any;
+  try { body = await request.json(); } catch { return jsonResponse(400, { error: 'invalid json' }, origin); }
+
+  const allowed = new Set(['enabled', 'frequency_hours', 'changes_only', 'top_devices', 'new_detections', 'nearby_aps', 'email_to', 'email_subject']);
+  const updates: Record<string, any> = {};
+  for (const key of allowed) {
+    if (body[key] === undefined) continue;
+    if (['enabled', 'frequency_hours', 'changes_only', 'top_devices', 'new_detections', 'nearby_aps'].includes(key)) {
+      updates[key] = Number(body[key]);
+      if (!Number.isFinite(updates[key])) return jsonResponse(400, { error: `invalid ${key}` }, origin);
+    } else {
+      updates[key] = typeof body[key] === 'string' ? body[key].trim() || null : null;
+    }
+  }
+
+  if (Object.keys(updates).length === 0) return jsonResponse(400, { error: 'no fields' }, origin);
+  updates.updated_at = Math.floor(Date.now() / 1000);
+
+  const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+  await env.DB.prepare('INSERT OR IGNORE INTO report_config (id) VALUES (1)').run();
+  await env.DB.prepare(`UPDATE report_config SET ${setClause} WHERE id = 1`).bind(...Object.values(updates)).run();
+
+  const row = await env.DB.prepare('SELECT * FROM report_config WHERE id = 1').first() as ReportConfig | null;
+  return jsonResponse(200, { config: row }, origin);
+}
+
+type ReportOptions = {
+  hours: number;
+  changes_only: boolean;
+  top_devices: number;
+  new_detections: boolean;
+  nearby_aps: boolean;
+};
+
+type EmailReport = {
+  html: string;
+  text: string;
+  reportId: string;
+  sensorId: string;
+  generatedAt: number;
+};
+
+async function buildEmailReport(env: Env, opts: ReportOptions): Promise<EmailReport> {
+  const startMs = Date.now();
+  const data = await fetchRealtimeSummary(env, opts.hours);
   const now = new Date();
   const scheduled = new Date(Math.floor(now.getTime() / 300000) * 300000); // round to 5 min
   const captureStart = new Date(data.generated_at || now.getTime());
   const captureEnd = now;
+  const cutoffMs = now.getTime() - opts.hours * 3600 * 1000;
 
-  const [idRows, devRows, networkData, apRows] = await Promise.all([
+  const [idRows, devRows, networkData, apRows, labelRows] = await Promise.all([
     env.DB.prepare('SELECT pseudonym, manufacturer, brand, model_guess, device_class, last_seen FROM device_identity').all(),
     env.DB.prepare(`SELECT d.pseudonym, d.hostname, d.operating_standard, d.identity_json, c.started_at
                      FROM collector_devices d
                      JOIN collector_captures c ON d.capture_id = c.capture_id
                      ORDER BY c.started_at DESC`).all(),
-    fetchRealtimeNetworks(env, hours),
+    fetchRealtimeNetworks(env, opts.hours),
     env.DB.prepare(`SELECT ssid, band, current_signal, status, sensor_id, first_seen, last_seen, online_since,
                            observation_count, w_mode, security, proximity, proximity_detail
                     FROM ap_state
@@ -3019,6 +3120,7 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
                     ORDER BY last_seen DESC LIMIT 50`)
       .bind(Math.floor(Date.now() / 1000) - 24 * 3600)
       .all(),
+    env.DB.prepare('SELECT pseudonym, alias FROM device_label').all(),
   ]);
 
   const apiMs = Date.now() - startMs;
@@ -3039,53 +3141,71 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
       }
     }
   }
+  for (const r of labelRows.results as any[]) {
+    const existing = identityMap.get(r.pseudonym);
+    if (existing) existing.alias = r.alias;
+    else identityMap.set(r.pseudonym, { alias: r.alias });
+  }
 
-  const connected = (data.devices || []).filter((d: any) => d.connected);
-  const outOfRange = (data.devices || []).filter((d: any) => !d.connected);
-  const detectedCount = (data.devices || []).length;
+  const allDevices = (data.devices || []) as any[];
+  const connected = allDevices.filter((d: any) => d.connected);
+  const outOfRange = allDevices.filter((d: any) => !d.connected);
+  const detectedCount = allDevices.length;
   const connectedCount = connected.length;
   const offCount = outOfRange.length;
 
-  connected.sort((a: any, b: any) => {
-    const nameA = deviceNameFrom({ ...(identityMap.get(a.device_id) || {}), ...a }, a.device_id.slice(0, 16));
-    const nameB = deviceNameFrom({ ...(identityMap.get(b.device_id) || {}), ...b }, b.device_id.slice(0, 16));
-    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
-  });
-  outOfRange.sort((a: any, b: any) => {
-    const nameA = deviceNameFrom({ ...(identityMap.get(a.device_id) || {}), ...a }, a.device_id.slice(0, 16));
-    const nameB = deviceNameFrom({ ...(identityMap.get(b.device_id) || {}), ...b }, b.device_id.slice(0, 16));
-    return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
-  });
-
-  const connectedRows = connected.map((d: any) => {
+  const nameOf = (d: any) => {
     const id = { ...(identityMap.get(d.device_id) || {}), ...d };
-    const name = deviceNameFrom(id, d.device_id.slice(0, 16));
-    const details = deviceDetails(id);
+    return deviceNameFrom(id, d.device_id.slice(0, 16));
+  };
+  const detailsOf = (d: any) => deviceDetails({ ...(identityMap.get(d.device_id) || {}), ...d });
+
+  const byName = (a: any, b: any) => nameOf(a).localeCompare(nameOf(b), undefined, { sensitivity: 'base' });
+  connected.sort(byName);
+  outOfRange.sort(byName);
+
+  const newDetections = allDevices.filter((d: any) => (d.first_seen || 0) >= cutoffMs);
+  const topDevices = [...allDevices]
+    .sort((a: any, b: any) => (b.event_count || 0) - (a.event_count || 0))
+    .slice(0, opts.top_devices);
+
+  const deviceRow = (d: any, style: 'large' | 'small' = 'large') => {
+    const name = nameOf(d);
+    const details = detailsOf(d);
     const level = signalLevel(d.last_signal);
-    return `<div style="margin-bottom:14px;padding:10px;border:1px solid #d0d7de;border-radius:8px;background:#fff">
+    const prox = d.proximity || d.proximity_detail?.zone_label || '';
+    const dist = d.distance_m != null ? `~${Math.round(d.distance_m)} m` : distanceLabel(d.rssi_dbm ?? d.last_signal);
+    const trend = d.trend ? ` · ${d.trend}` : '';
+    const heat = d.heat != null ? ` · intensidad ${d.heat}` : '';
+    const size = style === 'large' ? 'margin-bottom:14px;padding:10px' : 'margin-bottom:10px;padding:8px';
+    return `<div style="${size};border:1px solid #d0d7de;border-radius:8px;background:#fff">
       <b>${escHtml(name)}</b>
       <div style="font-size:11px;color:#57606a">${escHtml(details)}</div>
-      <div style="font-size:12px;margin:4px 0">📶 ${signalBars(level)} ${signalLabel(level)} (nivel ${level}/4)</div>
-      <div style="font-size:12px;color:#57606a">📡 ${d.band || '—'}</div>
-      <div style="font-size:12px;color:#57606a">📍 ${distanceLabel(d.last_signal)} · última ${fmtDateTime(d.last_seen)} · total ${msToDuration(d.last_seen - d.first_seen)}</div>
+      <div style="font-size:12px;margin:4px 0">📶 ${signalBars(level)} ${signalLabel(level)} (nivel ${level}/4) · ${escHtml(prox)}${trend}${heat}</div>
+      <div style="font-size:12px;color:#57606a">📡 ${d.band || '—'} · 📍 ${dist} · última ${fmtDateTime(d.last_seen)} · total ${msToDuration(d.last_seen - d.first_seen)}</div>
     </div>`;
-  }).join('') || '<p style="color:#57606a">Ningún dispositivo conectado en el período.</p>';
+  };
 
-  const outRows = outOfRange.map((d: any) => {
-    const id = { ...(identityMap.get(d.device_id) || {}), ...d };
-    const name = deviceNameFrom(id, d.device_id.slice(0, 16));
-    const details = deviceDetails(id);
-    return `<div style="margin-bottom:10px;padding:8px;border:1px solid #d0d7de;border-radius:6px;background:#fff">
-      <b>${escHtml(name)}</b>
-      <div style="font-size:11px;color:#57606a">${escHtml(details)}</div>
-      <span style="font-size:12px;color:#57606a"> 📡 ${d.band || '—'} · 💤 desconectado · última ${fmtDateTime(d.last_seen)}</span>
-    </div>`;
-  }).join('') || '<p style="color:#57606a">Ningún dispositivo fuera de rango.</p>';
+  const smallDeviceRow = (d: any, note: string) => `<div style="margin-bottom:10px;padding:8px;border:1px solid #d0d7de;border-radius:6px;background:#fff">
+    <b>${escHtml(nameOf(d))}</b>
+    <span style="font-size:12px;color:#57606a"> · ${escHtml(note)} · ${d.band || '—'} · última ${fmtDateTime(d.last_seen)}</span>
+  </div>`;
+
+  const connectedRows = connected.map((d: any) => deviceRow(d)).join('') || '<p style="color:#57606a">Ningún dispositivo conectado en el período.</p>';
+  const outRows = outOfRange.map((d: any) => deviceRow(d, 'small')).join('') || '<p style="color:#57606a">Ningún dispositivo fuera de rango.</p>';
+
+  const topRows = opts.top_devices > 0 && topDevices.length
+    ? topDevices.map((d: any, i: number) => smallDeviceRow(d, `#${i + 1} · ${d.event_count || 0} observaciones`)).join('')
+    : '';
+
+  const newRows = opts.new_detections && newDetections.length
+    ? newDetections.map((d: any) => smallDeviceRow(d, 'nueva detección en este período')).join('')
+    : '';
 
   const nowMs = Date.now();
   const toMs = (ts: number) => (ts < 1e12 ? ts * 1000 : ts);
   const rawNetworks = (networkData.networks?.length ? networkData.networks : apRows.results) as any[];
-  const networks = rawNetworks.length ? rawNetworks : (apRows.results as any[]);
+  let networks = rawNetworks.length ? rawNetworks : (apRows.results as any[]);
 
   const sensorId = (networks[0]?.sensor_id as string) ||
     (data.devices?.[0]?.sensor_id as string) ||
@@ -3096,6 +3216,17 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
     const labelB = String(b.ssid || b.ap_id || '').toLowerCase();
     return labelA.localeCompare(labelB, undefined, { sensitivity: 'base' });
   });
+
+  if (opts.nearby_aps) {
+    networks = networks.filter((n: any) => {
+      const pd = n.proximity_detail || {};
+      return n.status !== 'OFFLINE' && (pd.in_radius || ['immediate', 'near'].includes(String(n.proximity || pd.zone || '').toLowerCase()));
+    });
+  }
+
+  const newNetworks = opts.new_detections
+    ? networks.filter((n: any) => (n.first_seen || 0) >= cutoffMs)
+    : [];
 
   const STALE_MS = 10 * 60 * 1000;
 
@@ -3108,24 +3239,101 @@ async function handleEmailReport(request: Request, env: Env): Promise<Response> 
     const dot = n.status === 'OFFLINE' ? '🔴' : (stale ? '🟠' : '🟢');
     const statusText = n.status === 'OFFLINE' ? 'OFFLINE' : (stale ? 'SIN SEÑAL RECIENTE' : 'ONLINE');
     const active = n.online_since ? (lastMs - toMs(n.online_since)) : 0;
+    const prox = n.proximity || n.proximity_detail?.zone_label || '';
+    const dist = n.proximity_detail?.distance_m != null ? ` · ~${Math.round(n.proximity_detail.distance_m)} m` : '';
     return `<div style="margin-bottom:10px;padding:10px;border:1px solid #d0d7de;border-radius:8px;background:#fff">
       <b>${escHtml(n.ssid || n.ap_id || '—')}</b>
-      <div style="font-size:12px;color:#57606a">${dot} ${statusText} · 📡 ${n.band || '—'} · ${n.w_mode || '—'} · obs: ${n.event_count ?? n.observation_count ?? 0}</div>
+      <div style="font-size:12px;color:#57606a">${dot} ${statusText} · 📡 ${n.band || '—'} · ${n.w_mode || '—'} · obs: ${n.event_count ?? n.observation_count ?? 0} · ${escHtml(prox)}${dist}</div>
       <div style="font-size:11px;color:#57606a">primera detección: ${fmtDateTime(firstMs)} · última: ${fmtDateTime(lastMs)} · detectada: ${msToDuration(duration)} · desde última: ${msToDuration(sinceLast)}${n.online_since ? ` · activa: ${msToDuration(active)}` : ''}</div>
     </div>`;
   };
 
   const networkRows = networks.map(networkStatus).join('') || '<p style="color:#57606a">No se detectaron redes.</p>';
-  const offlineRows = networks.filter((n: any) => n.status === 'OFFLINE' || (nowMs - toMs(n.last_seen) > STALE_MS && n.status !== 'OFFLINE')).map(networkStatus).join('') || '<p style="color:#57606a">Sin caídas de red registradas.</p>';
+  const offlineRows = (rawNetworks.length ? rawNetworks : (apRows.results as any[]))
+    .filter((n: any) => n.status === 'OFFLINE' || (nowMs - toMs(n.last_seen) > STALE_MS && n.status !== 'OFFLINE'))
+    .map(networkStatus)
+    .join('') || '<p style="color:#57606a">Sin caídas de red registradas.</p>';
+  const newNetworkRows = newNetworks.map(networkStatus).join('') || '';
 
   const bands = new Set<string>();
   const standards = new Set<string>();
-  for (const n of networks) {
+  for (const n of (rawNetworks.length ? rawNetworks : (apRows.results as any[]))) {
     if (n.band) bands.add(n.band);
     if (n.w_mode) standards.add(n.w_mode);
   }
 
-  const reportId = `detectic-${sensorId}-${scheduled.toISOString().replace(/[-:]/g, '').slice(0,15)}`;
+  const reportId = `detectic-${sensorId}-${scheduled.toISOString().replace(/[-:]/g, '').slice(0, 15)}`;
+
+  const sections: string[] = [];
+  const textLines: string[] = [];
+
+  const addSection = (title: string, html: string, text: string) => {
+    if (!html) return;
+    sections.push(`<div class="card"><h3>${title}</h3>${html}</div>`);
+    textLines.push(`\n${title}\n${text}`);
+  };
+
+  const headerHtml = `<div class="card">
+  <h2>🛰️ DETECTIC — Informe de Observación Autónoma</h2>
+  <div class="meta"><b>Sensor:</b> ${escHtml(sensorId)}</div>
+  <div class="meta"><b>Programado:</b> ${fmtDateTime(scheduled.getTime())}</div>
+  <div class="meta"><b>Captura:</b> ${fmtDateTime(captureStart.getTime())} → ${fmtDateTime(captureEnd.getTime())}</div>
+  <br>
+  <div>📊 <b>Resumen:</b> ${detectedCount} dispositivos detectados, <span class="badge">${connectedCount} conectados</span> · <span style="color:#cf222e">😴 ${offCount} fuera de rango</span></div>
+  <div class="meta">⚡ Estado: <b>PERSISTIDO</b> · API: ${apiMs} ms · Reporte: ${reportId}</div>
+</div>`;
+
+  const headerText = `DETECTIC — Informe de Observación Autónoma
+Sensor: ${sensorId}
+Programado: ${fmtDateTime(scheduled.getTime())}
+Captura: ${fmtDateTime(captureStart.getTime())} → ${fmtDateTime(captureEnd.getTime())}
+Resumen: ${detectedCount} detectados, ${connectedCount} conectados, ${offCount} fuera de rango
+ID: ${reportId}`;
+
+  if (opts.changes_only) {
+    addSection('🔔 Novedades del período', newRows + newNetworkRows,
+      (newRows ? 'Nuevos dispositivos:\n' + newDetections.map((d: any) => `  · ${nameOf(d)} (${d.band || '—'})`).join('\n') : '') +
+      (newNetworkRows ? '\nNuevas redes:\n' + newNetworks.map((n: any) => `  · ${n.ssid || n.ap_id || '—'} (${n.band || '—'})`).join('\n') : '')
+    );
+  }
+
+  if (opts.top_devices > 0 && topRows) {
+    addSection(`🏆 Top ${opts.top_devices} dispositivos`, topRows,
+      topDevices.map((d: any, i: number) => `${i + 1}. ${nameOf(d)} — ${d.event_count || 0} observaciones`).join('\n'));
+  }
+
+  addSection('📱 Dispositivos Conectados', connectedRows,
+    connected.map((d: any) => `  · ${nameOf(d)} — ${d.band || '—'} — ${fmtDateTime(d.last_seen)}`).join('\n') || 'Ningún dispositivo conectado.');
+
+  addSection('😴 Dispositivos Fuera de Rango', outRows,
+    outOfRange.map((d: any) => `  · ${nameOf(d)} — ${d.band || '—'} — última ${fmtDateTime(d.last_seen)}`).join('\n') || 'Ningún dispositivo fuera de rango.');
+
+  if (opts.new_detections && newRows && !opts.changes_only) {
+    addSection('🆕 Nuevas Detecciones', newRows,
+      newDetections.map((d: any) => `  · ${nameOf(d)} — ${d.band || '—'}`).join('\n'));
+  }
+
+  addSection('🌐 Redes Wi-Fi Detectadas', networkRows,
+    networks.map((n: any) => `  · ${n.ssid || n.ap_id || '—'} — ${n.band || '—'} — ${n.status || 'ONLINE'}`).join('\n') || 'No se detectaron redes.');
+
+  if (opts.new_detections && newNetworkRows && !opts.changes_only) {
+    addSection('🆕 Nuevas Redes', newNetworkRows,
+      newNetworks.map((n: any) => `  · ${n.ssid || n.ap_id || '—'} — ${n.band || '—'}`).join('\n'));
+  }
+
+  addSection('🔴 Caídas / Desconexiones de red', offlineRows,
+    'Ver sección en HTML.');
+
+  const footerHtml = `<div class="card">
+  <h3>🖥️ Redes Observadas</h3>
+  <div class="meta">📡 Bandas detectadas: ${Array.from(bands).join(', ') || '—'}</div>
+  <div class="meta">📟 Protocolos: ${Array.from(standards).join(', ') || '—'}</div>
+  <div class="meta">🔌 Sensor: ${escHtml(sensorId)}</div>
+  <div class="meta">🔒 Privacidad: identificadores pseudónimos HMAC-SHA256. Sin direcciones MAC reales. Router sin modificaciones.</div>
+  <div class="meta">ID: ${reportId}</div>
+</div>`;
+
+  const footerText = `\nBandas: ${Array.from(bands).join(', ') || '—'}\nProtocolos: ${Array.from(standards).join(', ') || '—'}\nSensor: ${sensorId}\nPrivacidad: pseudónimos HMAC-SHA256, sin MACs reales.\nID: ${reportId}`;
 
   const html = `<!DOCTYPE html>
 <html lang="es">
@@ -3140,60 +3348,31 @@ h3{font-size:15px;color:#24292f;margin:18px 0 8px}
 </style>
 </head>
 <body>
-<div class="card">
-  <h2>🛰️ DETECTIC — Informe de Observación Autónoma</h2>
-  <div class="meta"><b>Sensor:</b> ${escHtml(sensorId)}</div>
-  <div class="meta"><b>Programado:</b> ${fmtDateTime(scheduled.getTime())}</div>
-  <div class="meta"><b>Captura:</b> ${fmtDateTime(captureStart.getTime())} → ${fmtDateTime(captureEnd.getTime())}</div>
-  <br>
-  <div>📊 <b>Resumen:</b> ${detectedCount} dispositivos detectados, <span class="badge">${connectedCount} conectados</span> · <span style="color:#cf222e">😴 ${offCount} fuera de rango</span></div>
-  <div class="meta">⚡ Estado: <b>PERSISTIDO</b> · API: ${apiMs} ms · Reporte: ${reportId}</div>
-</div>
-
-<div class="card">
-  <h3>📱 Dispositivos Conectados</h3>
-  ${connectedRows}
-</div>
-
-<div class="card">
-  <h3>😴 Dispositivos Fuera de Rango</h3>
-  ${outRows}
-</div>
-
-<div class="card">
-  <h3>📶 Leyenda de Señal</h3>
-  <div style="font-size:13px">
-    <div>🟢🟢🟢🟢 Excelente (nivel 4 — dispositivo muy cerca del sensor)</div>
-    <div>🟢🟢🟢⚪ Buena (nivel 3 — dispositivo cerca)</div>
-    <div>🟢🟢⚪⚪ Regular (nivel 2 — señal aceptable)</div>
-    <div>🟢⚪⚪⚪ Débil (nivel 1 — puede perderse)</div>
-    <div>⚪⚪⚪⚪ Sin señal (nivel 0 — sin conexión estable)</div>
-  </div>
-  <p style="font-size:12px;color:#57606a">La distancia es una estimación basada en la señal RF. Varía según paredes, muebles, personas y obstáculos.</p>
-</div>
-
-<div class="card">
-  <h3>🌐 Redes Wi-Fi Detectadas</h3>
-  ${networkRows}
-</div>
-
-<div class="card">
-  <h3>🔴 Caídas / Desconexiones de red</h3>
-  ${offlineRows}
-</div>
-
-<div class="card">
-  <h3>🖥️ Redes Observadas</h3>
-  <div class="meta">📡 Bandas detectadas: ${Array.from(bands).join(', ') || '—'}</div>
-  <div class="meta">📟 Protocolos: ${Array.from(standards).join(', ') || '—'}</div>
-  <div class="meta">🔌 Sensor: ${escHtml(sensorId)}</div>
-  <div class="meta">🔒 Privacidad: identificadores pseudónimos HMAC-SHA256. Sin direcciones MAC reales. Router sin modificaciones.</div>
-  <div class="meta">ID: ${reportId}</div>
-</div>
+${headerHtml}
+${sections.join('\n')}
+${footerHtml}
 </body>
 </html>`;
 
-  return new Response(html, {
+  const text = `${headerText}${textLines.join('\n')}${footerText}`;
+
+  return { html, text, reportId, sensorId, generatedAt: now.getTime() };
+}
+
+async function handleEmailReport(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get('hours') || '24'), 720);
+  const origin = request.headers.get('Origin') || undefined;
+  const opts: ReportOptions = {
+    hours,
+    changes_only: url.searchParams.get('changes_only') === '1' || url.searchParams.get('changes_only') === 'true',
+    top_devices: Math.min(parseInt(url.searchParams.get('top_devices') || '5'), 20),
+    new_detections: url.searchParams.get('new_detections') !== '0' && url.searchParams.get('new_detections') !== 'false',
+    nearby_aps: url.searchParams.get('nearby_aps') !== '0' && url.searchParams.get('nearby_aps') !== 'false',
+  };
+
+  const report = await buildEmailReport(env, opts);
+  return new Response(report.html, {
     status: 200,
     headers: { 'Content-Type': 'text/html;charset=utf-8', ...corsHeaders(origin) },
   });
@@ -3248,6 +3427,10 @@ export default {
           response = await handleUpdateSensorLocation(request, env);
         } else if (path.match(/^\/api\/v1\/devices\/[^/]+\/identity$/)) {
           response = await handleUpdateDeviceIdentity(request, env);
+        } else if (path === "/api/v1/reports/config") {
+          response = await handleUpdateReportConfig(request, env);
+        } else if (path === "/api/v1/reports/queue" || /^\/api\/v1\/reports\/queue\/[^/]+$/.test(path)) {
+          response = await handleReportQueue(request, env);
         }
       }
 
@@ -3294,6 +3477,8 @@ export default {
         else if (path === "/api/v1/reports/devices") response = await handleReportsDevices(request, env);
         else if (path === "/api/v1/reports/networks") response = await handleReportsNetworks(request, env);
         else if (path === "/api/v1/reports/email") response = await handleEmailReport(request, env);
+        else if (path === "/api/v1/reports/config") response = await handleGetReportConfig(request, env);
+        else if (path === "/api/v1/reports/queue") response = await handleReportQueue(request, env);
         else if (path === "/api/v1/events") response = await handleEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/events$/.test(path)) response = await handleDeviceEvents(request, env);
         else if (/^\/api\/v1\/devices\/[^/]+\/sessions$/.test(path)) response = await handleDeviceSessions(request, env);
@@ -3321,6 +3506,61 @@ export default {
     }
 
     return response;
+  },
+
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    await ensureSchema(env.DB);
+
+    const cfg = await env.DB.prepare('SELECT * FROM report_config WHERE id = 1').first() as ReportConfig | null;
+    if (!cfg || !cfg.enabled) {
+      console.log('[scheduled] reports disabled or no config');
+      return;
+    }
+
+    const now = Date.now();
+    const lastRow = await env.DB.prepare(
+      'SELECT scheduled_at FROM email_queue WHERE status = ? ORDER BY scheduled_at DESC LIMIT 1'
+    ).bind('pending').first() as { scheduled_at?: number } | null;
+
+    if (lastRow?.scheduled_at) {
+      const elapsedHours = (now / 1000 - lastRow.scheduled_at) / 3600;
+      if (elapsedHours < cfg.frequency_hours) {
+        console.log('[scheduled] next report not due yet', elapsedHours, 'h');
+        return;
+      }
+    }
+
+    const opts: ReportOptions = {
+      hours: Math.min(cfg.frequency_hours, 720),
+      changes_only: !!cfg.changes_only,
+      top_devices: Math.min(cfg.top_devices, 20),
+      new_detections: !!cfg.new_detections,
+      nearby_aps: !!cfg.nearby_aps,
+    };
+
+    try {
+      const report = await buildEmailReport(env, opts);
+      const scheduledAt = Math.floor(now / 1000);
+      const reportId = report.reportId;
+      const configJson = JSON.stringify({
+        frequency_hours: cfg.frequency_hours,
+        changes_only: opts.changes_only,
+        top_devices: opts.top_devices,
+        new_detections: opts.new_detections,
+        nearby_aps: opts.nearby_aps,
+        email_to: cfg.email_to,
+        email_subject: cfg.email_subject,
+      });
+
+      await env.DB.prepare(
+        `INSERT INTO email_queue (report_id, scheduled_at, generated_at, status, html, text, config_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(reportId, scheduledAt, Math.floor(report.generatedAt / 1000), 'pending', report.html, report.text, configJson).run();
+
+      console.log('[scheduled] report enqueued', reportId);
+    } catch (e: any) {
+      console.error('[scheduled] report generation failed', e?.message, e?.stack);
+    }
   },
 };
 

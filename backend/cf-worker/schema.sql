@@ -193,3 +193,32 @@ CREATE TABLE IF NOT EXISTS device_label (
   updated_at INTEGER NOT NULL
 );
 
+-- Report configuration and generated queue.
+CREATE TABLE IF NOT EXISTS report_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  frequency_hours INTEGER NOT NULL DEFAULT 24,
+  changes_only INTEGER NOT NULL DEFAULT 0,
+  top_devices INTEGER NOT NULL DEFAULT 5,
+  new_detections INTEGER NOT NULL DEFAULT 1,
+  nearby_aps INTEGER NOT NULL DEFAULT 1,
+  email_to TEXT,
+  email_subject TEXT,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS email_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id TEXT NOT NULL,
+  scheduled_at INTEGER NOT NULL,
+  generated_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  html TEXT,
+  text TEXT,
+  config_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at INTEGER,
+  sent_at INTEGER,
+  error TEXT
+);
+

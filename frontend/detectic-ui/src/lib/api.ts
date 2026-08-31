@@ -337,6 +337,35 @@ export async function fetchTimeline(): Promise<Timeline> {
   return fetchJson<Timeline>(`${API}/timeline?hours=24`);
 }
 
+export type ReportConfig = {
+  id: number;
+  enabled: number;
+  frequency_hours: number;
+  changes_only: number;
+  top_devices: number;
+  new_detections: number;
+  nearby_aps: number;
+  email_to: string | null;
+  email_subject: string | null;
+  updated_at: number;
+};
+
+export async function fetchReportConfig(): Promise<ReportConfig | null> {
+  const data = await fetchJson<{ config?: ReportConfig }>(`${API}/reports/config`);
+  return data.config || null;
+}
+
+export async function updateReportConfig(config: Partial<ReportConfig>): Promise<ReportConfig> {
+  const res = await fetch(`${API}/reports/config`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json() as { config: ReportConfig };
+  return data.config;
+}
+
 export async function fetchAnalytics(hours = 24): Promise<Analytics> {
   return fetchJson<Analytics>(`${API}/analytics?hours=${hours}`);
 }

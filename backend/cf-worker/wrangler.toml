@@ -59,3 +59,8 @@ head_sampling_rate = 1
 
 # Free tier: 100K req/day, 10 ms CPU/req
 # Paid ($5/mo): 10M req/day, 30 ms CPU/req
+
+# Periodic report generation. The worker enqueues reports; an external SMTP
+# sender (e.g. autonomous/collector.py) consumes the email_queue table.
+[triggers]
+crons = ["0 * * * *"]
