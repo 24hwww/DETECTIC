@@ -10,6 +10,11 @@ export type Sensor = {
     accuracy_m?: number;
   } | null;
   public_ip?: string;
+  ap_count?: number;
+  distinct_devices?: number;
+  total_devices?: number;
+  last_seen?: number;
+  created_at?: number | null;
 };
 
 export type Device = {
@@ -185,6 +190,23 @@ export type Analytics = {
   totals: AnalyticsTotals;
 };
 
+export type SystemEvent = {
+  id?: number;
+  event_id: string;
+  sensor_id?: string;
+  event_type: string;
+  event_timestamp: number;
+  device_id?: string;
+  payload_json?: string;
+  sequence?: number;
+  received_at?: number;
+};
+
+export type Health = {
+  status: string;
+  timestamp?: number;
+};
+
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} en ${url}`);
@@ -238,4 +260,22 @@ export async function fetchTimeline(): Promise<Timeline> {
 
 export async function fetchAnalytics(hours = 24): Promise<Analytics> {
   return fetchJson<Analytics>(`${API}/analytics?hours=${hours}`);
+}
+
+export async function fetchEvents(
+  hours = 168,
+  limit = 300
+): Promise<SystemEvent[]> {
+  const data = await fetchJson<{ events?: SystemEvent[] }>(
+    `${API}/events?hours=${hours}&limit=${limit}`
+  );
+  return data.events || [];
+}
+
+export async function fetchHealth(): Promise<Health | null> {
+  try {
+    return await fetchJson<Health>(`${API}/healthz`);
+  } catch {
+    return null;
+  }
 }

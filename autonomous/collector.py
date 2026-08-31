@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS device_observations (
     FOREIGN KEY(capture_id) REFERENCES captures(capture_id)
 );
 CREATE INDEX IF NOT EXISTS idx_devobs_capture ON device_observations(capture_id);
-CREATE INDEX IF NOT EXISTS idx_devobs_fp ON device_observations(fingerprint_id);
+-- idx_devobs_fp is created in _migrate after fingerprint_id is guaranteed present.
 
 CREATE TABLE IF NOT EXISTS deliveries (
     delivery_id   TEXT NOT NULL,
@@ -326,14 +326,18 @@ class Store:
                     self.conn.execute(
                         f"ALTER TABLE device_observations ADD COLUMN {col} {decl}"
                     )
-                except sqlite3.OperationalError:
-                    pass
+                except sqlite3.OperationalError as e:
+                    # A pre-existing column is benign; anything else is a real
+                    # migration failure and must not be swallowed.
+                    if "duplicate column" not in str(e).lower():
+                        raise
         try:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_devobs_fp ON device_observations(fingerprint_id)"
             )
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
         self.conn.commit()
 
     # ---- runs ----

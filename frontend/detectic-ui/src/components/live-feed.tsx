@@ -3,27 +3,44 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useRealtime } from "@/lib/realtime";
 import { Wifi, Smartphone, Activity, AlertTriangle } from "lucide-react";
+import {
+  bandLabel,
+  deviceName,
+  networkName,
+  proximityText,
+  signalWord,
+} from "@/lib/labels";
+import type { Device, DetailedDevice, Network } from "@/lib/api";
 
 function timeAgo(ms?: number) {
   if (ms == null) return "—";
   const diff = Math.floor(Date.now() - ms) / 1000;
-  if (diff < 60) return `${Math.floor(diff)}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86400)}d`;
+  if (diff < 60) return `hace ${Math.floor(diff)}s`;
+  if (diff < 3600) return `hace ${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `hace ${Math.floor(diff / 3600)}h`;
+  return `hace ${Math.floor(diff / 86400)}d`;
 }
 
 function eventLabel(type: string) {
-  if (type.includes("device.connected")) return "Device connected";
-  if (type.includes("device.disconnected")) return "Device disconnected";
-  if (type.includes("device.presence_changed")) return "Device presence changed";
-  if (type.includes("device.proximity_changed")) return "Device proximity changed";
-  if (type.includes("device.signal_changed")) return "Device signal changed";
-  if (type.includes("device")) return "Device observed";
-  if (type.includes("network.detected")) return "AP observed";
-  if (type.includes("network.disappeared")) return "AP disappeared";
-  if (type.includes("network")) return "AP event";
-  return type || "Event";
+  if (type.includes("device.connected"))
+    return "Dispositivo conectado";
+  if (type.includes("device.disconnected"))
+    return "Dispositivo se desconectó";
+  if (type.includes("device.presence_changed"))
+    return "Cambió la presencia de un dispositivo";
+  if (type.includes("device.proximity_changed"))
+    return "Un dispositivo cambió de distancia";
+  if (type.includes("device.signal_changed"))
+    return "Cambió la señal de un dispositivo";
+  if (type.includes("device.network_changed") || type.includes("device.band_changed"))
+    return "Cambió la banda de un dispositivo";
+  if (type.includes("device")) return "Dispositivo observado";
+  if (type.includes("network.detected")) return "Red detectada";
+  if (type.includes("network.disappeared")) return "Red se perdió de señal";
+  if (type.includes("network.changed")) return "Una red cambió";
+  if (type.includes("rf.environment_snapshot")) return "Entorno de redes actualizado";
+  if (type.includes("network")) return "Evento de red";
+  return type || "Evento";
 }
 
 function eventIcon(type: string) {
@@ -33,8 +50,40 @@ function eventIcon(type: string) {
   return <Activity className="h-3.5 w-3.5" />;
 }
 
-export function LiveFeed() {
+function eventName(
+  id: string,
+  devicesBy: Map<string, Device>,
+  networksBy: Map<string, Network>,
+  identity: Map<string, DetailedDevice>
+): string | undefined {
+  const net = networksBy.get(id);
+  if (net) return networkName(net);
+  const dev = devicesBy.get(id);
+  if (dev) return deviceName(dev, identity.get(id));
+  return undefined;
+}
+
+export function LiveFeed({
+  devices,
+  networks,
+  identity,
+}: {
+  devices?: Device[];
+  networks?: Network[];
+  identity?: Map<string, DetailedDevice>;
+}) {
   const { events, status } = useRealtime();
+
+  const devicesBy = useMemo(
+    () =>
+      new Map((devices || []).map((d) => [d.device_id, d])),
+    [devices]
+  );
+  const networksBy = useMemo(
+    () =>
+      new Map((networks || []).map((n) => [n.ap_id, n])),
+    [networks]
+  );
 
   const rendered = useMemo(() => {
     return events.slice(0, 20).map((e) => {
@@ -53,33 +102,39 @@ export function LiveFeed() {
           inner.ap_id ||
           inner.bssid_pseudonym ||
           outer.pseudonym ||
-          "—"
-      ).slice(0, 24);
+          ""
+      );
+      const name = id
+        ? eventName(id, devicesBy, networksBy, identity ?? new Map())
+        : undefined;
       const rssi =
         inner.rssi != null
-          ? `${inner.rssi} dBm`
+          ? inner.rssi
           : inner.new_signal != null
-          ? `${inner.new_signal} dBm`
+          ? inner.new_signal
           : inner.last_signal != null
-          ? `${inner.last_signal} dBm`
+          ? inner.last_signal
           : null;
-      const band = inner.band ? `· ${inner.band}` : "";
+      const proximity =
+        outer.proximity || inner.proximity || inner.proximity_zone_label || null;
       return {
         label,
         id,
+        name,
         rssi,
-        band,
+        proximity,
+        band: bandLabel(inner.band),
         time: e.server_time || outer.timestamp * 1000 || e.observed_at,
         type,
       };
     });
-  }, [events]);
+  }, [events, devicesBy, networksBy, identity]);
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Live Events
+          Últimos eventos
         </CardTitle>
         <div className="text-[10px] text-muted-foreground">
           {status === "en línea" ? (
@@ -97,7 +152,7 @@ export function LiveFeed() {
         <div className="max-h-[320px] space-y-2 overflow-y-auto pr-2">
           {rendered.length === 0 && (
             <div className="py-6 text-center text-sm text-muted-foreground">
-              Esperando eventos WebSocket…
+              Esperando eventos en vivo…
             </div>
           )}
           {rendered.map((e, i) => (
@@ -108,10 +163,13 @@ export function LiveFeed() {
               <div className="mt-0.5 text-muted-foreground">{eventIcon(e.type)}</div>
               <div className="flex-1">
                 <div className="font-medium">{e.label}</div>
-                <div className="font-mono text-muted-foreground">{e.id}</div>
-                <div className="mt-0.5 text-muted-foreground">
-                  {e.rssi && <span className="mr-2">{e.rssi}</span>}
-                  {e.band && <span className="mr-2">{e.band}</span>}
+                {e.name && (
+                  <div className="truncate text-foreground">{e.name}</div>
+                )}
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
+                  {e.rssi != null && <span>{signalWord(Number(e.rssi))}</span>}
+                  {e.band && <span>{e.band}</span>}
+                  {e.proximity && <span>{proximityText(String(e.proximity))}</span>}
                   <span className="tabular-nums">{timeAgo(e.time)}</span>
                 </div>
               </div>

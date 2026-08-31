@@ -48,7 +48,7 @@ function wsUrl() {
 // `extractDevice` must read the outer event type (not the inner payload)
 // to determine whether a device connected or disconnected.
 
-function parseOuterPayload(event: any) {
+export function parseOuterPayload(event: any) {
   let outer = event?.payload || {};
   let inner = outer?.payload || {};
 

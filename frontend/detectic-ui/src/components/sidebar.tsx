@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bell,
   LayoutDashboard,
   // Map as MapIcon,
   Monitor,
@@ -92,6 +93,7 @@ export function Sidebar() {
         </Section>
 
         <Section title="Sistema">
+          <NavItem to="/notifications" icon={Bell} label="Notificaciones" />
           <NavItem to="/reports" icon={Monitor} label="Reportes" />
           <NavItem to="/settings" icon={Settings} label="Configuración" />
         </Section>

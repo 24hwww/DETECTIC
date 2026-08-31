@@ -1,7 +1,8 @@
 import { Bell, Menu, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RealtimeIndicator } from "@/components/realtime-indicator";
-import { cn } from "@/lib/utils";
+import { useNotifications } from "@/lib/notifications";
+import { useNavigate } from "@tanstack/react-router";
 
 const breadcrumbMap: Record<string, string> = {
   "/": "Panel",
@@ -17,11 +18,14 @@ const breadcrumbMap: Record<string, string> = {
   "/connectivity": "Conectividad",
   "/reports": "Reportes",
   "/settings": "Configuración",
+  "/notifications": "Notificaciones",
 };
 
 export function Topbar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
   const path = typeof window !== "undefined" ? window.location.pathname : "/";
   const page = breadcrumbMap[path] || "Panel";
+  const navigate = useNavigate();
+  const { unread } = useNotifications();
 
   return (
     <header className="flex h-14 items-center gap-4 border-b border-border bg-card px-4">
@@ -53,14 +57,18 @@ export function Topbar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
 
       <div className="ml-auto flex items-center gap-3 sm:ml-0">
         <RealtimeIndicator />
-        <Button variant="ghost" size="icon" className="relative">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="relative"
+          onClick={() => navigate({ to: "/notifications" })}
+        >
           <Bell className="h-4 w-4" />
-          <span
-            className={cn(
-              "absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-primary",
-              "hidden"
-            )}
-          />
+          {unread > 0 && (
+            <span className="absolute -right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-offline)] px-1 text-[10px] font-semibold text-white">
+              {unread > 99 ? "99+" : unread}
+            </span>
+          )}
         </Button>
       </div>
     </header>

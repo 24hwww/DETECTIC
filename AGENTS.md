@@ -3890,3 +3890,30 @@ well-known development credentials.
 - **HTTP event path** (`HttpEventTransport`) now resolves duplicates correctly,
   but the primary production transport is WSS; the HTTP path is a fallback.
 
+## 57.10 Host deployment credentials
+
+All host-side deployment credentials required to run and deploy Detectic
+are stored in the repository root `.env` file. This includes, but is not
+limited to:
+
+- `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_API_TOKEN_WORKER` for `wrangler` deploys.
+- `DETECTIC_PASSWORD` for the EX520 GTPR/GDPR API.
+- `DETECTIC_D1_SYNC_URL` and the sensor secret for Worker authentication.
+- SMTP credentials used by the autonomous collector and event reporter.
+
+The `.env` file is never committed to git. Agents MUST NOT print, copy,
+or hardcode any of those values.
+
+To deploy the Worker after `AGENTS.md` safety checks:
+
+```bash
+set -a
+source .env
+set +a
+cd backend/cf-worker
+npx wrangler deploy
+```
+
+For on-router sensor environment variables, see
+`deploy/ex520_package/detectic.env`.
+

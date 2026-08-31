@@ -40,6 +40,7 @@ import {
 } from "@/lib/api";
 import { HeroKpis } from "@/components/hero-kpis";
 import { AnalyticsDashboard } from "@/components/analytics-dashboard";
+import { LiveToasts } from "@/components/live-toasts";
 
 function Loading() {
   return (
@@ -57,31 +58,43 @@ function ErrorMessage({ error }: { error?: Error | null }) {
   );
 }
 
+const DASH_POLL_MS = 30_000;
+
 function useDashboardData() {
-  const stats = useQuery<Stats>({ queryKey: ["stats"], queryFn: fetchStats });
+  const stats = useQuery<Stats>({
+    queryKey: ["stats"],
+    queryFn: fetchStats,
+    refetchInterval: DASH_POLL_MS,
+  });
   const devices = useQuery<Device[]>({
     queryKey: ["devices"],
     queryFn: fetchDevices,
+    refetchInterval: DASH_POLL_MS,
   });
   const networks = useQuery<Network[]>({
     queryKey: ["networks"],
     queryFn: fetchNetworks,
+    refetchInterval: DASH_POLL_MS,
   });
   const allDevices = useQuery<DetailedDevice[]>({
     queryKey: ["all-devices"],
     queryFn: fetchAllDevices,
+    refetchInterval: DASH_POLL_MS,
   });
   const timeline = useQuery<Timeline>({
     queryKey: ["timeline"],
     queryFn: fetchTimeline,
+    refetchInterval: DASH_POLL_MS,
   });
   const sensors = useQuery<Sensor[]>({
     queryKey: ["sensors"],
     queryFn: fetchSensors,
+    refetchInterval: DASH_POLL_MS,
   });
   const analytics = useQuery<Analytics>({
     queryKey: ["analytics"],
     queryFn: () => fetchAnalytics(24),
+    refetchInterval: DASH_POLL_MS,
   });
   return { stats, devices, networks, allDevices, timeline, sensors, analytics };
 }
@@ -96,6 +109,11 @@ export function DashboardView() {
   const fetchedNets = networks.data || [];
   const detailed = allDevices.data || [];
   const fetchedPoints = timeline.data?.points || [];
+
+  const identity = useMemo(
+    () => new Map(detailed.map((d) => [d.pseudonym, d])),
+    [detailed]
+  );
 
   const liveDevs = useMemo(
     () => mergeLive(fetchedDevs, live.devices),
@@ -165,11 +183,17 @@ export function DashboardView() {
         onRefresh={refresh}
       />
 
+      <LiveToasts
+        devices={liveDevs}
+        networks={liveNets}
+        identity={identity}
+      />
+
       <HeroKpis connected={connected} nearby={nearby} />
 
       <AnalyticsDashboard analytics={analytics.data || undefined} />
 
-      <LiveNetwork devices={liveDevs} networks={liveNets} />
+      <LiveNetwork devices={liveDevs} networks={liveNets} identity={identity} />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <ProximityRadarChart devices={liveDevs} />
@@ -184,11 +208,11 @@ export function DashboardView() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <DeviceTable devices={liveDevs} />
-        <ConnectedDevices devices={liveDevs} />
+        <DeviceTable devices={liveDevs} identity={identity} />
+        <ConnectedDevices devices={liveDevs} identity={identity} />
       </div>
 
-      <LiveFeed />
+      <LiveFeed devices={liveDevs} networks={liveNets} identity={identity} />
     </div>
   );
 }

@@ -630,6 +630,19 @@ function jsonResponse(status: number, body: unknown, origin?: string): Response 
   });
 }
 
+function isHtmlResponse(res: Response): boolean {
+  return String(res.headers.get("Content-Type") || "").includes("text/html");
+}
+
+/** Re-serves an HTML document with no-store so clients always pick up the
+ *  latest hashed asset references (fixes stale bundle after redeploys). */
+function noCacheHtml(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.set("Pragma", "no-cache");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -2652,6 +2665,18 @@ async function handleCollectorSync(
     results.runs = payload.runs.length;
   }
 
+  // --- sensor heartbeat ---
+  // The collector sync path does not carry canonical events, so it does not
+  // trigger the device_state/ap_state side effects that normally update
+  // sensors.last_seen. Update it explicitly so the dashboard knows the sensor
+  // is alive even when no events are flowing.
+  await env.DB.prepare(
+    `INSERT INTO sensors (id, created_at, last_seen) VALUES (?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       last_seen = excluded.last_seen,
+       created_at = COALESCE(sensors.created_at, excluded.created_at)`
+  ).bind(sensor, now, now).run();
+
   return jsonResponse(200, { synced: true, ...results }, origin);
 }
 
@@ -3110,7 +3135,7 @@ export default {
         // requested route and React Router can render the correct view.
         else if (path === "/" || path === "/dashboard" || path === "/map" || path === "/index.html") {
           const targetUrl = path === "/" ? new URL(request.url) : new URL("/", request.url);
-          response = await env.ASSETS.fetch(new Request(targetUrl, request));
+          response = noCacheHtml(await env.ASSETS.fetch(new Request(targetUrl, request)));
         } else if (path === "/api/v1/healthz") response = await handleHealthz(request, env);
         else if (path === "/api/v1/readyz") response = await handleReadyz(request, env);
         else if (path === "/api/v1/devices") response = await handleDevices(request, env);
@@ -3135,7 +3160,10 @@ export default {
 
       if (!response) {
         if (request.method === "GET" && env.ASSETS) {
-          response = await env.ASSETS.fetch(request);
+          const assetRes = await env.ASSETS.fetch(request);
+          response = isHtmlResponse(assetRes)
+            ? noCacheHtml(assetRes)
+            : assetRes;
         } else {
           response = jsonResponse(404, { error: "not found" });
         }

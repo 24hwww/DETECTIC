@@ -801,8 +801,8 @@ def send_event_report(cfg: Config, events: List[Dict[str, Any]], jlog: JobLog) -
         try:
             send_email(cfg, subject, text, html)
             jlog.emit("EVENT_EMAIL_SENT", events=len(events), subject=subject)
-        except Exception as e:
-            jlog.emit("EVENT_EMAIL_FAILED", error=f"{type(e).__name__}: {e}", events=len(events))
+        except Exception as exc:
+            jlog.emit("EVENT_EMAIL_FAILED", error=f"{type(exc).__name__}: {exc}", events=len(events))
         return
 
     # Default / individual: one email per event
@@ -810,10 +810,10 @@ def send_event_report(cfg: Config, events: List[Dict[str, Any]], jlog: JobLog) -
         subject, text, html = build_single_event_email(cfg, e)
         try:
             send_email(cfg, subject, text, html)
-            jlog.emit("EVENT_EMAIL_SENT", event=e["event_type"], device=e["device_id"], subject=subject)
-        except Exception as e:
-            jlog.emit("EVENT_EMAIL_FAILED", error=f"{type(e).__name__}: {e}",
-                      event=e["event_type"], device=e["device_id"])
+            jlog.emit("EVENT_EMAIL_SENT", event_type=e["event_type"], device=e["device_id"], subject=subject)
+        except Exception as exc:
+            jlog.emit("EVENT_EMAIL_FAILED", error=f"{type(exc).__name__}: {exc}",
+                      event_type=e["event_type"], device=e["device_id"])
 
 
 def run(cfg: Config, jlog: JobLog, stop_event) -> None:

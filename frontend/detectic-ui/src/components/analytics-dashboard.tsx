@@ -369,7 +369,9 @@ export function AnalyticsDashboard({ analytics }: { analytics?: Analytics }) {
               <tbody>
                 {data.topDwellers.map((d: Dweller) => (
                   <tr key={d.device_id} className="border-b border-border last:border-0">
-                    <td className="p-3 font-mono text-xs">{d.device_id.slice(0, 18)}</td>
+                    <td className="p-3 text-xs">
+                      {d.manufacturer || (d.device_class !== "Unknown" ? d.device_class : null) || "Dispositivo"}
+                    </td>
                     <td className="p-3">
                       <Badge variant="secondary" className="text-[10px]">
                         {d.device_class || "Desconocido"}

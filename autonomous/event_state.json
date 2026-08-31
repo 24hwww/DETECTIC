@@ -1,98 +1,372 @@
 {
   "devices": {
-    "0d387ad027900b6f": {
+    "8e721626dc72709f": {
+      "fingerprint_method": "hostname",
+      "fingerprint_confidence": 0.9,
+      "manufacturer": null,
+      "device_class": "SMARTPHONE",
+      "hostname": "moto-g42",
+      "bands": {
+        "2.4GHz": {
+          "mac_pseudonym": "19d67e727f31af8a",
+          "signal_strength": 112,
+          "signal_level": 4,
+          "operating_standard": "n",
+          "radio_mac": "3C:6A:D2:5F:AB:C1",
+          "last_seen": 1788180271
+        },
+        "5GHz": {
+          "mac_pseudonym": "ce9d40b8551c749f",
+          "signal_strength": 56,
+          "signal_level": 2,
+          "operating_standard": "ac",
+          "radio_mac": "3C:6A:D2:5F:AB:C3",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "2.4GHz",
+      "signal_strength": 112,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "19d67e727f31af8a",
+        "ce9d40b8551c749f"
+      ],
       "state": "connected",
+      "last_event": {
+        "connected": 1788095237
+      }
+    },
+    "f598208c9d902c2f": {
+      "fingerprint_method": "hostname",
+      "fingerprint_confidence": 0.9,
+      "manufacturer": null,
+      "device_class": "SMARTPHONE",
+      "hostname": "realme-9i",
+      "bands": {
+        "2.4GHz": {
+          "mac_pseudonym": "693ead969c552287",
+          "signal_strength": 102,
+          "signal_level": 4,
+          "operating_standard": "n",
+          "radio_mac": "3C:6A:D2:5F:AB:C1",
+          "last_seen": 1788180271
+        },
+        "5GHz": {
+          "mac_pseudonym": "3be25ee28debfaf0",
+          "signal_strength": 36,
+          "signal_level": 1,
+          "operating_standard": "ac",
+          "radio_mac": "3C:6A:D2:5F:AB:C3",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "2.4GHz",
+      "signal_strength": 102,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "3be25ee28debfaf0",
+        "693ead969c552287"
+      ],
+      "state": "connected",
+      "last_event": {
+        "connected": 1788095237
+      }
+    },
+    "38a87dfc7ae67a00": {
+      "fingerprint_method": "hostname",
+      "fingerprint_confidence": 0.9,
+      "manufacturer": null,
+      "device_class": "UNKNOWN",
+      "hostname": "soporte24hwww",
+      "bands": {
+        "2.4GHz": {
+          "mac_pseudonym": "1a68d750a4e77de6",
+          "signal_strength": 92,
+          "signal_level": 4,
+          "operating_standard": "n",
+          "radio_mac": "3C:6A:D2:5F:AB:C1",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "2.4GHz",
+      "signal_strength": 92,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "1a68d750a4e77de6"
+      ],
+      "state": "connected",
+      "last_event": {
+        "connected": 1788159801
+      }
+    },
+    "81aa149e780bcba5": {
+      "fingerprint_method": "hostname",
+      "fingerprint_confidence": 0.9,
+      "manufacturer": null,
+      "device_class": "SMART_SPEAKER",
+      "hostname": "amazon-07a4dcc48",
+      "bands": {
+        "5GHz": {
+          "mac_pseudonym": "64be6fbd1420da0f",
+          "signal_strength": 106,
+          "signal_level": 4,
+          "operating_standard": "ac",
+          "radio_mac": "3C:6A:D2:5F:AB:C3",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "5GHz",
+      "signal_strength": 106,
+      "signal_level": 4,
+      "operating_standard": "ac",
+      "radio_mac": "3C:6A:D2:5F:AB:C3",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "64be6fbd1420da0f"
+      ],
+      "state": "connected",
+      "last_event": {
+        "connected": 1788095237
+      }
+    },
+    "e63cb5f62eea5d5e": {
+      "fingerprint_method": "hostname",
+      "fingerprint_confidence": 0.9,
+      "manufacturer": null,
+      "device_class": "SMARTPHONE",
+      "hostname": "moto-g54-5G",
+      "bands": {
+        "5GHz": {
+          "mac_pseudonym": "426c054da6727c61",
+          "signal_strength": 28,
+          "signal_level": 5,
+          "operating_standard": "ac",
+          "radio_mac": "3C:6A:D2:5F:AB:C3",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "5GHz",
+      "signal_strength": 28,
+      "signal_level": 5,
+      "operating_standard": "ac",
+      "radio_mac": "3C:6A:D2:5F:AB:C3",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "426c054da6727c61"
+      ],
+      "state": "connected",
+      "last_event": {
+        "connected": 1788095237
+      }
+    },
+    "b258d206786a54aa": {
+      "fingerprint_method": "mac",
+      "fingerprint_confidence": 0.7,
+      "manufacturer": null,
+      "device_class": "UNKNOWN",
+      "hostname": "Unknown",
+      "bands": {
+        "5GHz": {
+          "mac_pseudonym": "9f36fd22dc4219e6",
+          "signal_strength": 118,
+          "signal_level": 4,
+          "operating_standard": "n",
+          "radio_mac": "3C:6A:D2:5F:AB:C3",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "5GHz",
+      "signal_strength": 118,
+      "signal_level": 4,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C3",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "9f36fd22dc4219e6"
+      ],
+      "state": "connected",
+      "last_event": {
+        "connected": 1788095237
+      }
+    },
+    "ff63051672cfb186": {
+      "fingerprint_method": "hostname",
+      "fingerprint_confidence": 0.9,
+      "manufacturer": null,
+      "device_class": "SMARTPHONE",
+      "hostname": "Galaxy-A71-DP",
+      "bands": {
+        "5GHz": {
+          "mac_pseudonym": "429793f181894a56",
+          "signal_strength": 52,
+          "signal_level": 2,
+          "operating_standard": "ac",
+          "radio_mac": "3C:6A:D2:5F:AB:C3",
+          "last_seen": 1788180271
+        }
+      },
+      "band": "5GHz",
+      "signal_strength": 52,
+      "signal_level": 2,
+      "operating_standard": "ac",
+      "radio_mac": "3C:6A:D2:5F:AB:C3",
+      "last_seen": 1788180271,
+      "misses": 0,
+      "aliases": [
+        "429793f181894a56"
+      ],
+      "state": "connected",
+      "last_event": {
+        "connected": 1788159801
+      }
+    },
+    "2ad8be0a2919dbcf": {
+      "fingerprint_method": "mac",
+      "fingerprint_confidence": 0.7,
+      "manufacturer": null,
+      "device_class": "UNKNOWN",
+      "hostname": null,
+      "bands": {
+        "2.4GHz": {
+          "mac_pseudonym": "1a68d750a4e77de6",
+          "signal_strength": 0,
+          "signal_level": 0,
+          "operating_standard": "n",
+          "radio_mac": "3C:6A:D2:5F:AB:C1",
+          "last_seen": 1788095237
+        }
+      },
+      "band": "2.4GHz",
+      "signal_strength": 0,
+      "signal_level": 0,
+      "operating_standard": "n",
+      "radio_mac": "3C:6A:D2:5F:AB:C1",
+      "last_seen": 1788180271,
+      "misses": 3,
+      "aliases": [
+        "1a68d750a4e77de6"
+      ],
+      "state": "absent",
+      "last_event": {
+        "connected": 1788095237,
+        "disconnected": 1788180244
+      }
+    },
+    "0d387ad027900b6f": {
+      "state": "absent",
       "hostname": "moto-g42",
       "band": "2.4GHz",
       "signal_strength": 106,
       "signal_level": 4,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787986581,
-      "misses": 0
+      "last_seen": 1788180271,
+      "misses": 4,
+      "last_event": {
+        "disconnected": 1788159801
+      }
     },
     "e48877d361952816": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "realme-9i",
       "band": "2.4GHz",
       "signal_strength": 136,
       "signal_level": 5,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787986581,
-      "misses": 0
+      "last_seen": 1788180271,
+      "misses": 4,
+      "last_event": {
+        "disconnected": 1788159801
+      }
     },
     "2a0e66a584cd5376": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "soporte24hwww",
       "band": "2.4GHz",
       "signal_strength": 0,
       "signal_level": 0,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787986581,
-      "misses": 0,
+      "last_seen": 1788180271,
+      "misses": 4,
       "last_event": {
-        "connected": 1787940939
+        "connected": 1787940939,
+        "disconnected": 1788159801
       }
     },
     "27b17f4433850243": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "moto-g54-5G",
       "band": "5GHz",
       "signal_strength": 82,
       "signal_level": 3,
       "operating_standard": "ac",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787986581,
-      "misses": 0,
+      "last_seen": 1788180271,
+      "misses": 4,
       "last_event": {
         "connected": 1787940939,
-        "disconnected": 1787899959
+        "disconnected": 1788159801
       }
     },
     "0aedc19fc2428f3e": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "moto-g42",
       "band": "5GHz",
       "signal_strength": 64,
       "signal_level": 2,
       "operating_standard": "ac",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787986581,
-      "misses": 0,
+      "last_seen": 1788180271,
+      "misses": 4,
       "last_event": {
-        "disconnected": 1787935905,
+        "disconnected": 1788159801,
         "connected": 1787940939
       }
     },
     "2d90efa6e960e00c": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "amazon-07a4dcc48",
       "band": "5GHz",
       "signal_strength": 106,
       "signal_level": 4,
       "operating_standard": "ac",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787986581,
-      "misses": 0,
+      "last_seen": 1788180271,
+      "misses": 4,
       "last_event": {
-        "disconnected": 1787935905,
+        "disconnected": 1788159801,
         "connected": 1787986581
       }
     },
     "39c704abe35fac86": {
-      "state": "connected",
+      "state": "absent",
       "hostname": "Unknown",
       "band": "5GHz",
       "signal_strength": 120,
       "signal_level": 5,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C3",
-      "last_seen": 1787986581,
-      "misses": 0,
+      "last_seen": 1788180271,
+      "misses": 4,
       "last_event": {
-        "disconnected": 1787935905,
+        "disconnected": 1788159801,
         "connected": 1787986581
       }
     },
@@ -104,8 +378,8 @@
       "signal_level": 4,
       "operating_standard": "n",
       "radio_mac": "3C:6A:D2:5F:AB:C1",
-      "last_seen": 1787986581,
-      "misses": 4,
+      "last_seen": 1788180271,
+      "misses": 8,
       "last_event": {
         "disconnected": 1787935905,
         "connected": 1787779866
@@ -113,5 +387,5 @@
     }
   },
   "baseline": false,
-  "last_poll": 1787986581
+  "last_poll": 1788180271
 }

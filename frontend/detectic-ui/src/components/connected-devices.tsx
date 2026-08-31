@@ -1,29 +1,27 @@
 import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import type { Device } from "@/lib/api";
-
-function timeAgo(ms?: number) {
-  if (ms == null) return "—";
-  const diff = Math.floor(Date.now() - ms) / 1000;
-  if (diff < 60) return `${Math.floor(diff)}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86400)}d`;
-}
-
-function signalColor(r?: number) {
-  if (r == null) return "bg-muted text-muted-foreground";
-  if (r >= -50) return "bg-[var(--color-online)]/10 text-[var(--color-online)]";
-  if (r >= -70) return "bg-[var(--color-warning)]/10 text-[var(--color-warning)]";
-  return "bg-[var(--color-offline)]/10 text-[var(--color-offline)]";
-}
+import {
+  deviceName,
+  deviceSubtitle,
+  proximityText,
+  signalBars,
+  signalWord,
+  timeAgo,
+} from "@/lib/labels";
+import type { Device, DetailedDevice } from "@/lib/api";
 
 function isOnline(d: Device) {
   return d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED");
 }
 
-export function ConnectedDevices({ devices }: { devices: Device[] }) {
+export function ConnectedDevices({
+  devices,
+  identity,
+}: {
+  devices: Device[];
+  identity?: Map<string, DetailedDevice>;
+}) {
   const connected = useMemo(
     () =>
       devices
@@ -47,27 +45,34 @@ export function ConnectedDevices({ devices }: { devices: Device[] }) {
               No hay dispositivos conectados
             </div>
           )}
-          {connected.map((d) => (
-            <div
-              key={d.device_id}
-              className="rounded-lg border border-border bg-card p-3"
-            >
-              <div className="mb-1 truncate font-mono text-sm font-semibold text-foreground">
-                {d.hostname || d.device_id.slice(0, 16)}
+          {connected.map((d) => {
+            const id = identity?.get(d.device_id);
+            return (
+              <div
+                key={d.device_id}
+                className="rounded-lg border border-border bg-card p-3"
+              >
+                <div className="mb-1 truncate font-semibold text-foreground">
+                  {deviceName(d, id)}
+                </div>
+                <div className="mb-2 truncate text-[11px] text-muted-foreground">
+                  {deviceSubtitle(d, id) || "Dispositivo"}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <Badge variant="outline" className="text-[10px]">
+                    {proximityText(d.proximity)}
+                  </Badge>
+                  <span className="text-[10px] text-muted-foreground">
+                    {signalWord(d.last_signal)}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>{signalBars(d.last_signal)}</span>
+                  <span>{timeAgo(d.last_seen)}</span>
+                </div>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <Badge
-                  variant="outline"
-                  className={`text-[10px] ${signalColor(d.last_signal)}`}
-                >
-                  {d.last_signal != null ? `${d.last_signal} dBm` : "—"}
-                </Badge>
-                <span className="text-[10px] text-muted-foreground">
-                  {timeAgo(d.last_seen)}
-                </span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </CardContent>
     </Card>

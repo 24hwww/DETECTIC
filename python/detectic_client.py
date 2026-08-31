@@ -201,6 +201,7 @@ class GtprClient:
         resp = self.session.post(
             urljoin(self.base + "/", "cgi/getGDPRParm"),
             headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0",
                 "Referer": self.base + "/",
                 "Origin": self.base,
                 "Accept": "*/*",

@@ -1,0 +1,129 @@
+{
+  "aliases": [
+    {
+      "fingerprint_id": "8e721626dc72709f",
+      "pseudonyms": [
+        "19d67e727f31af8a",
+        "ce9d40b8551c749f"
+      ],
+      "first_seen": 1788095237,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "moto-g42"
+      ],
+      "bands": [
+        "2.4GHz",
+        "5GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "f598208c9d902c2f",
+      "pseudonyms": [
+        "3be25ee28debfaf0",
+        "693ead969c552287"
+      ],
+      "first_seen": 1788095237,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "realme-9i"
+      ],
+      "bands": [
+        "2.4GHz",
+        "5GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "2ad8be0a2919dbcf",
+      "pseudonyms": [
+        "1a68d750a4e77de6"
+      ],
+      "first_seen": 1788095237,
+      "last_seen": 1788095237,
+      "hostnames": [],
+      "bands": [
+        "2.4GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "81aa149e780bcba5",
+      "pseudonyms": [
+        "64be6fbd1420da0f"
+      ],
+      "first_seen": 1788095237,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "amazon-07a4dcc48"
+      ],
+      "bands": [
+        "5GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "e63cb5f62eea5d5e",
+      "pseudonyms": [
+        "426c054da6727c61"
+      ],
+      "first_seen": 1788095237,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "moto-g54-5G"
+      ],
+      "bands": [
+        "5GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "b258d206786a54aa",
+      "pseudonyms": [
+        "9f36fd22dc4219e6"
+      ],
+      "first_seen": 1788095237,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "Unknown"
+      ],
+      "bands": [
+        "5GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "38a87dfc7ae67a00",
+      "pseudonyms": [
+        "1a68d750a4e77de6"
+      ],
+      "first_seen": 1788159801,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "soporte24hwww"
+      ],
+      "bands": [
+        "2.4GHz"
+      ]
+    },
+    {
+      "fingerprint_id": "ff63051672cfb186",
+      "pseudonyms": [
+        "429793f181894a56"
+      ],
+      "first_seen": 1788159801,
+      "last_seen": 1788180624,
+      "hostnames": [
+        "Galaxy-A71-DP"
+      ],
+      "bands": [
+        "5GHz"
+      ]
+    }
+  ],
+  "pseudo_to_fp": {
+    "19d67e727f31af8a": "8e721626dc72709f",
+    "ce9d40b8551c749f": "8e721626dc72709f",
+    "693ead969c552287": "f598208c9d902c2f",
+    "3be25ee28debfaf0": "f598208c9d902c2f",
+    "1a68d750a4e77de6": "38a87dfc7ae67a00",
+    "64be6fbd1420da0f": "81aa149e780bcba5",
+    "426c054da6727c61": "e63cb5f62eea5d5e",
+    "9f36fd22dc4219e6": "b258d206786a54aa",
+    "429793f181894a56": "ff63051672cfb186"
+  }
+}

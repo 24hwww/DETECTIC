@@ -2,20 +2,23 @@ import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Wifi, Smartphone } from "lucide-react";
-import { ProximityBadge } from "@/components/proximity-badge";
-import type { Device, Network } from "@/lib/api";
+import { proximityText, deviceName, networkName, signalWord } from "@/lib/labels";
+import type { Device, DetailedDevice, Network } from "@/lib/api";
+
+function isOnline(d: Device) {
+  return d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED");
+}
 
 export function LiveNetwork({
   devices,
   networks,
+  identity,
 }: {
   devices: Device[];
   networks: Network[];
+  identity?: Map<string, DetailedDevice>;
 }) {
-  const online = useMemo(
-    () => devices.filter((d) => d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED")).length,
-    [devices]
-  );
+  const online = useMemo(() => devices.filter(isOnline).length, [devices]);
   const observed = devices.length;
   const aps = networks.length;
 
@@ -54,22 +57,22 @@ export function LiveNetwork({
                   key={d.device_id}
                   className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1.5 text-xs"
                 >
-                  <span className="truncate font-mono">
-                    {d.hostname || d.device_id.slice(0, 16)}
+                  <span className="truncate">
+                    {deviceName(d, identity?.get(d.device_id))}
                   </span>
                   <div className="flex items-center gap-2">
                     <Badge
                       variant="outline"
                       className={`text-[10px] ${
-                        d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED")
+                        isOnline(d)
                           ? "bg-[var(--color-online)]/10 text-[var(--color-online)]"
                           : "bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
                       }`}
                     >
-                      {d.state === "RF_PRESENT" ? "RF presente" : d.connected || (d.state && d.state !== "ABSENT" && d.state !== "DISCONNECTED") ? "conectado" : d.state ? d.state.toLowerCase() : "desconectado"}
+                      {isOnline(d) ? "conectado" : "no está"}
                     </Badge>
-                    <span className="w-12 text-right tabular-nums text-muted-foreground">
-                      {d.last_signal != null ? `${d.last_signal}` : "—"}
+                    <span className="w-20 text-right text-muted-foreground">
+                      {signalWord(d.last_signal)}
                     </span>
                   </div>
                 </div>
@@ -91,12 +94,12 @@ export function LiveNetwork({
                   key={n.ap_id}
                   className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1.5 text-xs"
                 >
-                  <span className="truncate font-mono">
-                    {n.ssid || n.ap_id.slice(0, 16)}
-                  </span>
+                  <span className="truncate">{networkName(n)}</span>
                   <div className="flex items-center gap-2">
                     {n.proximity ? (
-                      <ProximityBadge proximity={n.proximity} detail={n.proximity_detail} />
+                      <span className="text-[10px] text-[var(--color-warning)]">
+                        {proximityText(n.proximity, n.proximity_detail)}
+                      </span>
                     ) : null}
                     <Badge
                       variant="outline"
@@ -106,11 +109,8 @@ export function LiveNetwork({
                           : "bg-[var(--color-offline)]/10 text-[var(--color-offline)]"
                       }`}
                     >
-                      {n.status === "ONLINE" ? "online" : "offline"}
+                      {n.status === "ONLINE" ? "online" : "sin señal"}
                     </Badge>
-                    <span className="w-12 text-right tabular-nums text-muted-foreground">
-                      {n.last_signal != null ? `${n.last_signal}` : "—"}
-                    </span>
                   </div>
                 </div>
               ))}

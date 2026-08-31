@@ -12,30 +12,35 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ProximityBadge } from "@/components/proximity-badge";
+import {
+  bandLabel,
+  durationBetween,
+  formatDateTime,
+  networkName,
+  networkSubtitle,
+  proximityText,
+  signalWord,
+} from "@/lib/labels";
 import type { Network } from "@/lib/api";
-
-function timeAgo(ms?: number) {
-  if (ms == null) return "—";
-  const diff = Math.floor(Date.now() - ms) / 1000;
-  if (diff < 60) return `${Math.floor(diff)}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86400)}d`;
-}
 
 const columnHelper = createColumnHelper<Network>();
 
 const columns = [
-  columnHelper.accessor("ap_id", {
-    header: "AP",
-    cell: (info) => (
-      <code className="text-xs font-mono">{info.getValue().slice(0, 16)}</code>
-    ),
-  }),
   columnHelper.accessor("ssid", {
-    header: "SSID",
-    cell: (info) => info.getValue() || "—",
+    header: "Red (AP)",
+    cell: (info) => {
+      const n = info.row.original;
+      return (
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-foreground">
+            {networkName(n)}
+          </div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            {networkSubtitle(n)}
+          </div>
+        </div>
+      );
+    },
   }),
   columnHelper.accessor("status", {
     header: "Estado",
@@ -52,49 +57,40 @@ const columns = [
           variant="secondary"
           className="bg-[var(--color-offline)]/10 text-[var(--color-offline)] hover:bg-[var(--color-offline)]/10"
         >
-          offline
+          sin señal
         </Badge>
       ),
   }),
   columnHelper.accessor("band", {
     header: "Banda",
-    cell: (info) => info.getValue() || "—",
+    cell: (info) => bandLabel(info.getValue()) || "—",
   }),
-  columnHelper.accessor("channel", {
-    header: "Canal",
-    cell: (info) => (info.getValue() != null ? String(info.getValue()) : "—"),
-  }),
-  columnHelper.accessor("current_signal", {
-    header: "RSSI",
-    cell: (info) => {
-      const v = info.getValue() ?? info.row.original.last_signal;
-      return v != null ? `${v} dBm` : "—";
-    },
-  }),
-  columnHelper.accessor("security", {
-    header: "Seguridad",
-    cell: (info) => info.getValue() || "—",
-  }),
-  columnHelper.accessor("w_mode", {
-    header: "Modo",
-    cell: (info) => info.getValue() || "—",
-  }),
-  columnHelper.accessor("proximity", {
-    header: "Proximidad",
-    cell: (info) => (
-      <ProximityBadge
-        proximity={info.getValue()}
-        detail={info.row.original.proximity_detail}
-      />
-    ),
-  }),
-  columnHelper.accessor("sensor_id", {
-    header: "Sensor",
-    cell: (info) => info.getValue() || "—",
+  columnHelper.accessor("first_seen", {
+    header: "Cuándo se detectó",
+    cell: (info) => formatDateTime(info.getValue()),
   }),
   columnHelper.accessor("last_seen", {
-    header: "Última vez",
-    cell: (info) => timeAgo(info.getValue()),
+    header: "Cuánto tiempo",
+    cell: (info) => {
+      const n = info.row.original;
+      const dur = durationBetween(n.first_seen, n.last_seen);
+      return dur === "—" ? "—" : dur;
+    },
+  }),
+  columnHelper.accessor("proximity", {
+    header: "Distancia aprox.",
+    cell: (info) =>
+      proximityText(
+        info.getValue(),
+        info.row.original.proximity_detail
+      ),
+  }),
+  columnHelper.accessor("current_signal", {
+    header: "Señal",
+    cell: (info) => {
+      const v = info.getValue() ?? info.row.original.last_signal;
+      return signalWord(v);
+    },
   }),
 ];
 
@@ -123,7 +119,7 @@ export function NetworkTable({
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Puntos de acceso detectados
+          Redes Wi-Fi detectadas
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
@@ -134,7 +130,7 @@ export function NetworkTable({
               type="search"
               value={globalFilter}
               onChange={(e) => setGlobalFilter(e.target.value)}
-              placeholder="Buscar AP, SSID, sensor..."
+              placeholder="Buscar red, banda, sensor..."
               className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-xs text-foreground outline-none ring-ring placeholder:text-muted-foreground focus:ring-1"
             />
           </div>
