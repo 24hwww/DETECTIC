@@ -406,6 +406,51 @@ export async function updateDeviceTrust(deviceId: string, status: 'known' | 'ign
   return res.json() as Promise<{ trust: { pseudonym: string; status: string } }>;
 }
 
+export type SensorHealthSample = {
+  reported_at: number;
+  cpu_percent?: number | null;
+  memory_percent?: number | null;
+  memory_used_mb?: number | null;
+  memory_total_mb?: number | null;
+  uptime_seconds?: number | null;
+  temperature_c?: number | null;
+  load_1m?: number | null;
+  load_5m?: number | null;
+  load_15m?: number | null;
+  network_rx_mb?: number | null;
+  network_tx_mb?: number | null;
+  disk_used_percent?: number | null;
+  wifi_clients?: number | null;
+  wifi_aps?: number | null;
+};
+
+export type SensorHealth = {
+  sensor_id: string;
+  hours: number;
+  latest: SensorHealthSample | null;
+  history: SensorHealthSample[];
+};
+
+export type AllHealth = {
+  hours: number;
+  sensors: {
+    sensor_id: string;
+    samples: number;
+    avg_cpu: number | null;
+    avg_memory: number | null;
+    last_report: number | null;
+    max_uptime: number | null;
+  }[];
+};
+
+export async function fetchAllHealth(hours = 24): Promise<AllHealth | null> {
+  return fetchJson<AllHealth>(`${API}/health?hours=${hours}`);
+}
+
+export async function fetchSensorHealth(sensorId: string, hours = 24): Promise<SensorHealth | null> {
+  return fetchJson<SensorHealth>(`${API}/sensors/${encodeURIComponent(sensorId)}/health?hours=${hours}`);
+}
+
 export type DeviceIp = {
   id: number;
   ip: string;

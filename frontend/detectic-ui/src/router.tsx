@@ -16,6 +16,7 @@ import { ReportsView } from "@/components/reports-view";
 import { SettingsView } from "@/components/settings-view";
 import { NotificationsView } from "@/components/notifications-view";
 import { UnknownDevicesView } from "@/components/unknown-devices-view";
+import { SensorHealthView } from "@/components/sensor-health-view";
 
 const rootRoute = createRootRoute({
   component: DashboardLayout,
@@ -111,6 +112,12 @@ const unknownDevicesRoute = createRoute({
   component: UnknownDevicesView,
 });
 
+const sensorHealthRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sensor-health",
+  component: SensorHealthView,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
@@ -139,6 +146,7 @@ const routeTree = rootRoute.addChildren([
   connectivityRoute,
   reportsRoute,
   unknownDevicesRoute,
+  sensorHealthRoute,
   settingsRoute,
   notificationsRoute,
 ]);

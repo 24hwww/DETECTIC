@@ -77,6 +77,7 @@ from identity.classifier import infer_device_class
 from identity.mac import classify_mac
 from identity.oui import manufacturer as oui_manufacturer
 from arp_reader import neighbor_events
+from health_reporter import collect_health, post_health
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -147,6 +148,7 @@ class Config:
     log_path: str
     identity_path: str = ""
     arp_enabled: bool = False
+    health_enabled: bool = False
 
 
 def load_config() -> Config:
@@ -177,6 +179,7 @@ def load_config() -> Config:
     email_enabled = env_int("AUTONOMOUS_EMAIL_ENABLED", 1 if smtp_host and smtp_to else 0)
     log_path = env("AUTONOMOUS_LOG", str(here / "logs" / "collector.log"))
     arp_enabled = env_int("AUTONOMOUS_ARP_ENABLED", 0) == 1
+    health_enabled = env_int("AUTONOMOUS_HEALTH_ENABLED", 0) == 1
 
     # Identity/fingerprint state file (cross-run temporal correlation).
     # Co-located with the SQLite DB when present, else under data/.
@@ -207,7 +210,7 @@ def load_config() -> Config:
 
     return Config(
         db_path=db, sensor_id=sensor, url=url, user=user, password=password,
-        secret=secret, dialect=dialect, arp_enabled=arp_enabled,
+        secret=secret, dialect=dialect, arp_enabled=arp_enabled, health_enabled=health_enabled,
         smtp_host=smtp_host, smtp_port=smtp_port, smtp_user=smtp_user,
         smtp_password=smtp_password, smtp_from=smtp_from, smtp_to=smtp_to,
         smtp_tls=smtp_tls, email_enabled=bool(email_enabled), log_path=log_path,
@@ -1771,6 +1774,19 @@ def run_job(cfg: Config) -> int:
                     jlog.emit("ARP_SYNC_EMPTY", run_id=run_id, capture_id=capture_id)
             except Exception as e:
                 jlog.emit("ARP_SYNC_FAILED", run_id=run_id, capture_id=capture_id, error=str(e))
+
+        # Optional sensor health telemetry (AUTONOMOUS_HEALTH_ENABLED=1).
+        if cfg.health_enabled:
+            try:
+                metrics = collect_health()
+                health_url = _get_d1_sync_url()
+                if health_url:
+                    health_ok = post_health(health_url, cfg.sensor_id, cfg.secret, metrics)
+                    jlog.emit("HEALTH_SYNC", run_id=run_id, capture_id=capture_id, ok=health_ok)
+                else:
+                    jlog.emit("HEALTH_SYNC_SKIPPED", run_id=run_id, capture_id=capture_id, reason="no callback url")
+            except Exception as e:
+                jlog.emit("HEALTH_SYNC_FAILED", run_id=run_id, capture_id=capture_id, error=str(e))
 
     # Catch-up: retry other non-delivered captures (idempotent, bounded).
     pending = store.pending_deliveries()

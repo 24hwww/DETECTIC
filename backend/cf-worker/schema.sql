@@ -257,3 +257,27 @@ CREATE INDEX IF NOT EXISTS idx_device_ip_pseudo ON device_ip(pseudonym);
 CREATE INDEX IF NOT EXISTS idx_device_ip_ip ON device_ip(ip);
 CREATE INDEX IF NOT EXISTS idx_device_ip_mac ON device_ip(mac);
 
+-- Historical sensor health / telemetry metrics.
+CREATE TABLE IF NOT EXISTS sensor_health (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sensor_id TEXT NOT NULL,
+  reported_at INTEGER NOT NULL,
+  cpu_percent REAL,
+  memory_percent REAL,
+  memory_used_mb REAL,
+  memory_total_mb REAL,
+  uptime_seconds INTEGER,
+  temperature_c REAL,
+  load_1m REAL,
+  load_5m REAL,
+  load_15m REAL,
+  network_rx_mb REAL,
+  network_tx_mb REAL,
+  disk_used_percent REAL,
+  wifi_clients INTEGER,
+  wifi_aps INTEGER,
+  custom_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sensor_health_time ON sensor_health(sensor_id, reported_at);
+

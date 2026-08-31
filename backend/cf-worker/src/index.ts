@@ -490,6 +490,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_ip_pseudo ON device_ip(pseudonym)`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_ip_ip ON device_ip(ip)`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_device_ip_mac ON device_ip(mac)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS sensor_health (id INTEGER PRIMARY KEY AUTOINCREMENT, sensor_id TEXT NOT NULL, reported_at INTEGER NOT NULL, cpu_percent REAL, memory_percent REAL, memory_used_mb REAL, memory_total_mb REAL, uptime_seconds INTEGER, temperature_c REAL, load_1m REAL, load_5m REAL, load_15m REAL, network_rx_mb REAL, network_tx_mb REAL, disk_used_percent REAL, wifi_clients INTEGER, wifi_aps INTEGER, custom_json TEXT)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_sensor_health_time ON sensor_health(sensor_id, reported_at)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`),
@@ -580,6 +582,8 @@ async function ensureSchema(db: D1Database): Promise<void> {
       `CREATE INDEX IF NOT EXISTS idx_device_ip_pseudo ON device_ip(pseudonym)`,
       `CREATE INDEX IF NOT EXISTS idx_device_ip_ip ON device_ip(ip)`,
       `CREATE INDEX IF NOT EXISTS idx_device_ip_mac ON device_ip(mac)`,
+      `CREATE TABLE IF NOT EXISTS sensor_health (id INTEGER PRIMARY KEY AUTOINCREMENT, sensor_id TEXT NOT NULL, reported_at INTEGER NOT NULL, cpu_percent REAL, memory_percent REAL, memory_used_mb REAL, memory_total_mb REAL, uptime_seconds INTEGER, temperature_c REAL, load_1m REAL, load_5m REAL, load_15m REAL, network_rx_mb REAL, network_tx_mb REAL, disk_used_percent REAL, wifi_clients INTEGER, wifi_aps INTEGER, custom_json TEXT)`,
+      `CREATE INDEX IF NOT EXISTS idx_sensor_health_time ON sensor_health(sensor_id, reported_at)`,
       `CREATE TABLE IF NOT EXISTS device_fingerprint (pseudonym TEXT NOT NULL, model TEXT, confidence REAL, evidence TEXT, PRIMARY KEY (pseudonym, model))`,
       `CREATE TABLE IF NOT EXISTS identity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, pseudonym TEXT NOT NULL, sensor_id TEXT NOT NULL, evidence_type TEXT, description TEXT, weight REAL, captured_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS wifi_network_observation (bssid_pseudonym TEXT NOT NULL, ssid TEXT, manufacturer TEXT, band TEXT, first_seen INTEGER, last_seen INTEGER, observation_count INTEGER, sensor_id TEXT, PRIMARY KEY (bssid_pseudonym, sensor_id))`,
@@ -1942,6 +1946,116 @@ async function handleReadyz(
   } catch {
     return jsonResponse(503, { status: "not ready" });
   }
+}
+
+async function handlePostHealth(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const origin = requestCorsOrigin(env, request);
+  const sensorId = request.headers.get("X-Detectic-Sensor") || "";
+  const signature = request.headers.get("X-Detectic-Signature") || "";
+  const timestamp = request.headers.get("X-Detectic-Timestamp");
+  const bodyText = await request.text();
+
+  const auth = await verifyAuth(env, sensorId, signature, bodyText, timestamp);
+  if (!auth.ok) return jsonResponse(401, { error: "unauthorized", reason: auth.reason }, origin);
+
+  let body: any;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return jsonResponse(400, { error: "invalid json" }, origin);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const reportedAt = typeof body.reported_at === "number" ? body.reported_at : now;
+  const fields = {
+    cpu_percent: numOrNull(body.cpu_percent),
+    memory_percent: numOrNull(body.memory_percent),
+    memory_used_mb: numOrNull(body.memory_used_mb),
+    memory_total_mb: numOrNull(body.memory_total_mb),
+    uptime_seconds: numOrNull(body.uptime_seconds),
+    temperature_c: numOrNull(body.temperature_c),
+    load_1m: numOrNull(body.load_1m),
+    load_5m: numOrNull(body.load_5m),
+    load_15m: numOrNull(body.load_15m),
+    network_rx_mb: numOrNull(body.network_rx_mb),
+    network_tx_mb: numOrNull(body.network_tx_mb),
+    disk_used_percent: numOrNull(body.disk_used_percent),
+    wifi_clients: numOrNull(body.wifi_clients),
+    wifi_aps: numOrNull(body.wifi_aps),
+    custom_json: body.custom ? JSON.stringify(body.custom) : null,
+  };
+
+  await env.DB.prepare(
+    `INSERT INTO sensor_health
+     (sensor_id, reported_at, cpu_percent, memory_percent, memory_used_mb, memory_total_mb,
+      uptime_seconds, temperature_c, load_1m, load_5m, load_15m, network_rx_mb, network_tx_mb,
+      disk_used_percent, wifi_clients, wifi_aps, custom_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    sensorId, reportedAt, fields.cpu_percent, fields.memory_percent, fields.memory_used_mb,
+    fields.memory_total_mb, fields.uptime_seconds, fields.temperature_c, fields.load_1m,
+    fields.load_5m, fields.load_15m, fields.network_rx_mb, fields.network_tx_mb,
+    fields.disk_used_percent, fields.wifi_clients, fields.wifi_aps, fields.custom_json
+  ).run();
+
+  return jsonResponse(202, { ok: true, reported_at: reportedAt }, origin);
+}
+
+async function handleSensorHealth(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const m = path.match(/^\/api\/v1\/sensors\/([^/]+)\/health$/);
+  const sensorId = m ? decodeURIComponent(m[1]) : null;
+  if (!sensorId) return jsonResponse(404, { error: "not found" });
+  const origin = requestCorsOrigin(env, request);
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24"), 168);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+
+  const rows = await env.DB.prepare(`
+    SELECT reported_at, cpu_percent, memory_percent, memory_used_mb, memory_total_mb,
+           uptime_seconds, temperature_c, load_1m, load_5m, load_15m,
+           network_rx_mb, network_tx_mb, disk_used_percent, wifi_clients, wifi_aps
+    FROM sensor_health
+    WHERE sensor_id = ? AND reported_at >= ?
+    ORDER BY reported_at ASC
+    LIMIT 1000
+  `).bind(sensorId, cutoff).all();
+
+  const latest = await env.DB.prepare(`
+    SELECT * FROM sensor_health WHERE sensor_id = ? ORDER BY reported_at DESC LIMIT 1
+  `).bind(sensorId).first();
+
+  return jsonResponse(200, { sensor_id: sensorId, hours, latest, history: rows.results || [] }, origin);
+}
+
+async function handleAllHealth(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const hours = Math.min(parseInt(url.searchParams.get("hours") || "24"), 168);
+  const cutoff = Math.floor(Date.now() / 1000) - hours * 3600;
+  const origin = requestCorsOrigin(env, request);
+
+  const rows = await env.DB.prepare(`
+    SELECT sensor_id, COUNT(*) AS samples,
+           ROUND(AVG(cpu_percent), 1) AS avg_cpu,
+           ROUND(AVG(memory_percent), 1) AS avg_memory,
+           MAX(reported_at) AS last_report,
+           MAX(uptime_seconds) AS max_uptime
+    FROM sensor_health
+    WHERE reported_at >= ?
+    GROUP BY sensor_id
+    ORDER BY last_report DESC
+  `).bind(cutoff).all();
+
+  return jsonResponse(200, { hours, sensors: rows.results || [] }, origin);
 }
 
 async function handleNetworks(
@@ -3776,6 +3890,8 @@ export default {
           response = await handleIngest(request, env, ctx);
         } else if (path === "/api/v1/captures/sync") {
           response = await handleCollectorSync(request, env);
+        } else if (path === "/api/v1/health") {
+          response = await handlePostHealth(request, env);
         } else if (path === "/api/v1/admin/backfill-ap-state") {
           response = await handleBackfillApState(request, env);
         } else if (path === "/api/v1/admin/hmac-debug") {
@@ -3823,6 +3939,8 @@ export default {
           const targetUrl = path === "/" ? new URL(request.url) : new URL("/", request.url);
           response = noCacheHtml(await env.ASSETS.fetch(new Request(targetUrl, request)));
         } else if (path === "/api/v1/healthz") response = await handleHealthz(request, env);
+        else if (path === "/api/v1/health") response = await handleAllHealth(request, env);
+        else if (path.match(/^\/api\/v1\/sensors\/[^/]+\/health$/)) response = await handleSensorHealth(request, env);
         else if (path === "/api/v1/readyz") response = await handleReadyz(request, env);
         else if (path === "/api/v1/devices") response = await handleDevices(request, env);
         else if (path === "/api/v1/presence") response = await handlePresence(request, env);

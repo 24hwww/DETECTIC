@@ -2,6 +2,7 @@ import {
   Activity,
   AlertTriangle,
   Bell,
+  HeartPulse,
   LayoutDashboard,
   // Map as MapIcon,
   Monitor,
@@ -96,6 +97,7 @@ export function Sidebar() {
 
         <Section title="Sistema">
           <NavItem to="/notifications" icon={Bell} label="Notificaciones" />
+          <NavItem to="/sensor-health" icon={HeartPulse} label="Salud del sensor" />
           <NavItem to="/reports" icon={Monitor} label="Reportes" />
           <NavItem to="/settings" icon={Settings} label="Configuración" />
         </Section>
