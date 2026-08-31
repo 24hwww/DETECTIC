@@ -46,6 +46,7 @@ interface DeviceSummary {
   last_signal?: number;
   band?: string;
   hostname?: string;
+  alias?: string;
   proximity?: string;
 }
 
@@ -211,6 +212,28 @@ export class RealtimeHub extends DurableObject {
     }
   }
 
+  private async resolveDeviceName(id: string): Promise<string> {
+    const device = this.devices.get(id);
+    if (device?.alias) return device.alias;
+    if (device?.hostname) return device.hostname;
+
+    if (this.d1) {
+      try {
+        const row = await this.d1.prepare(
+          'SELECT alias FROM device_label WHERE pseudonym = ?'
+        ).bind(id).first() as { alias?: string } | null;
+        if (row?.alias) {
+          if (device) device.alias = row.alias;
+          return row.alias;
+        }
+      } catch (e) {
+        console.error('[RealtimeHub] resolveDeviceName error:', e);
+      }
+    }
+
+    return id;
+  }
+
   async maybePushForEvent(sensorId: string, msg: any) {
     const p = msg.payload || {};
     const dev = p.payload || {};
@@ -226,13 +249,13 @@ export class RealtimeHub extends DurableObject {
       const name = net?.ssid || id;
       await this.pushEvent('Red desaparecida', `red: ${name} perdió señal`, `net-gone-${id}`, '/');
     } else if (eventType === 'device.connected') {
+      const name = await this.resolveDeviceName(id);
       const device = this.devices.get(id);
-      const name = device?.hostname || id;
-      await this.pushEvent('Dispositivo conectado', `dispositivo: ${name} se conectó`, `dev-conn-${id}`, '/');
+      const extra = device?.band ? ` · ${device.band}` : '';
+      await this.pushEvent('Dispositivo conectado', `${name}${extra}`, `dev-conn-${id}`, `/devices/${encodeURIComponent(id)}`);
     } else if (eventType === 'device.disconnected') {
-      const device = this.devices.get(id);
-      const name = device?.hostname || id;
-      await this.pushEvent('Dispositivo desconectado', `dispositivo: ${name} se desconectó`, `dev-disc-${id}`, '/');
+      const name = await this.resolveDeviceName(id);
+      await this.pushEvent('Dispositivo desconectado', `${name} se fue`, `dev-disc-${id}`, `/devices/${encodeURIComponent(id)}`);
     }
   }
 
@@ -684,6 +707,7 @@ export class RealtimeHub extends DurableObject {
         try { await this.updateDevice(sensorId, msg); } catch (e: any) { console.error('notify updateDevice error:', e?.message || e); }
       }
       this.broadcastToFrontends(sensorId, e, { via: 'http_ingest', persisted: true });
+      await this.maybePushForEvent(sensorId, msg);
     }
   }
 
