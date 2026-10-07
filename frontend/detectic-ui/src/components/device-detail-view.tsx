@@ -456,7 +456,7 @@ export function DeviceDetailView() {
                 <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Días de la semana</p>
                 <div className="mt-2 flex gap-1">
                   {pattern.data.weekday_counts.map((c, i) => {
-                    const max = Math.max(1, ...pattern.data.weekday_counts);
+                    const max = Math.max(1, ...(pattern.data?.weekday_counts || []));
                     return (
                       <div key={i} className="flex flex-1 flex-col items-center gap-1">
                         <div
