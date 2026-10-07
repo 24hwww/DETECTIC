@@ -79,3 +79,6 @@ deploy/ex520_package/.*.pid
 /firmware_forensics/
 /tasks/
 tools/wss_probe/target
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
